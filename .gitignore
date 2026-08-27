@@ -77,12 +77,30 @@ demo_out/
 verify_out/
 taj_out/
 out/
-*.tif
-*.tiff
-*.png
-*.jpg
-*.jpeg
 colab/depthwizard_modules.zip
 
-# Keep documentation images if any are added later.
-!docs/**/*.png
+# Imagery. Blanket *.png / *.jpg was used at first and is too blunt: it silently
+# blocks screenshots for the README and any UI asset the viewer might need, and
+# a rule that quietly drops files someone deliberately added is worse than one
+# that lets a stray raster through -- the stray gets caught by review, the
+# missing file does not.
+#
+# So imagery is ignored where it is GENERATED, and allowed where it is authored.
+*.tif
+*.tiff
+final_out/**/*.png
+viewer/output/**/*.png
+india/**/*.jpg
+india/**/*.png
+
+# Ad-hoc renders land in the repo root during interactive sessions
+# (ortho_*.png, taj_wide.png, s_zoom.png, visual_noshadow.png ...). Ignoring
+# images AT THE ROOT ONLY keeps those out while leaving authored assets in
+# subdirectories committable. The leading slash is what scopes it to the root.
+/*.png
+/*.jpg
+/*.jpeg
+
+# Explicitly allow authored assets.
+!docs/**
+!README*.png
