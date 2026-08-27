@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>DepthWizard Accuracy Dashboard</title>
+<style>
+  body {
+    margin: 0; background: #0d0f14; color: #e6e9ef; font-family: system-ui, sans-serif;
+    padding: 32px; min-height: 100vh;
+  }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .subtitle { color: #8a93a6; font-size: 13px; margin-bottom: 24px; }
+  .source-badge {
+    display: inline-block; background: #2a1f10; color: #e0b060; border: 1px solid #6b4f1f;
+    border-radius: 6px; padding: 2px 8px; font-size: 11px; margin-left: 8px;
+  }
+  table { border-collapse: collapse; width: 100%; max-width: 720px; margin-bottom: 32px; }
+  th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid #232733; font-size: 14px; }
+  th { color: #8a93a6; font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
+  tr:hover { background: #151822; }
+  .metric-good { color: #6fd88f; }
+  .metric-mid { color: #e0c060; }
+  .metric-bad { color: #e07070; }
+  .na { color: #55606f; font-style: italic; }
+  .bars { max-width: 720px; }
+  .bar-row { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; font-size: 13px; }
+  .bar-label { width: 70px; color: #b8c0cf; }
+  .bar-track { flex: 1; background: #1a1e28; border-radius: 4px; height: 18px; overflow: hidden; }
+  .bar-fill { height: 100%; background: linear-gradient(90deg, #3a8f6f, #6fd88f); }
+  .bar-value { width: 90px; text-align: right; color: #8a93a6; }
+  #compare { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 24px; }
+  #compare img { max-width: 340px; border-radius: 8px; border: 1px solid #232733; }
+  .compare-col h3 { font-size: 13px; color: #8a93a6; margin: 0 0 8px; }
+  .empty-note { color: #8a93a6; font-size: 13px; padding: 24px; border: 1px dashed #333; border-radius: 8px; max-width: 600px; }
+  .warn-banner {
+    max-width: 720px; background: #2a1f10; border: 1px solid #6b4f1f; border-radius: 8px;
+    padding: 14px 16px; margin-bottom: 20px; font-size: 13px; color: #e0c080; line-height: 1.5;
+  }
+  .warn-banner strong { color: #f0d090; }
+</style>
+</head>
+<body>
+<h1>DepthWizard -- Multi-Terrain Accuracy Dashboard</h1>
+<div class="subtitle" id="subtitle">Loading validation results...</div>
+
+<div id="content"></div>
+
+<script>
+const RESULTS_URL = "./validation_results.json";
+
+function metricClass(rmse) {
+  if (rmse === null || rmse === undefined) return "na";
+  if (rmse < 5) return "metric-good";
+  if (rmse < 9) return "metric-mid";
+  return "metric-bad";
+}
+
+function fmt(v, suffix = " m") {
+  return v === null || v === undefined ? "N/A" : v.toFixed(2) + suffix;
+}
+
+fetch(RESULTS_URL)
+  .then((r) => {
+    if (!r.ok) throw new Error("no results file");
+    return r.json();
+  })
+  .then((data) => renderDashboard(data))
+  .catch(() => {
+    document.getElementById("subtitle").textContent = "";
+    document.getElementById("content").innerHTML =
+      '<div class="empty-note">No validation_results.json found next to this page. ' +
+      'Run validation.py against a predicted/ground-truth DSM pair (e.g. DFC2019) and drop the output here.</div>';
+  });
+
+function renderDashboard(data) {
+  const results = data.results || {};
+  const sourceLabel = data.source || "unknown";
+
+  document.getElementById("subtitle").innerHTML =
+    "RMSE / MAE against ground-truth elevation, broken down by terrain type" +
+    `<span class="source-badge">source: ${sourceLabel}</span>`;
+
+  const terrainOrder = ["urban", "hilly", "forest", "sparse"];
+  let tableRows = "";
+  let barRows = "";
+
+  // Metric provenance is shown unconditionally, not as a warning. The
+  // headline number changed materially (5.91m -> 4.58m) purely because the
+  // comparison was corrected, so a reader seeing this page needs to know
+  // which quantity is being scored against which.
+  const registered = typeof data.registration === "string";
+  const metricNote = registered
+    ? `<div class="warn-banner" style="border-left-color:#4fbf8b">
+        <strong>Metric:</strong> object height above terrain (nDSM), scored against a
+        ground-truth nDSM derived from the LiDAR's own bare-earth returns (LAS class 2).
+        <br><strong>Registration:</strong> ${data.registration}
+      </div>`
+    : `<div class="warn-banner" style="border-left-color:#e8776a">
+        <strong>These numbers are withdrawn.</strong> They were produced by resizing the
+        north-up LiDAR raster onto raw DFC2019 Track&nbsp;3 satellite frames. Those frames
+        are not orthorectified &mdash; they carry an RPC camera model and no geotransform
+        &mdash; so the two rasters never shared a pixel grid and the comparison scored two
+        different pieces of ground. Verified by eye on JAX_033, where the storage tanks sit
+        bottom-left in the image and top-right in the truth. Re-run
+        <code>rescore_baseline.py</code>, which orthorectifies through the RPC model and
+        checks each tile's registration before scoring it.
+      </div>`;
+
+  let warnBanner = metricNote;
+
+  const overall = results.overall;
+  if (overall) {
+    tableRows += `<tr style="font-weight:600">
+      <td>Overall</td>
+      <td class="${metricClass(overall.rmse_m)}">${fmt(overall.rmse_m)}</td>
+      <td class="${metricClass(overall.mae_m)}">${fmt(overall.mae_m)}</td>
+      <td>${overall.n_pixels.toLocaleString()}</td>
+    </tr>`;
+  }
+
+  for (const name of terrainOrder) {
+    const m = results[name];
+    if (!m) continue;
+    tableRows += `<tr>
+      <td>${name.charAt(0).toUpperCase() + name.slice(1)}</td>
+      <td class="${metricClass(m.rmse_m)}">${fmt(m.rmse_m)}</td>
+      <td class="${metricClass(m.mae_m)}">${fmt(m.mae_m)}</td>
+      <td>${m.n_pixels.toLocaleString()}</td>
+    </tr>`;
+
+    // "confidence" bar: inverse of RMSE, capped, purely a visual summary derived
+    // from the same measured error -- not a separate unverified confidence score.
+    if (m.rmse_m !== null) {
+      const confidencePct = Math.max(0, Math.min(100, 100 - m.rmse_m * 6));
+      barRows += `<div class="bar-row">
+        <div class="bar-label">${name}</div>
+        <div class="bar-track"><div class="bar-fill" style="width:${confidencePct}%"></div></div>
+        <div class="bar-value">${confidencePct.toFixed(0)}%</div>
+      </div>`;
+    } else {
+      barRows += `<div class="bar-row">
+        <div class="bar-label">${name}</div>
+        <div class="bar-track"></div>
+        <div class="bar-value na">no data</div>
+      </div>`;
+    }
+  }
+
+  document.getElementById("content").innerHTML = `
+    ${warnBanner}
+    <table>
+      <thead><tr><th>Terrain</th><th>RMSE</th><th>MAE</th><th>Pixels</th></tr></thead>
+      <tbody>${tableRows}</tbody>
+    </table>
+    <div class="bars">
+      <h3 style="font-size:13px;color:#8a93a6;margin:0 0 10px;">Terrain-wise accuracy (derived from RMSE, not a separate score)</h3>
+      ${barRows}
+    </div>
+    <div class="warn-banner" style="margin-top:28px">
+      <strong>The RS3DAda comparison is withdrawn too.</strong> DepthWizard was
+      reported at 4.64&nbsp;m RMSE against RS3DAda's 5.28&nbsp;m on these tiles.
+      Both sides of that comparison used the same misregistered pairing, so
+      neither number measured what it claimed &mdash; being wrong in the same way
+      does not make a comparison fair, it makes it meaningless. It will be
+      restated only after both are re-scored on orthorectified input.
+    </div>
+  `;
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,88 @@
+# ---------------------------------------------------------------------------
+# Large data and generated artefacts.
+#
+# The working tree is ~18 GB, almost none of which belongs in version control.
+# Sizes measured, not guessed:
+#
+#   dfc2019_data  16 GB   licensed benchmark dataset (IEEE DataPort)
+#   venv         1.5 GB   virtualenv, rebuildable from requirements
+#   final_out    316 MB   generated meshes and textures
+#   scenes       100 MB   saved scene snapshots
+#   cache         81 MB   cached depth fields
+#   india         13 MB   downloaded imagery crops
+#
+# GitHub rejects files over 100 MB outright and warns above 50 MB, and the
+# individual GLBs here are 26-49 MB each. None of it is source, and all of it is
+# reproducible from the code plus the documented data sources.
+# ---------------------------------------------------------------------------
+
+# Benchmark dataset -- licensed, and far too large to redistribute.
+# Obtain from IEEE DataPort: 2019 IEEE GRSS Data Fusion Contest, Track 3.
+dfc2019_data/
+
+# Python environment
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.ipynb_checkpoints/
+
+# Generated 3D output: meshes, textures, DSMs, baked maps
+final_out/
+viewer/output/
+scenes/
+cache/
+india/
+*.glb
+*.obj
+*.mtl
+*.ply
+
+# Generated rasters. The pipeline writes many of these; none are inputs.
+*.npy
+segmentation_preview.png
+segmentation_raw.png
+relative_depth_preview.png
+ortho_*.png
+overlay_cleaned.png
+
+# Run logs and scratch files from interactive sessions
+*.log
+scratch_*.py
+scratch_*.png
+prev.py
+chk*.py
+diag_*.py
+tune_seg.py
+test_overlay.py
+find_block.py
+find_india.py
+probe_extent.py
+screen_tiles.py
+colab_subset.zip
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# More generated output and dataset copies found when first staging.
+# colab_subset/ alone was 483 MB of licensed DFC imagery -- a copy of the
+# dataset, not source, and not redistributable.
+colab_subset/
+dfc_out/
+demo_out/
+verify_out/
+taj_out/
+out/
+*.tif
+*.tiff
+*.png
+*.jpg
+*.jpeg
+colab/depthwizard_modules.zip
+
+# Keep documentation images if any are added later.
+!docs/**/*.png

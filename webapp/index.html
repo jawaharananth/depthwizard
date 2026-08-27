@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>DepthWizard</title>
+<style>
+  :root {
+    --bg: #0b1017;
+    --panel: #131b25;
+    --panel-2: #1a242f;
+    --line: #24313f;
+    --ink: #e6edf5;
+    --ink-2: #b2c2d2;
+    --muted: #7d90a4;
+    --accent: #e8a049;
+    --ok: #4fbf8b;
+    --warn: #dfb055;
+    --bad: #e8776a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font-family: "IBM Plex Sans", system-ui, -apple-system, Segoe UI, sans-serif;
+    line-height: 1.55;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 3rem 1.5rem 5rem; }
+
+  header { border-bottom: 1px solid var(--line); padding-bottom: 1.75rem; margin-bottom: 2.5rem; }
+  .eyebrow {
+    font-family: ui-monospace, "SF Mono", Consolas, monospace;
+    font-size: .72rem; letter-spacing: .16em; text-transform: uppercase;
+    color: var(--accent); margin-bottom: .6rem;
+  }
+  h1 { margin: 0 0 .5rem; font-size: clamp(2rem, 1.2rem + 3vw, 3rem); letter-spacing: -.02em; }
+  .sub { color: var(--ink-2); max-width: 62ch; margin: 0; }
+
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; margin-bottom: 2.5rem; }
+  .card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    padding: 1.4rem 1.5rem; text-decoration: none; color: inherit;
+    display: flex; flex-direction: column; gap: .5rem;
+    transition: border-color .15s, transform .15s;
+  }
+  .card:hover { border-color: var(--accent); transform: translateY(-2px); }
+  .card:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+  .card h2 { margin: 0; font-size: 1.15rem; }
+  .card p { margin: 0; color: var(--muted); font-size: .92rem; }
+  .card .go { color: var(--accent); font-size: .85rem; font-family: ui-monospace, monospace; margin-top: .35rem; }
+
+  h3 { font-size: .78rem; letter-spacing: .12em; text-transform: uppercase; color: var(--muted);
+       font-family: ui-monospace, monospace; margin: 2.5rem 0 .9rem; font-weight: 500; }
+
+  .metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: .75rem; }
+  .metric { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 1rem 1.1rem; }
+  .metric .label { font-size: .74rem; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); }
+  .metric .val { font-size: 1.7rem; font-weight: 600; font-variant-numeric: tabular-nums; margin-top: .2rem; }
+  .metric .unit { font-size: .85rem; color: var(--muted); font-weight: 400; }
+  .g-ok { color: var(--ok); } .g-mid { color: var(--warn); } .g-bad { color: var(--bad); }
+
+  table { width: 100%; border-collapse: collapse; font-size: .92rem;
+          background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  th, td { padding: .65rem 1.1rem; text-align: left; border-bottom: 1px solid var(--line); }
+  th { font-size: .72rem; text-transform: uppercase; letter-spacing: .08em; color: var(--muted);
+       font-family: ui-monospace, monospace; font-weight: 500; }
+  tbody tr:last-child td { border-bottom: none; }
+  td.num { font-variant-numeric: tabular-nums; font-family: ui-monospace, monospace; }
+
+  .note {
+    background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--warn);
+    border-radius: 6px; padding: 1rem 1.2rem; margin-top: 1rem; font-size: .9rem; color: var(--ink-2);
+  }
+  .note b { color: var(--warn); }
+  .pipeline { display: flex; flex-wrap: wrap; gap: .45rem; }
+  .step {
+    background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px;
+    padding: .45rem .75rem; font-size: .82rem; color: var(--ink-2);
+    font-family: ui-monospace, monospace;
+  }
+  .step span { color: var(--accent); }
+  footer { margin-top: 3rem; padding-top: 1.25rem; border-top: 1px solid var(--line);
+           color: var(--muted); font-size: .82rem; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="eyebrow">SIH26175 · ISRO</div>
+    <h1>DepthWizard</h1>
+    <p class="sub">
+      Single satellite image to navigable 3D terrain with measured elevation.
+      Height is measured from shadow geometry &mdash; sun angle and shadow length &mdash;
+      and validated against airborne LiDAR, not asserted from a model estimate.
+    </p>
+  </header>
+
+  <div class="cards">
+    <a class="card" href="/viewer/index.html">
+      <h2>3D Terrain Viewer</h2>
+      <p>Explore the reconstructed city. Orbit, zoom, toggle elevation heatmap, and click any two points to measure distance, height difference and slope.</p>
+      <span class="go">open viewer →</span>
+    </a>
+    <a class="card" href="/dashboard/index.html">
+      <h2>Accuracy Dashboard</h2>
+      <p>RMSE and MAE per terrain class, measured against real airborne LiDAR from the DFC2019 benchmark.</p>
+      <span class="go">open dashboard →</span>
+    </a>
+  </div>
+
+  <h3>Measured accuracy — DFC2019 Track 3, Jacksonville</h3>
+  <div class="metrics" id="metrics"></div>
+
+  <h3>By terrain class</h3>
+  <table>
+    <thead><tr><th>Terrain</th><th>RMSE</th><th>MAE</th></tr></thead>
+    <tbody id="terrain-rows"></tbody>
+  </table>
+
+  <div class="note" style="border-left-color:var(--bad)">
+    <b>Earlier accuracy figures are withdrawn.</b> DFC2019 Track 3 satellite frames are
+    not orthorectified — they carry an RPC camera model and no geotransform — so resizing
+    the north-up LiDAR raster onto them, which this project did everywhere, scored two
+    different pieces of ground. That invalidates the 4.64 m RMSE headline and the
+    RS3DAda comparison alongside it, since both used the same pairing. Input now goes
+    through the RPC orthorectifier and each tile's registration is checked before it is
+    scored; the table above shows whatever the current run measured.
+  </div>
+
+  <div class="note">
+    <b>Forest is the weakest class</b> and the reason is structural, not tuning: shadow-based
+    height measurement targets crisp building rooflines, while tree canopy casts diffuse,
+    overlapping shadows with no clean edge to measure against.
+  </div>
+
+  <h3>Pipeline</h3>
+  <div class="pipeline">
+    <div class="step"><span>1</span> depth estimation</div>
+    <div class="step"><span>2</span> semantic segmentation</div>
+    <div class="step"><span>3</span> tiered calibration</div>
+    <div class="step"><span>4</span> shadow cross-validation</div>
+    <div class="step"><span>5</span> GeoTIFF DSM export</div>
+    <div class="step"><span>6</span> adaptive 3D mesh</div>
+  </div>
+
+  <h3>Current scene</h3>
+  <table>
+    <tbody id="scene-rows"></tbody>
+  </table>
+
+  <footer>
+    Every figure shown is measured against airborne LiDAR ground truth or observed directly —
+    none are estimated. Relative-only output is labelled as such and never exported with a CRS.
+  </footer>
+
+</div>
+
+<script>
+const fmt = (v) => (v === null || v === undefined) ? "N/A" : v.toFixed(2);
+const grade = (v) => v === null ? "" : v < 3 ? "g-ok" : v < 9 ? "g-mid" : "g-bad";
+
+fetch("/dashboard/validation_results.json")
+  .then((r) => r.ok ? r.json() : Promise.reject())
+  .then((d) => {
+    const res = d.results || {};
+    const o = res.overall || {};
+
+    document.getElementById("metrics").innerHTML = `
+      <div class="metric"><div class="label">Overall RMSE</div>
+        <div class="val ${grade(o.rmse_m)}">${fmt(o.rmse_m)}<span class="unit"> m</span></div></div>
+      <div class="metric"><div class="label">Overall MAE</div>
+        <div class="val ${grade(o.mae_m)}">${fmt(o.mae_m)}<span class="unit"> m</span></div></div>
+      <div class="metric"><div class="label">Pixels evaluated</div>
+        <div class="val">${(o.n_pixels || 0).toLocaleString()}</div></div>
+      <div class="metric"><div class="label">Ground truth</div>
+        <div class="val" style="font-size:1.05rem">airborne LiDAR</div></div>`;
+
+    document.getElementById("terrain-rows").innerHTML =
+      ["urban", "hilly", "forest", "sparse"]
+        .filter((k) => res[k])
+        .map((k) => `<tr>
+            <td>${k[0].toUpperCase() + k.slice(1)}</td>
+            <td class="num ${grade(res[k].rmse_m)}">${fmt(res[k].rmse_m)} m</td>
+            <td class="num">${fmt(res[k].mae_m)} m</td>
+          </tr>`).join("");
+  })
+  .catch(() => {
+    document.getElementById("metrics").innerHTML =
+      `<div class="metric"><div class="label">Benchmark</div>
+        <div class="val" style="font-size:1rem">no results file</div></div>`;
+  });
+
+// Scene facts read from the actual served assets, so this can't drift from reality.
+Promise.all([
+  fetch("/viewer/output/terrain.glb", { method: "HEAD" }),
+  fetch("/viewer/output/terrain_texture.png", { method: "HEAD" }),
+]).then(([glb, tex]) => {
+  const mb = (r) => (Number(r.headers.get("content-length") || 0) / 1048576).toFixed(1) + " MB";
+  document.getElementById("scene-rows").innerHTML = `
+    <tr><td>Mesh</td><td class="num">${mb(glb)}</td></tr>
+    <tr><td>Texture</td><td class="num">${mb(tex)}</td></tr>
+    <tr><td>Tessellation</td><td class="num">adaptive — vertices placed by detail</td></tr>`;
+}).catch(() => {});
+</script>
+</body>
+</html>

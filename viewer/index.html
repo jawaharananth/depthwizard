@@ -1,0 +1,743 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>DepthWizard 3D Terrain Viewer</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #000; font-family: system-ui, sans-serif; }
+  #canvas-container { width: 100%; height: 100%; }
+  #ui {
+    position: fixed; top: 12px; left: 12px; z-index: 10;
+    background: rgba(20,20,25,0.75); backdrop-filter: blur(6px);
+    border-radius: 10px; padding: 12px 14px; color: #eee; font-size: 13px;
+    min-width: 220px;
+  }
+  #ui h3 { margin: 0 0 8px; font-size: 14px; color: #9fd; }
+  .row { display: flex; gap: 6px; margin-bottom: 8px; flex-wrap: wrap; }
+  button {
+    background: #23252b; color: #ddd; border: 1px solid #444; border-radius: 6px;
+    padding: 6px 10px; cursor: pointer; font-size: 12px;
+  }
+  button.active { background: #2f6b4f; border-color: #4fbf8f; color: #fff; }
+  button:hover { border-color: #7fd; }
+  #measure-panel { margin-top: 8px; font-size: 12px; line-height: 1.5; color: #cde; white-space: pre-line; }
+  #loading {
+    position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+    color: #ccc; font-size: 16px; z-index: 20; background: #05070a;
+  }
+  #stats { margin-top: 8px; font-size: 11px; color: #899; white-space: pre-line; }
+</style>
+</head>
+<body>
+<div id="loading">Loading terrain...</div>
+<div id="canvas-container"></div>
+
+<div id="ui" style="display:none;">
+  <h3>DepthWizard</h3>
+  <div class="row">
+    <button id="btn-rgb" class="active">RGB</button>
+    <button id="btn-heatmap">HEATMAP</button>
+  </div>
+  <div class="row">
+    <button id="btn-measure">Click-to-Measure</button>
+    <button id="btn-reset">Reset View</button>
+  </div>
+  <div id="measure-panel">Click two points on the terrain to measure.</div>
+  <div id="stats"></div>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.180.0/build/three.webgpu.js",
+    "three/webgpu": "https://unpkg.com/three@0.180.0/build/three.webgpu.js",
+    "three/tsl": "https://unpkg.com/three@0.180.0/build/three.tsl.js",
+    "three/addons/": "https://unpkg.com/three@0.180.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+
+// ---------------------------------------------------------------------
+// Config: which mesh/texture to load. Point MESH_URL at your run_pipeline.py
+// output (mesh_generation.generate_mesh's out_path/texture_path/heatmap_path).
+// ---------------------------------------------------------------------
+const MESH_URL = "./output/terrain.glb";
+const TEXTURE_RGB_URL = "./output/terrain_texture.png";
+const TEXTURE_HEATMAP_URL = "./output/terrain_heatmap.png";
+const TEXTURE_NORMAL_URL = "./output/terrain_normal.png";
+const TEXTURE_AO_URL = "./output/terrain_ao.png";
+const TEXTURE_ROUGHNESS_URL = "./output/terrain_roughness.png";
+const TEXTURE_METALNESS_URL = "./output/terrain_metalness.png";
+// Sun angles come from the capture metadata written by build_scene.py, not
+// from a chosen-looking-good constant. The satellite texture has the real
+// shadows baked into it, so lighting the geometry from a different direction
+// puts a second set of shadows across the scene at odds with the first --
+// which reads immediately as fake. Defaults apply only when scene.json is
+// absent (a mesh built by an older run).
+let SUN_ELEVATION_DEG = 40;
+let SUN_AZIMUTH_DEG = 200;
+let SCENE_META = null;
+try {
+  const r = await fetch("./output/scene.json", { cache: "no-store" });
+  if (r.ok) {
+    SCENE_META = await r.json();
+    if (typeof SCENE_META.sun_elevation_deg === "number") SUN_ELEVATION_DEG = SCENE_META.sun_elevation_deg;
+    if (typeof SCENE_META.sun_azimuth_deg === "number") SUN_AZIMUTH_DEG = SCENE_META.sun_azimuth_deg;
+  }
+} catch (e) { /* no metadata: keep the defaults above */ }
+
+// WebGPURenderer: uses the browser's WebGPU backend when available (Chrome/
+// Edge/Firefox/Safari all ship it as of late 2025), and automatically falls
+// back to WebGL2 when it isn't -- same class either way, so nothing else in
+// this file needs to know which backend actually ran. Needs an async init()
+// before first render, unlike WebGLRenderer.
+const container = document.getElementById("canvas-container");
+const renderer = new THREE.WebGPURenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+// AgX rather than ACES. ACES pushes bright neutrals toward warm cream and
+// crushes highlight separation -- on a city of pale roofs that turns the whole
+// scene yellow-white and flattens roof-to-roof value differences, which is
+// exactly the information the model is trying to show. AgX holds neutrals
+// neutral and keeps highlight detail, which suits a cool palette.
+renderer.toneMapping = THREE.AgXToneMapping || THREE.ACESFilmicToneMapping;
+// Exposure is set for a mid-grey satellite frame. Brighter sources (a sunlit
+// campus at 25 cm/px) clip to white at 1.45 and lose both the ground texture
+// and the canopy, so this sits lower and lets AgX's highlight rolloff work.
+renderer.toneMappingExposure = 1.05;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;  // soft penumbra, not hard-edged stencils
+container.appendChild(renderer.domElement);
+await renderer.init();
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.1, 20000);
+camera.position.set(0, 300, 400);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.screenSpacePanning = false;
+controls.maxPolarAngle = Math.PI * 0.495; // don't let camera dip below ground plane
+
+// --- Sky: gradient background, not the physically-based Sky.js shader.
+// Sky.js is built on classic THREE.ShaderMaterial + UniformsUtils, which the
+// WebGPURenderer module (three/webgpu) doesn't export -- confirmed by an
+// actual runtime error when tried ("no export named UniformsUtils"), not a
+// guess. A TSL-based sky shader would be the real WebGPU-native equivalent,
+// but writing one untested risks the same silent-breakage problem this whole
+// renderer swap was trying to avoid. Simple, guaranteed-compatible gradient
+// instead of a broken or unverified shader.
+function makeSkyGradient() {
+  const c = document.createElement("canvas");
+  c.width = 2; c.height = 256;
+  const ctx = c.getContext("2d");
+  const grad = ctx.createLinearGradient(0, 0, 0, 256);
+  grad.addColorStop(0, "#3f6fa8");
+  grad.addColorStop(0.45, "#7fa9d4");
+  grad.addColorStop(0.78, "#c2d9ec");
+  grad.addColorStop(1, "#e6eef5");
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, 2, 256);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+scene.background = makeSkyGradient();
+
+// --- Image-based lighting -------------------------------------------------
+// A directional light plus flat ambient makes every surface respond to light
+// identically, which is the main reason untextured geometry reads as "pasted
+// on". Real surfaces are lit by the whole sky hemisphere and the ground
+// bounce. PMREM prefilters an environment into the mip chain that
+// MeshStandardMaterial samples for specular response, so roofs pick up sky
+// colour at grazing angles and water reflects rather than just brightening.
+//
+// The environment is generated procedurally from the same sky/sun parameters
+// used for the visible background, so lighting and backdrop stay consistent.
+function buildEnvironment(sunDirection) {
+  const size = 256;
+  const c = document.createElement("canvas");
+  c.width = size; c.height = size / 2;   // equirectangular: 2:1
+  const ctx = c.getContext("2d");
+
+  // Deliberately desaturated. A physically-blue sky dome is correct for a
+  // colour-rich scene, but satellite imagery here is near-greyscale, so the
+  // environment tint ends up being the *only* colour in the frame and the
+  // whole city reads as cold blue-grey. Keeping the dome close to neutral
+  // lets the imagery's own tone lead, with just enough hue separation between
+  // sky and ground bounce to give surfaces directional colour response.
+  const grad = ctx.createLinearGradient(0, 0, 0, c.height);
+  grad.addColorStop(0.00, "#8fa4bd");   // zenith: cool but muted
+  grad.addColorStop(0.45, "#c3cdd8");
+  grad.addColorStop(0.52, "#e8e6e2");   // horizon band, near-neutral
+  grad.addColorStop(0.60, "#b9a98f");   // ground bounce: warm, lifts shadow interiors
+  grad.addColorStop(1.00, "#8d8272");
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, c.width, c.height);
+
+  // Sun disc, placed from the real solar azimuth/elevation so the specular
+  // highlight agrees with the shadow direction.
+  const az = Math.atan2(sunDirection.x, sunDirection.z);
+  const el = Math.asin(THREE.MathUtils.clamp(sunDirection.y, -1, 1));
+  const u = ((az / (Math.PI * 2)) + 0.5) * c.width;
+  const v = (0.5 - el / Math.PI) * c.height;
+
+  const sun = ctx.createRadialGradient(u, v, 0, u, v, c.width * 0.06);
+  sun.addColorStop(0, "#fffdf5");
+  sun.addColorStop(0.3, "#ffeec2");
+  sun.addColorStop(1, "rgba(255,238,194,0)");
+  ctx.fillStyle = sun;
+  ctx.fillRect(0, 0, c.width, c.height);
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.mapping = THREE.EquirectangularReflectionMapping;
+  tex.colorSpace = THREE.SRGBColorSpace;
+
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  pmrem.compileEquirectangularShader();
+  const envRT = pmrem.fromEquirectangular(tex);
+  tex.dispose();
+  pmrem.dispose();
+  return envRT.texture;
+}
+
+function sunDirectionFromAngles(elevationDeg, azimuthDeg) {
+  const phi = THREE.MathUtils.degToRad(90 - elevationDeg);
+  const theta = THREE.MathUtils.degToRad(azimuthDeg);
+  return new THREE.Vector3().setFromSphericalCoords(1, phi, theta);
+}
+
+const sunDir = sunDirectionFromAngles(SUN_ELEVATION_DEG, SUN_AZIMUTH_DEG);
+scene.environment = buildEnvironment(sunDir);
+
+// --- Lighting: sun matches the Sky + feeds shadow map ---
+// Position/frustum are placeholders here (0,0,0-centered) -- the terrain mesh
+// isn't centered at the world origin (its bounding box can sit anywhere,
+// e.g. X:0-850 Z:0-636), and DirectionalLight's shadow camera looks at
+// light.target, which defaults to (0,0,0). Left unset, the shadow frustum
+// doesn't cover the actual geometry, and out-of-frustum shadow-map sampling
+// renders as solid black -- both get repositioned to the mesh's real
+// bounding-box center once it loads, below.
+// Warm key against cool fill. A neutral sun on a neutral ambient gives a flat
+// grey city; the temperature split is what separates a sunlit roof plane from a
+// shaded wall without touching geometry.
+const sunLight = new THREE.DirectionalLight(0xffeed4, 3.1);
+sunLight.castShadow = true;
+// 2k shadow map: 4k looked marginally crisper but is disproportionately
+// expensive on integrated GPUs, and PCF-soft filtering plus normalBias
+// already removes the stair-stepping that motivated the larger map.
+sunLight.shadow.mapSize.set(4096, 4096);
+sunLight.shadow.bias = -0.0004;
+sunLight.shadow.normalBias = 0.02;   // stops self-shadow acne on the heightfield
+sunLight.shadow.radius = 2;          // softens the penumbra edge
+scene.add(sunLight);
+scene.add(sunLight.target);
+
+// Ambient and hemisphere are now backups only -- scene.environment (PMREM)
+// supplies the sky/ground illumination. Leaving the old flat values in would
+// double-light the scene and wash out exactly the occlusion contrast the
+// baked AO map exists to provide.
+scene.add(new THREE.AmbientLight(0x8fa8c4, 0.10));
+scene.add(new THREE.HemisphereLight(0x9dc0f0, 0x53585e, 0.28));
+
+// Fog: cheap atmospheric depth cue, also gracefully hides the low-poly far
+// edges of the ground mesh instead of a hard silhouette against empty sky.
+// Atmospheric perspective, tinted to the sky it fades into. Distance haze is
+// the strongest depth cue available at city scale and costs nothing.
+scene.fog = new THREE.Fog(0xb9d2e8, 1, 4000);
+
+// --- Post-processing: ground-truth ambient occlusion ---------------------
+//
+// AO is the single largest visual gain for a model like this. The buildings
+// are near-untextured volumes, so the only cues separating a wall from the
+// ground it stands on are the sun angle and the contact shadow in the crease
+// between them. Without occlusion, blocks appear to hover; with it, they sit.
+//
+// This is the WebGPU-native TSL post-processing path (an MRT pass feeding
+// GTAO), NOT the old EffectComposer chain. That distinction matters here: an
+// EffectComposer + UnrealBloomPass chain was tried against WebGPURenderer
+// earlier in this project and reproducibly rendered half the viewport black.
+// The TSL path is built for this renderer.
+//
+// It is wrapped in try/catch and falls back to plain rendering, because a
+// scene that renders without AO is strictly better than a scene that does not
+// render.
+// The TSL symbols are pulled in with a DYNAMIC import inside try/catch. A
+// static top-level `import { ao } from "three/tsl"` cannot be guarded: if the
+// installed three build names that node differently, the import itself throws,
+// the whole module fails to evaluate, and the page renders nothing at all.
+// Measured exactly that -- an 8KB blank screenshot. A dynamic import lets a
+// missing symbol degrade to "no AO" instead of "no viewer".
+// Post chain: GTAO -> denoise -> bloom -> FXAA.
+//
+// Order matters and each stage earns its place:
+//   GTAO    contact shadows, so volumes sit on the ground instead of hovering
+//   denoise GTAO is stochastic; raw output is visibly grainy on flat roofs
+//   bloom   a narrow highlight-only bleed; sunlit roofs and water gain presence
+//   FXAA    the scene is nothing but long straight roof edges, which alias badly
+//
+// Every stage is optional and resolved by dynamic import inside try/catch. A
+// static top-level TSL import cannot be guarded: a missing symbol stops the whole
+// module evaluating and the page renders NOTHING -- measured once as an 8KB blank
+// screenshot. Degrading to "fewer effects" must never become "no viewer".
+let postProcessing = null;
+let postChain = [];
+try {
+  const tsl = await import("three/tsl");
+  const { ao: aoFn } = await import("three/addons/tsl/display/GTAONode.js");
+  if (!aoFn || !tsl.pass || !tsl.mrt || !THREE.PostProcessing) {
+    throw new Error("TSL post-processing nodes unavailable in this three build");
+  }
+
+  const scenePass = tsl.pass(scene, camera);
+  scenePass.setMRT(tsl.mrt({
+    output: tsl.output,
+    normal: (tsl.normalView || tsl.transformedNormalView),
+  }));
+  const colorNode = scenePass.getTextureNode("output");
+  const normalNode = scenePass.getTextureNode("normal");
+  const depthNode = scenePass.getTextureNode("depth");
+
+  let aoNode = aoFn(depthNode, normalNode, camera);
+  if (aoNode.radius) aoNode.radius.value = 0.4;
+  if (aoNode.scale) aoNode.scale.value = 1.25;
+  if (aoNode.thickness) aoNode.thickness.value = 1.0;
+  postChain.push("gtao");
+
+  let aoTex = aoNode.getTextureNode();
+  try {
+    const { denoise } = await import("three/addons/tsl/display/DenoiseNode.js");
+    if (denoise) {
+      aoTex = denoise(aoTex, depthNode, normalNode, camera);
+      postChain.push("denoise");
+    }
+  } catch (e) { /* grain is acceptable; a broken chain is not */ }
+
+  let outNode = aoTex.mul(colorNode);
+
+  try {
+    const { bloom } = await import("three/addons/tsl/display/BloomNode.js");
+    if (bloom) {
+      // Threshold high and strength low: this is a daylight city, not a neon
+      // scene. Bloom should touch only specular hits on water and the brightest
+      // sunlit roofs. An earlier UnrealBloomPass attempt on the old renderer
+      // blacked out half the viewport, hence the deliberately conservative hand.
+      outNode = outNode.add(bloom(outNode, 0.22, 0.7, 0.92));
+      postChain.push("bloom");
+    }
+  } catch (e) { /* optional */ }
+
+  try {
+    const { fxaa } = await import("three/addons/tsl/display/FXAANode.js");
+    if (fxaa) { outNode = fxaa(outNode); postChain.push("fxaa"); }
+  } catch (e) { /* optional */ }
+
+  postProcessing = new THREE.PostProcessing(renderer);
+  postProcessing.outputNode = outNode;
+  console.log("post-processing:", postChain.join(" -> "));
+} catch (err) {
+  console.warn("post-processing unavailable, rendering directly:", err);
+  postProcessing = null;
+}
+
+
+/**
+ * Split one building mesh into roof faces and wall faces and give each a
+ * plain material.
+ *
+ * Classification is by face normal: mostly-up is a roof, steeper is a wall.
+ * Both get untextured MeshStandardMaterial, so the only shading cues are
+ * geometry, the sun, and the environment -- which is exactly what makes a
+ * clean prism city legible.
+ */
+function shadeBuildingPrisms(mesh) {
+  const geom = mesh.geometry;
+  const pos = geom.attributes.position;
+  const idx = geom.index;
+  const triCount = idx ? idx.count / 3 : pos.count / 3;
+  const at = (i) => (idx ? idx.getX(i) : i);
+
+  const roofIdx = [], wallIdx = [];
+  const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
+  const ab = new THREE.Vector3(), ac = new THREE.Vector3(), n = new THREE.Vector3();
+
+  for (let t = 0; t < triCount; t++) {
+    const i0 = at(t * 3), i1 = at(t * 3 + 1), i2 = at(t * 3 + 2);
+    a.fromBufferAttribute(pos, i0);
+    b.fromBufferAttribute(pos, i1);
+    c.fromBufferAttribute(pos, i2);
+    ab.subVectors(b, a); ac.subVectors(c, a);
+    n.crossVectors(ab, ac).normalize();
+    (Math.abs(n.y) > 0.5 ? roofIdx : wallIdx).push(i0, i1, i2);
+  }
+
+  // Building colour comes from the GLB when the builder measured it: each
+  // prism carries the median colour of its own roof, sampled from the
+  // satellite image. That is real data about the building, so it is preferred
+  // over any procedural tint.
+  //
+  // The positional fallback exists only for meshes built before roof sampling
+  // -- a city in one flat grey reads as a single extruded blob, because with
+  // no colour boundary between neighbours the only thing separating two
+  // buildings of similar height is a shadow that may not exist.
+  let colorAttr = geom.attributes.color || null;
+  if (!colorAttr) {
+    const colors = new Float32Array(pos.count * 3);
+    const v = new THREE.Vector3();
+    for (let i = 0; i < pos.count; i++) {
+      v.fromBufferAttribute(pos, i);
+      const key = (Math.floor(v.x / 18) * 73856093) ^ (Math.floor(v.z / 18) * 19349663);
+      const r = ((key >>> 0) % 1000) / 1000;
+      colors[i * 3]     = 0.93 + 0.07 * r;
+      colors[i * 3 + 1] = 0.94 + 0.06 * r;
+      colors[i * 3 + 2] = 0.90 + 0.10 * (1 - r);
+    }
+    colorAttr = new THREE.Float32BufferAttribute(colors, 3);
+  }
+
+  const mk = (indices, color, rough) => {
+    if (!indices.length) return null;
+    const g = new THREE.BufferGeometry();
+    // Both attributes must be set on the NEW geometry. Setting the colour on
+    // the original while the split geometries carry only position leaves a
+    // material with vertexColors:true reading an attribute that isn't there,
+    // which fails the whole render rather than just dropping the tint.
+    g.setAttribute("position", pos);
+    g.setAttribute("color", colorAttr);
+    g.setIndex(indices);
+    g.computeVertexNormals();
+    const m = new THREE.Mesh(g, new THREE.MeshStandardMaterial({
+      color, roughness: rough, metalness: 0.0, envMapIntensity: 0.5,
+      vertexColors: true,
+    }));
+    m.castShadow = m.receiveShadow = true;
+    return m;
+  };
+
+  // Roofs slightly lighter than walls: a flat roof faces the sky and picks up
+  // more of it, so this follows the lighting rather than fighting it.
+  // Roofs face the sky and take its colour; walls sit in shade and go cooler and
+  // slightly darker. The multiplier rides on top of each building's measured
+  // colour rather than replacing it.
+  const roof = mk(roofIdx, 0xf2f6fb, 0.84);
+  const wall = mk(wallIdx, 0xc3ceda, 0.66);
+  if (roof) mesh.parent.add(roof);
+  if (wall) mesh.parent.add(wall);
+  mesh.visible = false;
+}
+
+// --- Load terrain mesh ---
+let groundMesh = null;
+let rgbTexture = null, heatmapTexture = null, normalTexture = null;
+let aoTexture = null, roughnessTexture = null, metalnessTexture = null;
+
+const textureLoader = new THREE.TextureLoader();
+const gltfLoader = new GLTFLoader();
+
+Promise.all([
+  new Promise((res) => textureLoader.load(TEXTURE_RGB_URL, res, undefined, () => res(null))),
+  new Promise((res) => textureLoader.load(TEXTURE_HEATMAP_URL, res, undefined, () => res(null))),
+  new Promise((res) => textureLoader.load(TEXTURE_NORMAL_URL, res, undefined, () => res(null))),
+  new Promise((res) => textureLoader.load(TEXTURE_AO_URL, res, undefined, () => res(null))),
+  new Promise((res) => textureLoader.load(TEXTURE_ROUGHNESS_URL, res, undefined, () => res(null))),
+  new Promise((res) => textureLoader.load(TEXTURE_METALNESS_URL, res, undefined, () => res(null))),
+]).then(([rgbTex, heatTex, normalTex, aoTex, roughTex, metalTex]) => {
+  rgbTexture = rgbTex;
+  heatmapTexture = heatTex;
+  normalTexture = normalTex;
+  aoTexture = aoTex;
+  roughnessTexture = roughTex;
+  metalnessTexture = metalTex;
+  // Anisotropic filtering: without it, a high-res texture on ground viewed at
+  // a grazing angle (which is most of the frame in a terrain fly-through)
+  // blurs to mush regardless of how sharp the source image is.
+  const maxAniso = renderer.capabilities?.getMaxAnisotropy?.() ?? 8;
+  for (const t of [rgbTex, heatTex, normalTex, aoTex, roughTex, metalTex]) {
+    if (!t) continue;
+    t.anisotropy = maxAniso;
+    t.generateMipmaps = true;
+    t.minFilter = THREE.LinearMipmapLinearFilter;
+    t.magFilter = THREE.LinearFilter;
+  }
+  if (rgbTexture) rgbTexture.colorSpace = THREE.SRGBColorSpace;
+  if (heatmapTexture) heatmapTexture.colorSpace = THREE.SRGBColorSpace;
+  // normal maps are NOT color data -- must stay linear, not sRGB, or the
+  // lighting math reads distorted (washed-out/inverted-looking) bump response
+  // AO and roughness are data, not colour -- sRGB decoding would distort them
+  if (normalTexture) normalTexture.colorSpace = THREE.NoColorSpace;
+  if (aoTexture) aoTexture.colorSpace = THREE.NoColorSpace;
+  if (roughnessTexture) roughnessTexture.colorSpace = THREE.NoColorSpace;
+  if (metalnessTexture) metalnessTexture.colorSpace = THREE.NoColorSpace;
+
+  gltfLoader.load(
+    MESH_URL,
+    (gltf) => {
+      const obj = gltf.scene;
+      obj.traverse((child) => {
+        if (!child.isMesh) return;
+        child.castShadow = true;
+        child.receiveShadow = true;
+        // GLB carries explicit node names from glb_export.py, so ground vs
+        // buildings is identified directly rather than guessed from geometry.
+        if (child.name === "ground" || child.parent?.name === "ground") {
+          groundMesh = child;
+          child.material = new THREE.MeshStandardMaterial({
+            map: rgbTexture || null,
+            normalMap: normalTexture || null,
+            // Occlusion baked from the reconstructed heightfield (sky-view
+            // factor), so contact shadows correspond to real geometry.
+            aoMap: aoTexture || null,
+            aoMapIntensity: 1.0,
+            // Per-class roughness: water near-specular, vegetation fully
+            // diffuse. Without this every surface responds to light identically.
+            roughnessMap: roughnessTexture || null,
+            roughness: roughnessTexture ? 1.0 : 0.92,  // map modulates this value
+            // Water is given partial metalness so it reflects the environment
+            // like a water surface; every other class stays at 0 (dielectric).
+            metalnessMap: metalnessTexture || null,
+            metalness: metalnessTexture ? 1.0 : 0.0,   // map modulates this value
+            // Below 1.0 on purpose: the environment supplies shape and
+            // directional response, but at full strength it also supplies most
+            // of the colour, which washes the satellite texture out.
+            envMapIntensity: 0.62,
+            color: 0xdbe6f2,
+          });
+          // aoMap samples the second UV set by convention; this mesh has one
+          // UV set shared by every map, so point it at that.
+          if (aoTexture && child.geometry.attributes.uv &&
+              !child.geometry.attributes.uv1) {
+            child.geometry.setAttribute("uv1", child.geometry.attributes.uv);
+          }
+        } else {
+          // Buildings are extruded prisms with real vertical walls, so they
+          // need no texture at all -- and must not get the ground's planar
+          // one, which would stretch a few roof texels down every wall.
+          //
+          // Roofs and walls are given slightly different tones instead. That
+          // is what makes a block read as a solid volume rather than a flat
+          // silhouette: the eye separates the two surfaces by value, and the
+          // sun does the rest. Deliberately plain, matching a vector city
+          // model rather than pretending to facade detail the input does not
+          // contain.
+          if (child.name === "canopy") {
+            // Foliage: fully diffuse, no specular sheen -- leaves scatter.
+            child.material = new THREE.MeshStandardMaterial({
+              color: 0x4f7048, roughness: 1.0, metalness: 0.0,
+              envMapIntensity: 0.45, flatShading: true,
+            });
+          } else if (child.name === "vehicles") {
+            // Vehicles read as painted metal: smoother and more specular than
+            // masonry, which is what separates them from the tarmac they sit on.
+            child.material = new THREE.MeshStandardMaterial({
+              color: 0xa6b2c0, roughness: 0.32, metalness: 0.40,
+              envMapIntensity: 1.0,
+            });
+          } else if (child.name === "water") {
+            // Water: smooth and slightly metallic so it reflects the sky
+            // instead of just being a blue polygon.
+            child.material = new THREE.MeshStandardMaterial({
+              color: 0x2f5f86, roughness: 0.06, metalness: 0.62,
+              envMapIntensity: 1.6,
+            });
+            child.castShadow = false;
+          } else {
+            shadeBuildingPrisms(child);
+          }
+        }
+      });
+      scene.add(obj);
+
+      const box = new THREE.Box3().setFromObject(obj);
+      const center = box.getCenter(new THREE.Vector3());
+      const size = box.getSize(new THREE.Vector3());
+      const maxDim = Math.max(size.x, size.y, size.z);
+      controls.target.copy(center);
+      // Optional camera placement from the query string, so a particular view
+      // can be reproduced exactly instead of being found by dragging:
+      //   ?az=<deg around Y>&el=<deg above horizon>&dist=<multiple of scene size>
+      // A low elevation is what shows building height; the default overhead
+      // framing flattens exactly the relief this model exists to convey.
+      const q = new URLSearchParams(location.search);
+      const azDeg = parseFloat(q.get("az"));
+      const elDeg = parseFloat(q.get("el"));
+      const distMul = parseFloat(q.get("dist"));
+      if (Number.isFinite(azDeg) || Number.isFinite(elDeg) || Number.isFinite(distMul)) {
+        const az = THREE.MathUtils.degToRad(Number.isFinite(azDeg) ? azDeg : 45);
+        const el = THREE.MathUtils.degToRad(
+          THREE.MathUtils.clamp(Number.isFinite(elDeg) ? elDeg : 25, 1, 89));
+        const r = maxDim * (Number.isFinite(distMul) ? distMul : 1.0);
+        camera.position.set(
+          center.x + r * Math.cos(el) * Math.sin(az),
+          center.y + r * Math.sin(el),
+          center.z + r * Math.cos(el) * Math.cos(az));
+      } else {
+        camera.position.set(center.x, center.y + maxDim * 0.6, center.z + maxDim * 0.8);
+      }
+      camera.far = Math.max(maxDim * 10, 20000); // must stay beyond the Sky sphere (scale 15000) or it gets clipped
+      camera.updateProjectionMatrix();
+      controls.update();
+
+      scene.fog.near = maxDim * 0.35;
+      scene.fog.far = maxDim * 2.2;
+
+      // Shadow camera: centered on the mesh (not the world origin), frustum
+      // sized to the actual scene extent with margin, near/far spanning the
+      // light-to-ground distance -- see the sunLight declaration above for why.
+      const shadowHalfExtent = maxDim * 0.7;
+      sunLight.position.copy(center).addScaledVector(sunDir, maxDim * 2);
+      sunLight.target.position.copy(center);
+      sunLight.shadow.camera.left = -shadowHalfExtent;
+      sunLight.shadow.camera.right = shadowHalfExtent;
+      sunLight.shadow.camera.top = shadowHalfExtent;
+      sunLight.shadow.camera.bottom = -shadowHalfExtent;
+      sunLight.shadow.camera.near = maxDim * 0.5;
+      sunLight.shadow.camera.far = maxDim * 4;
+      sunLight.shadow.camera.updateProjectionMatrix();
+      sunLight.target.updateMatrixWorld();
+
+      // Provenance in the HUD, not just the numbers. A viewer looking at a
+      // 3D city has no way to tell a measured height from a plausible one, so
+      // the scene states which tier it is: heights calibrated against shadow
+      // geometry, or a relative field with no metric meaning.
+      const lines = [
+        `verts: ${countVerts(obj)}`,
+        `bbox: ${size.x.toFixed(0)} x ${size.y.toFixed(0)} x ${size.z.toFixed(0)} m`,
+      ];
+      if (SCENE_META) {
+        lines.push(
+          `tile ${SCENE_META.tile} - ${SCENE_META.view}`,
+          `${SCENE_META.off_nadir_deg}° off-nadir, ${SCENE_META.gsd_m} m/px`,
+          `sun ${SCENE_META.sun_elevation_deg}° el / ${SCENE_META.sun_azimuth_deg}° az`,
+          `heights: tier ${SCENE_META.tier}` +
+            (SCENE_META.shadow_samples ? ` (${SCENE_META.shadow_samples} shadows)` : ""),
+          `${SCENE_META.buildings_extruded} buildings extruded`);
+      }
+      document.getElementById("stats").textContent = lines.join("\n");
+
+      document.getElementById("loading").style.display = "none";
+      document.getElementById("ui").style.display = "block";
+    },
+    undefined,
+    (err) => {
+      document.getElementById("loading").textContent =
+        "Failed to load mesh at " + MESH_URL + " -- run mesh_generation.py first and update MESH_URL.";
+      console.error(err);
+    }
+  );
+});
+
+function countVerts(obj) {
+  let n = 0;
+  obj.traverse((c) => { if (c.isMesh) n += c.geometry.attributes.position.count; });
+  return n;
+}
+
+// --- RGB / Heatmap toggle ---
+document.getElementById("btn-rgb").addEventListener("click", () => setTextureMode("rgb"));
+document.getElementById("btn-heatmap").addEventListener("click", () => setTextureMode("heatmap"));
+
+function setTextureMode(mode) {
+  if (!groundMesh) return;
+  const tex = mode === "heatmap" ? heatmapTexture : rgbTexture;
+  if (!tex) return;
+  groundMesh.material.map = tex;
+  groundMesh.material.needsUpdate = true;
+  document.getElementById("btn-rgb").classList.toggle("active", mode === "rgb");
+  document.getElementById("btn-heatmap").classList.toggle("active", mode === "heatmap");
+}
+
+// --- Click-to-measure ---
+let measureActive = false;
+let measurePoints = [];
+const measureMarkers = [];
+const raycaster = new THREE.Raycaster();
+const pointer = new THREE.Vector2();
+
+document.getElementById("btn-measure").addEventListener("click", () => {
+  measureActive = !measureActive;
+  document.getElementById("btn-measure").classList.toggle("active", measureActive);
+  if (measureActive) {
+    clearMeasure();
+    document.getElementById("measure-panel").textContent = "Click two points on the terrain.";
+  }
+});
+
+document.getElementById("btn-reset").addEventListener("click", () => {
+  clearMeasure();
+  if (groundMesh) {
+    const box = new THREE.Box3().setFromObject(groundMesh);
+    const center = box.getCenter(new THREE.Vector3());
+    const size = box.getSize(new THREE.Vector3());
+    controls.target.copy(center);
+    camera.position.set(center.x, center.y + size.y + Math.max(size.x, size.z) * 0.6,
+                         center.z + Math.max(size.x, size.z) * 0.8);
+    controls.update();
+  }
+});
+
+function clearMeasure() {
+  measurePoints = [];
+  measureMarkers.forEach((m) => scene.remove(m));
+  measureMarkers.length = 0;
+}
+
+renderer.domElement.addEventListener("click", (event) => {
+  if (!measureActive || !groundMesh) return;
+  pointer.x = (event.clientX / window.innerWidth) * 2 - 1;
+  pointer.y = -(event.clientY / window.innerHeight) * 2 + 1;
+  raycaster.setFromCamera(pointer, camera);
+  const hits = raycaster.intersectObject(groundMesh, false);
+  if (hits.length === 0) return;
+
+  const p = hits[0].point.clone();
+  measurePoints.push(p);
+
+  const marker = new THREE.Mesh(
+    new THREE.SphereGeometry(Math.max(1, camera.position.distanceTo(p) * 0.004), 12, 12),
+    new THREE.MeshBasicMaterial({ color: 0xff3355 })
+  );
+  marker.position.copy(p);
+  scene.add(marker);
+  measureMarkers.push(marker);
+
+  if (measurePoints.length === 2) {
+    const [a, b] = measurePoints;
+    const horiz = Math.hypot(b.x - a.x, b.z - a.z);
+    const elevDiff = b.y - a.y;
+    const dist3d = a.distanceTo(b);
+    const slopeDeg = THREE.MathUtils.radToDeg(Math.atan2(Math.abs(elevDiff), Math.max(horiz, 1e-6)));
+
+    document.getElementById("measure-panel").textContent =
+      `Point A elevation: ${a.y.toFixed(1)} m\n` +
+      `Point B elevation: ${b.y.toFixed(1)} m\n` +
+      `Horizontal distance: ${horiz.toFixed(1)} m\n` +
+      `Elevation difference: ${elevDiff.toFixed(1)} m\n` +
+      `3D distance: ${dist3d.toFixed(1)} m\n` +
+      `Slope: ${slopeDeg.toFixed(1)} deg`;
+
+    measurePoints = [];
+  }
+});
+
+// --- Render loop ---
+function animate() {
+  controls.update();
+  if (postProcessing) { postProcessing.render(); } else { renderer.render(scene, camera); }
+}
+renderer.setAnimationLoop(animate); // WebGPURenderer's own loop driver, handles both backends correctly
+
+window.addEventListener("resize", () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+</script>
+</body>
+</html>
