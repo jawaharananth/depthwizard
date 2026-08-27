@@ -42,6 +42,9 @@
     <button id="btn-measure">Click-to-Measure</button>
     <button id="btn-reset">Reset View</button>
   </div>
+  <div class="row">
+    <button id="btn-dof">Tilt-Shift</button>
+  </div>
   <div id="measure-panel">Click two points on the terrain to measure.</div>
   <div id="stats"></div>
 </div>
@@ -134,22 +137,65 @@ controls.maxPolarAngle = Math.PI * 0.495; // don't let camera dip below ground p
 // but writing one untested risks the same silent-breakage problem this whole
 // renderer swap was trying to avoid. Simple, guaranteed-compatible gradient
 // instead of a broken or unverified shader.
-function makeSkyGradient() {
+function makeSkyGradient(sunDir) {
+  // 1024x512 equirectangular with a real sun disc, not a 2x256 vertical ramp.
+  //
+  // The old gradient had no directional content at all, so PMREM prefiltered it
+  // into a flat dome: every specular highlight in the scene was the same soft
+  // grey wash regardless of where the sun was. A sun disc plus its surrounding
+  // glow gives the environment an actual bright spot, which is what produces a
+  // readable highlight on water, glass and metal.
+  const W = 1024, H = 512;
   const c = document.createElement("canvas");
-  c.width = 2; c.height = 256;
+  c.width = W; c.height = H;
   const ctx = c.getContext("2d");
-  const grad = ctx.createLinearGradient(0, 0, 0, 256);
-  grad.addColorStop(0, "#3f6fa8");
-  grad.addColorStop(0.45, "#7fa9d4");
-  grad.addColorStop(0.78, "#c2d9ec");
-  grad.addColorStop(1, "#e6eef5");
+
+  // Vertical sky gradient: deep zenith -> pale horizon -> ground bounce.
+  const grad = ctx.createLinearGradient(0, 0, 0, H);
+  grad.addColorStop(0.00, "#2f5d94");
+  grad.addColorStop(0.30, "#5f8fc4");
+  grad.addColorStop(0.47, "#b9d2e8");
+  grad.addColorStop(0.50, "#dce7f0");   // horizon
+  // BELOW the horizon. This half is visible as backdrop whenever the camera
+  // looks down at the terrain, which is most of the time here -- painting it as
+  // dark warm "ground bounce" turned the whole sky grey-brown. It is now a pale
+  // atmospheric haze that the terrain edge fades into, while still sitting
+  // slightly darker and warmer than the sky so image-based lighting keeps a
+  // real up/down gradient.
+  grad.addColorStop(0.53, "#c6d2dd");
+  grad.addColorStop(0.70, "#aeb8c2");
+  grad.addColorStop(1.00, "#97a0aa");
   ctx.fillStyle = grad;
-  ctx.fillRect(0, 0, 2, 256);
+  ctx.fillRect(0, 0, W, H);
+
+  if (sunDir) {
+    // Place the disc by converting the sun vector to equirectangular UV.
+    const theta = Math.atan2(sunDir.z, sunDir.x);
+    const phi = Math.acos(THREE.MathUtils.clamp(sunDir.y, -1, 1));
+    const sx = ((theta / (Math.PI * 2)) + 0.5) * W;
+    const sy = (phi / Math.PI) * H;
+
+    const glow = ctx.createRadialGradient(sx, sy, 0, sx, sy, W * 0.16);
+    glow.addColorStop(0.00, "rgba(255,246,224,0.95)");
+    glow.addColorStop(0.10, "rgba(255,238,206,0.55)");
+    glow.addColorStop(0.35, "rgba(214,226,238,0.18)");
+    glow.addColorStop(1.00, "rgba(255,255,255,0)");
+    ctx.fillStyle = glow;
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.beginPath();
+    ctx.arc(sx, sy, W * 0.012, 0, Math.PI * 2);
+    ctx.fillStyle = "rgba(255,252,242,1)";
+    ctx.fill();
+  }
+
   const tex = new THREE.CanvasTexture(c);
+  tex.mapping = THREE.EquirectangularReflectionMapping;
   tex.colorSpace = THREE.SRGBColorSpace;
   return tex;
 }
-scene.background = makeSkyGradient();
+
+
 
 // --- Image-based lighting -------------------------------------------------
 // A directional light plus flat ambient makes every surface respond to light
@@ -161,49 +207,16 @@ scene.background = makeSkyGradient();
 //
 // The environment is generated procedurally from the same sky/sun parameters
 // used for the visible background, so lighting and backdrop stay consistent.
-function buildEnvironment(sunDirection) {
-  const size = 256;
-  const c = document.createElement("canvas");
-  c.width = size; c.height = size / 2;   // equirectangular: 2:1
-  const ctx = c.getContext("2d");
-
-  // Deliberately desaturated. A physically-blue sky dome is correct for a
-  // colour-rich scene, but satellite imagery here is near-greyscale, so the
-  // environment tint ends up being the *only* colour in the frame and the
-  // whole city reads as cold blue-grey. Keeping the dome close to neutral
-  // lets the imagery's own tone lead, with just enough hue separation between
-  // sky and ground bounce to give surfaces directional colour response.
-  const grad = ctx.createLinearGradient(0, 0, 0, c.height);
-  grad.addColorStop(0.00, "#8fa4bd");   // zenith: cool but muted
-  grad.addColorStop(0.45, "#c3cdd8");
-  grad.addColorStop(0.52, "#e8e6e2");   // horizon band, near-neutral
-  grad.addColorStop(0.60, "#b9a98f");   // ground bounce: warm, lifts shadow interiors
-  grad.addColorStop(1.00, "#8d8272");
-  ctx.fillStyle = grad;
-  ctx.fillRect(0, 0, c.width, c.height);
-
-  // Sun disc, placed from the real solar azimuth/elevation so the specular
-  // highlight agrees with the shadow direction.
-  const az = Math.atan2(sunDirection.x, sunDirection.z);
-  const el = Math.asin(THREE.MathUtils.clamp(sunDirection.y, -1, 1));
-  const u = ((az / (Math.PI * 2)) + 0.5) * c.width;
-  const v = (0.5 - el / Math.PI) * c.height;
-
-  const sun = ctx.createRadialGradient(u, v, 0, u, v, c.width * 0.06);
-  sun.addColorStop(0, "#fffdf5");
-  sun.addColorStop(0.3, "#ffeec2");
-  sun.addColorStop(1, "rgba(255,238,194,0)");
-  ctx.fillStyle = sun;
-  ctx.fillRect(0, 0, c.width, c.height);
-
-  const tex = new THREE.CanvasTexture(c);
-  tex.mapping = THREE.EquirectangularReflectionMapping;
-  tex.colorSpace = THREE.SRGBColorSpace;
-
+function buildEnvironment(skyTexture) {
+  // ONE sky texture drives both the visible backdrop and the image-based
+  // lighting. They used to be built separately -- a 2x256 vertical ramp for the
+  // background and a separate 256x128 dome for PMREM -- which meant the sky you
+  // saw and the sky lighting the geometry were different images, and could drift
+  // apart on any edit. Prefiltering the same texture makes them agree by
+  // construction.
   const pmrem = new THREE.PMREMGenerator(renderer);
   pmrem.compileEquirectangularShader();
-  const envRT = pmrem.fromEquirectangular(tex);
-  tex.dispose();
+  const envRT = pmrem.fromEquirectangular(skyTexture);
   pmrem.dispose();
   return envRT.texture;
 }
@@ -215,7 +228,9 @@ function sunDirectionFromAngles(elevationDeg, azimuthDeg) {
 }
 
 const sunDir = sunDirectionFromAngles(SUN_ELEVATION_DEG, SUN_AZIMUTH_DEG);
-scene.environment = buildEnvironment(sunDir);
+const skyTexture = makeSkyGradient(sunDir);
+scene.background = skyTexture;
+scene.environment = buildEnvironment(skyTexture);
 
 // --- Lighting: sun matches the Sky + feeds shadow map ---
 // Position/frustum are placeholders here (0,0,0-centered) -- the terrain mesh
@@ -289,62 +304,152 @@ scene.fog = new THREE.Fog(0xb9d2e8, 1, 4000);
 // screenshot. Degrading to "fewer effects" must never become "no viewer".
 let postProcessing = null;
 let postChain = [];
-try {
-  const tsl = await import("three/tsl");
-  const { ao: aoFn } = await import("three/addons/tsl/display/GTAONode.js");
-  if (!aoFn || !tsl.pass || !tsl.mrt || !THREE.PostProcessing) {
-    throw new Error("TSL post-processing nodes unavailable in this three build");
+let dofEnabled = false;      // toggled from the UI; see the DOF block below
+let rebuildPostChain = () => {};
+
+async function buildPostChain() {
+  // Chain: GTAO -> denoise -> SSR -> DOF -> bloom -> TRAA
+  //
+  // Each stage is resolved by DYNAMIC import inside try/catch and is
+  // individually optional. A static top-level TSL import cannot be guarded: if
+  // one symbol is missing the module never evaluates and the page renders
+  // nothing at all -- measured once as an 8KB blank screenshot. Degrading to
+  // "fewer effects" must never become "no viewer".
+  postChain = [];
+  try {
+    const tsl = await import("three/tsl");
+    const { ao: aoFn } = await import("three/addons/tsl/display/GTAONode.js");
+    if (!aoFn || !tsl.pass || !tsl.mrt || !THREE.PostProcessing) {
+      throw new Error("TSL post-processing nodes unavailable in this three build");
+    }
+
+    const scenePass = tsl.pass(scene, camera);
+    // MRT declares every buffer a later stage consumes. SSR needs metalness and
+    // roughness; requesting them here is what makes one render feed several
+    // effects instead of re-rendering the scene per effect.
+    const mrtSpec = { output: tsl.output, normal: (tsl.normalView || tsl.transformedNormalView) };
+    if (tsl.metalness) mrtSpec.metalness = tsl.metalness;
+    if (tsl.roughness) mrtSpec.roughness = tsl.roughness;
+    scenePass.setMRT(tsl.mrt(mrtSpec));
+    const colorNode = scenePass.getTextureNode("output");
+    const normalNode = scenePass.getTextureNode("normal");
+    const depthNode = scenePass.getTextureNode("depth");
+
+    // --- ambient occlusion -------------------------------------------------
+    // The largest single gain for near-untextured volumes: without contact
+    // shadows in the crease between a wall and the ground, blocks appear to
+    // hover rather than stand.
+    const aoNode = aoFn(depthNode, normalNode, camera);
+    if (aoNode.radius) aoNode.radius.value = 0.4;
+    if (aoNode.scale) aoNode.scale.value = 1.25;
+    if (aoNode.thickness) aoNode.thickness.value = 1.0;
+    postChain.push("gtao");
+
+    let aoTex = aoNode.getTextureNode();
+    try {
+      const { denoise } = await import("three/addons/tsl/display/DenoiseNode.js");
+      if (denoise) { aoTex = denoise(aoTex, depthNode, normalNode, camera); postChain.push("denoise"); }
+    } catch (e) { /* grain is acceptable; a broken chain is not */ }
+
+    let outNode = aoTex.mul(colorNode);
+
+    // --- screen-space reflections -----------------------------------------
+    // Water is the one surface in these scenes with a genuinely low roughness,
+    // and an environment map alone only ever gives it the sky. SSR lets the
+    // river actually reflect the buildings standing beside it, which is the
+    // difference between a blue polygon and water.
+    try {
+      const { ssr } = await import("three/addons/tsl/display/SSRNode.js");
+      const metalNode = tsl.metalness ? scenePass.getTextureNode("metalness") : null;
+      const roughNode = tsl.roughness ? scenePass.getTextureNode("roughness") : null;
+      // metalnessNode is REQUIRED by SSRNode -- passing null threw and the whole
+      // stage was silently skipped, which is why the chain came back as
+      // "gtao -> denoise -> bloom" with no reflections at all.
+      if (ssr && metalNode) {
+        // SSR must be fed the raw PASS TEXTURE, not a computed node: it calls
+        // .sample() internally, so handing it `ao.mul(color)` fails with
+        // "this.colorNode.sample is not a function" and kills the render.
+        // Reflections are traced against the unshaded colour buffer and then
+        // added on top of the occluded image.
+        const r = ssr(colorNode, depthNode, normalNode, metalNode, roughNode, camera);
+        if (r.maxDistance) r.maxDistance.value = 260;
+        if (r.opacity) r.opacity.value = 0.45;
+        if (r.thickness) r.thickness.value = 0.15;
+        outNode = outNode.add(r.mul(0.55));
+        postChain.push("ssr");
+      }
+    } catch (e) { /* optional */ }
+
+    // --- tilt-shift depth of field ----------------------------------------
+    // Off by default and user-toggled. A shallow focal plane over a city model
+    // is the classic architectural-maquette look and is genuinely striking, but
+    // it also blurs geometry the viewer may be trying to READ. That is a
+    // presentation choice, so it belongs to the user rather than being imposed.
+    if (dofEnabled) {
+      try {
+        const { dof } = await import("three/addons/tsl/display/DepthOfFieldNode.js");
+        // dof() wants a VIEW-Z node, not the depth texture: the signature is
+        // (node, viewZNode, focusDistance, focalLength, bokehScale). Handing it
+        // the depth texture focuses on nothing.
+        if (dof && scenePass.getViewZNode) {
+          const focus = camera.position.distanceTo(controls.target);
+          outNode = dof(outNode, scenePass.getViewZNode(), focus, 0.12, 3.2);
+          postChain.push("dof");
+        }
+      } catch (e) { /* optional */ }
+    }
+
+    // --- bloom -------------------------------------------------------------
+    // Threshold high, strength low: daylight city, not neon. Only specular hits
+    // on water and the brightest sunlit roofs should register.
+    try {
+      const { bloom } = await import("three/addons/tsl/display/BloomNode.js");
+      if (bloom) { outNode = outNode.add(bloom(outNode, 0.20, 0.7, 0.94)); postChain.push("bloom"); }
+    } catch (e) { /* optional */ }
+
+    // --- antialiasing ------------------------------------------------------
+    // TRAA in preference to FXAA. This scene is almost entirely long straight
+    // roof edges at shallow angles, which is the worst case for a purely
+    // spatial filter -- FXAA softens them but still crawls under camera motion.
+    // Temporal accumulation resolves them properly. FXAA remains the fallback.
+    // SMAA, not TRAA. TRAA needs a per-pixel VELOCITY buffer; handing it null
+    // throws "Invalid value used as weak map key" from inside three and takes
+    // the whole render down -- measured as a 22KB blank page. SMAA is purely
+    // spatial, needs no motion vectors, and resolves long straight roof edges
+    // far better than FXAA, which is the only edge this scene really has.
+    try {
+      const { smaa } = await import("three/addons/tsl/display/SMAANode.js");
+      if (smaa) { outNode = smaa(outNode); postChain.push("smaa"); }
+      else throw new Error("no smaa");
+    } catch (e) {
+      try {
+        const { fxaa } = await import("three/addons/tsl/display/FXAANode.js");
+        if (fxaa) { outNode = fxaa(outNode); postChain.push("fxaa"); }
+      } catch (e2) { /* optional */ }
+    }
+
+    const pp = new THREE.PostProcessing(renderer);
+    pp.outputNode = outNode;
+    postProcessing = pp;
+    console.log("post-processing:", postChain.join(" -> "));
+  } catch (err) {
+    console.warn("post-processing unavailable, rendering directly:", err);
+    postProcessing = null;
   }
+}
 
-  const scenePass = tsl.pass(scene, camera);
-  scenePass.setMRT(tsl.mrt({
-    output: tsl.output,
-    normal: (tsl.normalView || tsl.transformedNormalView),
-  }));
-  const colorNode = scenePass.getTextureNode("output");
-  const normalNode = scenePass.getTextureNode("normal");
-  const depthNode = scenePass.getTextureNode("depth");
+rebuildPostChain = buildPostChain;
+await buildPostChain();
 
-  let aoNode = aoFn(depthNode, normalNode, camera);
-  if (aoNode.radius) aoNode.radius.value = 0.4;
-  if (aoNode.scale) aoNode.scale.value = 1.25;
-  if (aoNode.thickness) aoNode.thickness.value = 1.0;
-  postChain.push("gtao");
-
-  let aoTex = aoNode.getTextureNode();
-  try {
-    const { denoise } = await import("three/addons/tsl/display/DenoiseNode.js");
-    if (denoise) {
-      aoTex = denoise(aoTex, depthNode, normalNode, camera);
-      postChain.push("denoise");
-    }
-  } catch (e) { /* grain is acceptable; a broken chain is not */ }
-
-  let outNode = aoTex.mul(colorNode);
-
-  try {
-    const { bloom } = await import("three/addons/tsl/display/BloomNode.js");
-    if (bloom) {
-      // Threshold high and strength low: this is a daylight city, not a neon
-      // scene. Bloom should touch only specular hits on water and the brightest
-      // sunlit roofs. An earlier UnrealBloomPass attempt on the old renderer
-      // blacked out half the viewport, hence the deliberately conservative hand.
-      outNode = outNode.add(bloom(outNode, 0.22, 0.7, 0.92));
-      postChain.push("bloom");
-    }
-  } catch (e) { /* optional */ }
-
-  try {
-    const { fxaa } = await import("three/addons/tsl/display/FXAANode.js");
-    if (fxaa) { outNode = fxaa(outNode); postChain.push("fxaa"); }
-  } catch (e) { /* optional */ }
-
-  postProcessing = new THREE.PostProcessing(renderer);
-  postProcessing.outputNode = outNode;
-  console.log("post-processing:", postChain.join(" -> "));
-} catch (err) {
-  console.warn("post-processing unavailable, rendering directly:", err);
-  postProcessing = null;
+// Tilt-shift is a presentation choice, not a correctness one: it blurs geometry
+// the viewer may be trying to read, so it is opt-in rather than imposed.
+const btnDof = document.getElementById("btn-dof");
+if (btnDof) {
+  btnDof.addEventListener("click", async () => {
+    dofEnabled = !dofEnabled;
+    btnDof.classList.toggle("active", dofEnabled);
+    await rebuildPostChain();
+  });
 }
 
 
