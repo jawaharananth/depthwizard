@@ -39,13 +39,13 @@
     <button id="btn-heatmap">HEATMAP</button>
   </div>
   <div class="row">
-    <button id="btn-measure">Click-to-Measure</button>
+    <button id="btn-measure">Measure Height</button>
     <button id="btn-reset">Reset View</button>
   </div>
   <div class="row">
     <button id="btn-dof">Tilt-Shift</button>
   </div>
-  <div id="measure-panel">Click two points on the terrain to measure.</div>
+  <div id="measure-panel">Click a building to read its height.</div>
   <div id="stats"></div>
 </div>
 
@@ -770,7 +770,7 @@ document.getElementById("btn-measure").addEventListener("click", () => {
   document.getElementById("btn-measure").classList.toggle("active", measureActive);
   if (measureActive) {
     clearMeasure();
-    document.getElementById("measure-panel").textContent = "Click two points on the terrain.";
+    document.getElementById("measure-panel").textContent = "Click a building to read its height.";
   }
 });
 
@@ -794,40 +794,60 @@ function clearMeasure() {
 }
 
 renderer.domElement.addEventListener("click", (event) => {
-  if (!measureActive || !groundMesh) return;
+  if (!measureActive) return;
   pointer.x = (event.clientX / window.innerWidth) * 2 - 1;
   pointer.y = -(event.clientY / window.innerHeight) * 2 + 1;
   raycaster.setFromCamera(pointer, camera);
-  const hits = raycaster.intersectObject(groundMesh, false);
+
+  // Pick against EVERYTHING, not just the ground. The previous version
+  // intersected groundMesh alone, so clicking a building never registered a hit
+  // on the building at all -- it silently fell through to the terrain behind or
+  // beneath it, and then asked for a second click.
+  const hits = raycaster.intersectObjects(scene.children, true)
+    .filter((h) => h.object.isMesh && h.object.visible);
   if (hits.length === 0) return;
 
-  const p = hits[0].point.clone();
-  measurePoints.push(p);
+  const hit = hits[0];
+  const p = hit.point.clone();
 
+  // Height is measured from the terrain DIRECTLY BENEATH the clicked point, not
+  // from the scene minimum: on sloping ground a single datum would report a
+  // building on a rise as taller than one of identical size on a hollow. A ray
+  // dropped from above the hit finds the local ground.
+  let groundY = null;
+  if (groundMesh) {
+    const down = new THREE.Raycaster(
+      new THREE.Vector3(p.x, p.y + 500, p.z), new THREE.Vector3(0, -1, 0));
+    const g = down.intersectObject(groundMesh, false);
+    if (g.length) groundY = g[g.length - 1].point.y;   // lowest = terrain, not a roof
+  }
+
+  clearMeasure();
   const marker = new THREE.Mesh(
-    new THREE.SphereGeometry(Math.max(1, camera.position.distanceTo(p) * 0.004), 12, 12),
+    new THREE.SphereGeometry(Math.max(0.8, camera.position.distanceTo(p) * 0.003), 12, 12),
     new THREE.MeshBasicMaterial({ color: 0xff3355 })
   );
   marker.position.copy(p);
   scene.add(marker);
   measureMarkers.push(marker);
 
-  if (measurePoints.length === 2) {
-    const [a, b] = measurePoints;
-    const horiz = Math.hypot(b.x - a.x, b.z - a.z);
-    const elevDiff = b.y - a.y;
-    const dist3d = a.distanceTo(b);
-    const slopeDeg = THREE.MathUtils.radToDeg(Math.atan2(Math.abs(elevDiff), Math.max(horiz, 1e-6)));
+  const metric = SCENE_META && SCENE_META.height_is_metric;
+  const unit = metric ? "m" : "units (relative)";
+  const panel = document.getElementById("measure-panel");
+  const onBuilding = hit.object.userData && hit.object.userData.isBuilding;
 
-    document.getElementById("measure-panel").textContent =
-      `Point A elevation: ${a.y.toFixed(1)} m\n` +
-      `Point B elevation: ${b.y.toFixed(1)} m\n` +
-      `Horizontal distance: ${horiz.toFixed(1)} m\n` +
-      `Elevation difference: ${elevDiff.toFixed(1)} m\n` +
-      `3D distance: ${dist3d.toFixed(1)} m\n` +
-      `Slope: ${slopeDeg.toFixed(1)} deg`;
-
-    measurePoints = [];
+  if (onBuilding && groundY !== null) {
+    const h = p.y - groundY;
+    // One number, which is what the question "how tall is that?" actually asks.
+    panel.textContent =
+      "Height: " + h.toFixed(1) + " " + unit +
+      (metric ? " (about " + Math.max(1, Math.round(h / 3.2)) + " storeys)" : "") +
+      (metric ? "" : " -- Tier C: vertical scale assumed, not measured");
+  } else if (groundY !== null) {
+    panel.textContent = "Ground elevation: " + p.y.toFixed(1) + " " + unit +
+                        "  |  click a building to read its height";
+  } else {
+    panel.textContent = `Elevation: ${p.y.toFixed(1)} ${unit}`;
   }
 });
 

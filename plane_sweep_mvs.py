@@ -59,7 +59,18 @@ def _windowed_ncc(a: np.ndarray, b: np.ndarray, ksize: int = 5) -> np.ndarray:
     cov = cv2.boxFilter(a * b, -1, (ksize, ksize)) - mean_a * mean_b
     var_a = cv2.boxFilter(a * a, -1, (ksize, ksize)) - mean_a ** 2
     var_b = cv2.boxFilter(b * b, -1, (ksize, ksize)) - mean_b ** 2
-    return cov / np.sqrt(np.clip(var_a, 1e-6, None) * np.clip(var_b, 1e-6, None))
+    ncc = cov / np.sqrt(np.clip(var_a, 1e-6, None) * np.clip(var_b, 1e-6, None))
+    # NCC is bounded to [-1, 1] by definition. Without this clip a textureless
+    # patch -- flat roof, calm water, deep shadow -- has near-zero variance in
+    # both windows, the ratio explodes, and a meaningless correlation of tens or
+    # hundreds outscores every genuine match. Measured before the clip: a mean
+    # "NCC" of 6.374, which is not a correlation at all, and heights that
+    # saturated at both ends of the search range.
+    #
+    # A low-variance window carries no evidence either way, so it is scored 0
+    # (neutral) rather than being allowed to win or veto a height.
+    flat = (var_a < 1e-4) | (var_b < 1e-4)
+    return np.where(flat, 0.0, np.clip(ncc, -1.0, 1.0))
 
 
 def plane_sweep_dsm(ref_image_path: str, other_image_paths: list,
@@ -110,7 +121,19 @@ def plane_sweep_dsm(ref_image_path: str, other_image_paths: list,
     # pixels are unreliable (occlusion, textureless surfaces, building-edge
     # mismatches) and get filled from their confident neighbors via median
     # filtering, rather than kept as wild individual outliers.
-    low_confidence = best_score < confidence_threshold
+    # Replace NaN BEFORE any median filtering. cv2.medianBlur propagates NaN
+    # through its whole kernel, so a handful of never-matched pixels -- which is
+    # normal wherever the sweep extends past a view's coverage -- turns the
+    # entire surface into NaN. Measured: a 640 m extent came back completely
+    # NaN while the 256 m one was fine, purely because the larger grid reached
+    # outside the imagery.
+    unmatched = ~np.isfinite(best_height)
+    if unmatched.all():
+        raise RuntimeError("plane sweep matched no pixels at any height")
+    fill = float(np.nanmedian(best_height))
+    best_height = np.where(unmatched, fill, best_height).astype(np.float32)
+
+    low_confidence = (best_score < confidence_threshold) | unmatched
     median_height = cv2.medianBlur(best_height.astype(np.float32), median_ksize)
     filled_height = np.where(low_confidence, median_height, best_height)
     # then one light median pass over the whole result to suppress remaining

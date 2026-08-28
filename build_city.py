@@ -26,6 +26,7 @@ import dtm as dtm_mod
 import city_model
 import building_discovery as bd
 import region_footprints as rf
+import mvs_height
 import shadow_correction
 from depth_model import DepthBackbone, orientation_check
 from glb_export import export_glb
@@ -42,7 +43,7 @@ GROUND_GRID = 700         # ground is smooth bare earth, so it needs few vertice
 
 
 def build(tile: str, out_px: int = 2048, stage: bool = True,
-          extent_m: float = None) -> dict:
+          extent_m: float = None, no_mvs: bool = False, n_views: int = 6) -> dict:
     os.makedirs(OUT_DIR, exist_ok=True)
     stem = os.path.join(OUT_DIR, f"city_{tile.lower()}")
     t_start = time.time()
@@ -56,38 +57,90 @@ def build(tile: str, out_px: int = 2048, stage: bool = True,
     print(f"      view {os.path.basename(o['rgb_path'])} ({o['off_nadir_deg']} deg off-nadir); "
           f"LiDAR truth covers only the central {o['truth_extent_m']:.0f} m")
 
-    cache_key = f"tiled_e{int(o['extent_m'])}"
-    height = height_cache.load(tile, cache_key, out_px)
-    if height is None:
-        t0 = time.time()
-        height = DepthBackbone().predict_tiled(Image.fromarray(image_np))
-        height_cache.save(tile, cache_key, out_px, height)
-        print(f"[2/5] height field in {time.time()-t0:.0f}s")
+    # HEIGHT SOURCE: RPC multi-view stereo, with monocular depth as fallback.
+    #
+    # Measured on JAX_165 against LiDAR, per building on ground-truth footprints:
+    #   monocular + shadow scale   MAE 13.75 m   corr 0.24
+    #   MVS, 6 near-nadir views    MAE  7.24 m   corr 0.532
+    # MVS triangulates through the RPC cameras, so heights are MEASURED in
+    # absolute WGS84 metres and need no scale calibration at all.
+    use_mvs = not no_mvs
+    mvs = None
+    if use_mvs:
+        try:
+            t_m = time.time()
+            mvs = mvs_height.compute(tile, TRUTH_DIR, RGB_DIR, METADATA_DIR,
+                                     extent_m=o["extent_m"], n_views=n_views)
+            print(f"[2/5] MVS height from {mvs['views']} views "
+                  f"({'cached' if mvs['cached'] else f'{time.time()-t_m:.0f}s'}), "
+                  f"{mvs['gsd_m']:.2f} m grid")
+        except Exception as exc:
+            print(f"[2/5] MVS unavailable ({exc}); falling back to monocular depth")
+            mvs = None
+
+    if mvs is not None:
+        # Absolute metres already. Terrain and building heights both come from
+        # the same measured surface, so there is no relative-to-metric step.
+        dsm = mvs_height.to_image_grid(mvs["dsm"], image_np)
+        tier = "A (MVS-triangulated, absolute metres)"
+        scale = 1.0
+        cal = {"n": mvs["views"], "method": "rpc_plane_sweep"}
+        height = None
     else:
-        print("[2/5] height field reused from cache")
+        cache_key = f"tiled_e{int(o['extent_m'])}"
+        height = height_cache.load(tile, cache_key, out_px)
+        if height is None:
+            backbone = DepthBackbone()
+            t0 = time.time()
+            height = backbone.predict_tiled(pil, verbose=False)
+            height_cache.save(tile, cache_key, out_px, height)
+            print(f"[2/5] height field in {time.time()-t0:.0f}s")
+        else:
+            print("[2/5] height field reused from cache")
+
+    # Segmentation needs a normalised height field. On the MVS path there is no
+    # "height" array -- the surface is already absolute metres -- so one is
+    # derived from it purely as a cue for segmentation.
+    if height is None:
+        rng = float(np.nanmax(dsm) - np.nanmin(dsm))
+        height = np.nan_to_num((dsm - np.nanmin(dsm)) / (rng + 1e-8))
 
     seg_labels, _ = seg.segment(image_np, height=height)
     oc = orientation_check(height, seg_labels)
     if oc.get("checked") and not oc["correct_orientation"]:
-        raise SystemExit("height field inverted -- refusing to build")
-    refined = dsm_refine.refine_dsm(height, image_np)
+        raise SystemExit(
+            f"height field is inverted: buildings {oc['building_mean']:.4f} below "
+            f"ground {oc['ground_mean']:.4f} -- refusing to build a scene with "
+            "every structure in a pit")
+    print(f"[3/5] segmentation  building "
+          f"{(seg_labels == seg.CLASS_IDX['building']).mean()*100:.1f}% of frame")
 
-    cal = shadow_correction.calibrate_scale(
-        image_np, seg_labels, refined, o["sun_elev_deg"], o["sun_azimuth_deg"], gsd, gsd)
-    scale = cal["scale_m_per_unit"]
-    if scale is None or cal["n"] < 10:
-        rel = np.maximum(refined - dtm_mod.estimate_dtm(refined, seg_labels), 0.0)
-        b = seg_labels == seg.CLASS_IDX["building"]
-        p99 = float(np.percentile(rel[b], 99)) if b.sum() > 1000 else float(np.percentile(rel, 99))
-        scale = ASSUMED_TALL_M / max(p99, 1e-6)
-        tier = "C (relative, assumed vertical scale)"
-        print(f"[3/5] scale NOT measured ({cal.get('reason', 'unstable')}); "
-              f"{scale:.0f} m/unit assuming tallest ~{ASSUMED_TALL_M:.0f} m -- RELATIVE")
+    if mvs is None:
+        refined = dsm_refine.refine_dsm(height, image_np)
+
+    if mvs is None:
+        # Monocular path only: a relative field needs a metres-per-unit scale.
+        # The MVS path already produced absolute metres and must not be rescaled.
+        cal = shadow_correction.calibrate_scale(
+            image_np, seg_labels, refined, o["sun_elev_deg"], o["sun_azimuth_deg"],
+            gsd, gsd)
+        scale = cal["scale_m_per_unit"]
+        if scale is None or cal["n"] < 10:
+            rel = np.maximum(refined - dtm_mod.estimate_dtm(refined, seg_labels), 0.0)
+            b = seg_labels == seg.CLASS_IDX["building"]
+            p99 = float(np.percentile(rel[b], 99)) if b.sum() > 1000 else float(np.percentile(rel, 99))
+            scale = ASSUMED_TALL_M / max(p99, 1e-6)
+            tier = "C (relative, assumed vertical scale)"
+            print(f"[3/5] scale NOT measured ({cal.get('reason', 'unstable')}); "
+                  f"{scale:.0f} m/unit assuming tallest ~{ASSUMED_TALL_M:.0f} m -- RELATIVE")
+        else:
+            tier = "B (shadow-calibrated)"
+            print(f"[3/5] scale {scale:.1f} m/unit from {cal['n']} shadow measurements")
+        dsm = refined * scale
     else:
-        tier = "B (shadow-calibrated)"
-        print(f"[3/5] scale {scale:.1f} m/unit from {cal['n']} shadow measurements")
+        print(f"[3/5] no scale calibration needed -- MVS heights are already "
+              f"absolute metres ({np.nanmin(dsm):.1f} to {np.nanmax(dsm):.1f} m)")
 
-    dsm = refined * scale
     terrain = dtm_mod.estimate_dtm(dsm, seg_labels)
     ground = city_model.flatten_ground(terrain, seg_labels, smooth_m=35.0, gsd_m=gsd)
 
@@ -107,7 +160,7 @@ def build(tile: str, out_px: int = 2048, stage: bool = True,
     # the wrong PLACES, and an exhaustive +-10 m shift search proved it was not
     # a registration error. Depth is too smooth to carry a roof outline; the
     # outline is in the image.
-    min_h = 2.0 if tier.startswith("B") else 0.02 * float(np.percentile(ndsm, 99))
+    min_h = 2.0 if tier[0] in ("A", "B") else 0.02 * float(np.percentile(ndsm, 99))
     rres = rf.extract(image_np, ndsm, gsd, seg_labels=seg_labels, min_area_m2=8.0,
                       min_height_m=min_h)
     footprints = rres["polygons"]
@@ -123,7 +176,7 @@ def build(tile: str, out_px: int = 2048, stage: bool = True,
                        sun_azimuth_deg=o["sun_azimuth_deg"],
                        shadow_mask=shadow_mask, min_area_m2=6.0)
     print(bd.format_report(disc["report"]))
-    prov = bd.MEASURED if tier.startswith("B") else bd.INFERRED
+    prov = bd.MEASURED if tier[0] in ("A", "B") else bd.INFERRED
     for rec in disc["instances"]:
         rec["provenance"] = prov
 
@@ -132,7 +185,7 @@ def build(tile: str, out_px: int = 2048, stage: bool = True,
 
     # Provenance (section 24): a height is only MEASURED when the scene carried a
     # metric scale. On a Tier C scene it remains INFERRED, whatever it looks like.
-    prov = bd.MEASURED if tier.startswith("B") else bd.INFERRED
+    prov = bd.MEASURED if tier[0] in ("A", "B") else bd.INFERRED
     for rec in disc["instances"]:
         rec["provenance"] = prov
 
@@ -217,7 +270,7 @@ def build(tile: str, out_px: int = 2048, stage: bool = True,
                 "confidence": rec["confidence"],
                 "provenance": rec["provenance"],
                 "evidence": rec["evidence"],
-                "height_is_metric": tier.startswith("B"),
+                "height_is_metric": tier[0] in ("A", "B"),
             },
         })
     with open(stem + "_buildings.geojson", "w") as f:
@@ -256,7 +309,7 @@ def build(tile: str, out_px: int = 2048, stage: bool = True,
         "build_seconds": round(time.time() - t_start, 1),
         "discovery": disc["report"],
         "provenance": prov,
-        "height_is_metric": tier.startswith("B"),
+        "height_is_metric": tier[0] in ("A", "B"),
         "confidence_median": round(float(np.median(
             [r["confidence"] for r in disc["instances"]])), 3) if disc["instances"] else None,
     }
@@ -289,5 +342,10 @@ if __name__ == "__main__":
     ap.add_argument("--extent", type=float, default=None,
                     help="ground extent in metres (default: the 256 m truth tile)")
     ap.add_argument("--no-stage", action="store_true")
+    ap.add_argument("--no-mvs", action="store_true",
+                    help="use monocular depth instead of multi-view stereo")
+    ap.add_argument("--views", type=int, default=6,
+                    help="how many near-nadir views to triangulate from")
     a = ap.parse_args()
-    build(a.tile, out_px=a.px, stage=not a.no_stage, extent_m=a.extent)
+    build(a.tile, out_px=a.px, stage=not a.no_stage, extent_m=a.extent,
+          no_mvs=a.no_mvs, n_views=a.views)
