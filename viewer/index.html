@@ -833,22 +833,39 @@ renderer.domElement.addEventListener("click", (event) => {
 
   const metric = SCENE_META && SCENE_META.height_is_metric;
   const unit = metric ? "m" : "units (relative)";
-  const panel = document.getElementById("measure-panel");
   const onBuilding = hit.object.userData && hit.object.userData.isBuilding;
 
-  if (onBuilding && groundY !== null) {
-    const h = p.y - groundY;
-    // One number, which is what the question "how tall is that?" actually asks.
-    panel.textContent =
-      "Height: " + h.toFixed(1) + " " + unit +
-      (metric ? " (about " + Math.max(1, Math.round(h / 3.2)) + " storeys)" : "") +
-      (metric ? "" : " -- Tier C: vertical scale assumed, not measured");
-  } else if (groundY !== null) {
-    panel.textContent = "Ground elevation: " + p.y.toFixed(1) + " " + unit +
-                        "  |  click a building to read its height";
-  } else {
-    panel.textContent = `Elevation: ${p.y.toFixed(1)} ${unit}`;
+  // ALWAYS report height above the terrain beneath the click, so the answer to
+  // "how tall is that?" is the same quantity wherever you click. Ground and
+  // roads are at the terrain, so they read 0.0 by construction.
+  //
+  // This branch used to print p.y for a ground hit, which is ABSOLUTE terrain
+  // elevation in scene coordinates -- 0 to 90 m across this tile. Clicking a
+  // road therefore reported "8.5 m", which looks exactly like a building
+  // height and is not one.
+  const panel = document.getElementById("measure-panel");
+  if (groundY === null) {
+    panel.textContent = "No terrain beneath that point.";
+    return;
   }
+
+  const h = Math.max(0, p.y - groundY);
+  const isFlat = h < 0.5;   // at terrain level: ground, road, plaza, water
+  let label;
+  if (isFlat) {
+    label = "Height: 0.0 " + unit + "  (ground level)";
+  } else {
+    label = "Height: " + h.toFixed(1) + " " + unit;
+    if (metric && onBuilding) {
+      label += "  (about " + Math.max(1, Math.round(h / 3.2)) + " storeys)";
+    }
+    if (!metric) {
+      label += "  -- Tier C: vertical scale assumed, not measured";
+    }
+  }
+  // Terrain elevation is still useful, but as a clearly separate figure.
+  label += "   |   terrain elevation " + groundY.toFixed(1) + " " + unit;
+  panel.textContent = label;
 });
 
 // --- Render loop ---
