@@ -191,11 +191,57 @@ def build_prisms(footprints: list, dsm: np.ndarray, dtm: np.ndarray,
             skipped += 1
             continue
 
-        roof_h = float(np.percentile(dsm[y0:y1, x0:x1][inside], roof_percentile))
+        roof_vals = dsm[y0:y1, x0:x1][inside]
+        roof_h = float(np.percentile(roof_vals, roof_percentile))
+
+        # Base on the LOW end of the terrain under the footprint: a building
+        # based at average terrain leaves a visible gap on the downhill side,
+        # whereas sinking it means the wall continues below ground where
+        # nothing can see it.
         base_h = float(np.percentile(dtm[y0:y1, x0:x1][inside], 5))
         if roof_h - base_h < min_height_m:
             skipped += 1
             continue
+
+        # ROOF PLANE, fitted to the measured surface.
+        #
+        # Every roof used to be one flat value -- the 80th percentile of the DSM
+        # inside the footprint -- so a pitched, shed or stepped roof came out as
+        # a flat lid at an arbitrary height, and a whole town of them reads as
+        # packing crates. The DSM does carry the roof's slope; it was simply
+        # being collapsed to a scalar before anything could use it.
+        #
+        # A least-squares plane z = ax + by + c over the footprint's own pixels
+        # recovers that slope. It is a measurement, not a style: a flat roof
+        # fits a plane with a ~ b ~ 0 and is unchanged, while a shed or a tilted
+        # roof gets its real pitch. It also needs no extra topology -- each roof
+        # vertex simply moves to its own height -- so it costs one small solve
+        # per building and nothing downstream changes.
+        #
+        # Fitted on the middle of the height distribution so a rooftop plant
+        # room, an aerial or a parapet does not tilt the whole roof.
+        ys_i, xs_i = np.nonzero(inside)
+        plane = None
+        if ys_i.size >= 12:
+            lo, hi = np.percentile(roof_vals, [15, 90])
+            keep = (roof_vals >= lo) & (roof_vals <= hi)
+            if keep.sum() >= 8:
+                A = np.column_stack([
+                    (xs_i[keep] + x0).astype(np.float32),
+                    (ys_i[keep] + y0).astype(np.float32),
+                    np.ones(int(keep.sum()), np.float32)])
+                try:
+                    coef, *_ = np.linalg.lstsq(A, roof_vals[keep].astype(np.float32),
+                                               rcond=None)
+                    fitted = A @ coef
+                    resid = float(np.std(roof_vals[keep] - fitted))
+                    # Reject a fit that explains less than the flat value does --
+                    # a noisy or occluded roof should stay flat rather than be
+                    # given a slope the data does not support.
+                    if resid < float(np.std(roof_vals[keep])) * 0.98:
+                        plane = coef
+                except np.linalg.LinAlgError:
+                    plane = None
 
         # Roof colour, measured from the image inside this footprint.
         #
@@ -247,7 +293,15 @@ def build_prisms(footprints: list, dsm: np.ndarray, dtm: np.ndarray,
         for px, py in poly:
             verts.append((px * gsd_x_m, base_h, -py * gsd_y_m))
         for px, py in poly:
-            verts.append((px * gsd_x_m, roof_h, -py * gsd_y_m))
+            if plane is not None:
+                zh = float(plane[0] * px + plane[1] * py + plane[2])
+                # Keep the fitted roof inside the range the footprint actually
+                # spans, so an extrapolated corner cannot spike above anything
+                # measured, and never let it fall below a visible height.
+                zh = min(max(zh, base_h + min_height_m), float(roof_vals.max()))
+            else:
+                zh = roof_h
+            verts.append((px * gsd_x_m, zh, -py * gsd_y_m))
         for _ in range(2 * n):
             colors.append(rgb)
 
