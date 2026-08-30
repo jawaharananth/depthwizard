@@ -27,6 +27,8 @@ import city_model
 import building_discovery as bd
 import region_footprints as rf
 import mvs_height
+import dem_source
+import dfc2019_loader as L
 import shadow_correction
 from depth_model import DepthBackbone, orientation_check
 from glb_export import export_glb
@@ -43,7 +45,8 @@ GROUND_GRID = 700         # ground is smooth bare earth, so it needs few vertice
 
 
 def build(tile: str, out_px: int = 2048, stage: bool = True,
-          extent_m: float = None, no_mvs: bool = False, n_views: int = 6) -> dict:
+          extent_m: float = None, no_mvs: bool = False, n_views: int = 6,
+          use_dem: bool = False, dem_path: str = None) -> dict:
     os.makedirs(OUT_DIR, exist_ok=True)
     stem = os.path.join(OUT_DIR, f"city_{tile.lower()}")
     t_start = time.time()
@@ -87,6 +90,7 @@ def build(tile: str, out_px: int = 2048, stage: bool = True,
         tier = "A (MVS-triangulated heights, absolute metres)"
         cal = {"n": mvs["views"], "method": "rpc_plane_sweep"}
         height = None
+        scale = 1.0      # MVS is already metric; nothing is rescaled
 
     # FUSION: monocular for SHAPE, MVS for MAGNITUDE.
     #
@@ -175,11 +179,63 @@ def build(tile: str, out_px: int = 2048, stage: bool = True,
             print(f"[3/5] scale {scale:.1f} m/unit from {cal['n']} shadow measurements")
         dsm = refined * scale
     else:
-        print(f"[3/5] no scale calibration needed -- MVS heights are already "
-              f"absolute metres ({np.nanmin(dsm):.1f} to {np.nanmax(dsm):.1f} m)")
+        print(f"[3/5] heights from MVS, already absolute: "
+              f"{np.nanmin(mvs_dsm):.1f} to {np.nanmax(mvs_dsm):.1f} m "
+              f"(monocular shape cue carries an arbitrary scale and is not used "
+              f"for height)")
 
     terrain = dtm_mod.estimate_dtm(dsm, seg_labels)
     ground = city_model.flatten_ground(terrain, seg_labels, smooth_m=35.0, gsd_m=gsd)
+
+    # TIER A: anchor the absolute datum to an external DEM.
+    #
+    # A 30 m DEM fixes WHERE the surface sits vertically; it cannot improve
+    # building heights, because at that posting a building is a fraction of a
+    # pixel and global DEMs are smoothed toward bare earth. The offset is fitted
+    # over pixels BOTH surfaces call bare ground, using this pipeline's own
+    # segmentation rather than the LiDAR labels, so no ground truth leaks into
+    # the input.
+    dem_info = None
+    if use_dem or dem_path:
+        coords = L.parse_dsm_txt(os.path.join(TRUTH_DIR, f"{tile}_DSM.txt"))
+        t_ext = coords["size_px"] * coords["gsd_m"]
+        pad = (o["extent_m"] - t_ext) / 2.0
+        epsg = "EPSG:32617" if tile.startswith("JAX") else "EPSG:32615"
+        d = dem_source.sample_grid(
+            coords["utm_x"] - pad, coords["utm_y"] + t_ext + pad,
+            out_px, o["extent_m"] / out_px, epsg, dem_path=dem_path)
+        if d["dem"] is None:
+            print(f"[3b] DEM unavailable ({d.get('error')}) -- staying on tier {tier[0]}")
+        else:
+            gmask = (seg_labels == seg.CLASS_IDX["bare_earth"]) |                     (seg_labels == seg.CLASS_IDX["road"])
+            # Fit against whichever surface is ABSOLUTE. On the MVS path the
+            # monocular surface is only a shape cue -- it carries an arbitrary
+            # scale (measured spanning -97 to 228 m on this tile) and fitting a
+            # DEM to it produces a spread so wide the guard rightly rejects it.
+            # The MVS surface is the one in real metres, so it is the one the
+            # datum belongs to.
+            anchor_surface = (dtm_mod.estimate_dtm(mvs_dsm, seg_labels)
+                              if mvs_dsm is not None else ground)
+            fit = dem_source.fit_offset(anchor_surface, d["dem"], gmask)
+            if fit["offset_m"] is None or not fit.get("spread_ok", False):
+                print(f"[3b] DEM offset not usable ({fit.get('reason', 'spread too wide')}) "
+                      f"-- staying on tier {tier[0]}")
+            else:
+                # Shift the surface the heights actually come from.
+                if mvs_dsm is not None:
+                    mvs_dsm = mvs_dsm + fit["offset_m"]
+                else:
+                    dsm = dsm + fit["offset_m"]
+                    terrain = terrain + fit["offset_m"]
+                    ground = ground + fit["offset_m"]
+                tier = "A (DEM-anchored absolute elevation)"
+                dem_info = {"source": d["source"], "offset_m": round(fit["offset_m"], 2),
+                            "iqr_m": round(fit["iqr_m"], 2), "n_px": fit["n"],
+                            "coverage": round(d["coverage"], 3)}
+                print(f"[3b] TIER A: datum anchored to {d['source']}")
+                print(f"     offset {fit['offset_m']:+.2f} m from {fit['n']:,} ground "
+                      f"pixels (IQR {fit['iqr_m']:.2f} m)")
+
 
     ndsm = np.maximum(dsm - ground, 0.0)
 
@@ -222,11 +278,20 @@ def build(tile: str, out_px: int = 2048, stage: bool = True,
     # takes a percentile inside each footprint, so this is where MVS's per-pixel
     # noise gets averaged away and only its metric accuracy survives.
     height_dsm = mvs_dsm if mvs_dsm is not None else dsm
-    height_ground = (dtm_mod.estimate_dtm(mvs_dsm, seg_labels)
-                     if mvs_dsm is not None else ground)
-    if mvs_dsm is not None:
-        height_ground = city_model.flatten_ground(height_ground, seg_labels,
-                                                  smooth_m=35.0, gsd_m=gsd)
+    # Ground for HEIGHT measurement comes from a morphological opening of the
+    # surface itself, never from the segmentation mask.
+    #
+    # The mask-based DTM fills under buildings from the nearest unmasked pixel,
+    # and at ~0.6 recall that neighbour is often another roof segmentation
+    # missed, so roof height propagates into the terrain. Measured on JAX_165
+    # against LiDAR: its ground sat +15.78 m too high under buildings, which
+    # collapsed measured building height to 5.03 m against a true 19.84 m. The
+    # heights were never wrong -- the datum beneath them was.
+    #
+    #                          ground err   building height
+    #   mask-based DTM          +13.99 m       5.03 m
+    #   opening (this)           -3.04 m      22.84 m     (LiDAR 19.84 m)
+    height_ground = dtm_mod.ground_from_dsm(height_dsm, gsd)
 
     bverts, bfaces, binfo = city_model.build_prisms(
         footprints, height_dsm, height_ground, gsd, gsd, min_height_m=1.5,
@@ -245,7 +310,15 @@ def build(tile: str, out_px: int = 2048, stage: bool = True,
           f"max {heights.max():.1f} m")
 
     # Ground mesh: smooth bare earth, so a coarse grid carries it with no loss.
-    gsmall, _ = mg._resize_for_mesh(ground, seg_labels, GROUND_GRID)
+    # The ground MESH must use the same surface the buildings are based on.
+    #
+    # These had drifted apart: building bases moved to the morphological ground
+    # (correct, ~0 m error) while the rendered terrain stayed on the mask-based
+    # DTM, which measures +14 m too high. The result is a terrain surface
+    # floating above its own buildings -- they read as buried, with flat ground
+    # on top of them. Two different notions of "ground" in one scene is never
+    # right; there is only one ground.
+    gsmall, _ = mg._resize_for_mesh(height_ground, seg_labels, GROUND_GRID)
     gscale = ground.shape[0] / gsmall.shape[0]
     gverts, guvs, gfaces = mg.build_ground_mesh(gsmall, gsd * gscale, gsd * gscale)
 
@@ -345,6 +418,7 @@ def build(tile: str, out_px: int = 2048, stage: bool = True,
         "sun_elevation_deg": o["sun_elev_deg"], "sun_azimuth_deg": o["sun_azimuth_deg"],
         "gsd_m": round(gsd, 4), "crs": o["crs"], "tier": tier,
         "scale_m_per_unit": round(float(scale), 2),
+        "dem_anchor": dem_info,
         "model": "prism city (flat roofs, vertical walls)",
         "buildings_extruded": len(binfo["buildings"]),
         "canopy_volumes": n_canopy,
@@ -393,8 +467,12 @@ if __name__ == "__main__":
     ap.add_argument("--no-stage", action="store_true")
     ap.add_argument("--no-mvs", action="store_true",
                     help="use monocular depth instead of multi-view stereo")
+    ap.add_argument("--dem", action="store_true",
+                    help="anchor absolute elevation to Copernicus GLO-30 (Tier A)")
+    ap.add_argument("--dem-path", default=None,
+                    help="use a local DEM GeoTIFF instead of the global model")
     ap.add_argument("--views", type=int, default=6,
                     help="how many near-nadir views to triangulate from")
     a = ap.parse_args()
     build(a.tile, out_px=a.px, stage=not a.no_stage, extent_m=a.extent,
-          no_mvs=a.no_mvs, n_views=a.views)
+          no_mvs=a.no_mvs, n_views=a.views, use_dem=a.dem, dem_path=a.dem_path)
