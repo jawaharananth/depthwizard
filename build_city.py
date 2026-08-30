@@ -386,8 +386,17 @@ def build(tile: str, out_px: int = 2048, stage: bool = True,
                            np.concatenate(vsel),
                            np.concatenate(fsel),
                            np.concatenate(csel) if csel else None))
+    # Count buildings, not vertices/8. Prisms have a variable vertex count --
+    # a footprint may have any number of corners -- so dividing by 8 assumed a
+    # fixed box and drifted as soon as polygons stopped being rectangles.
+    _cls_counts = {n: 0 for n, _, _ in CLASS_BOUNDS}
+    for rec in binfo["buildings"]:
+        for n, lo, hi in CLASS_BOUNDS:
+            if lo <= rec["height_m"] < hi:
+                _cls_counts[n] += 1
+                break
     print("      materials: " + "  ".join(
-        f"{n.split('_')[1]} {len(v)//8 if len(v) else 0}" for n, v, _, _ in bclass))
+        f"{n.split('_')[1]} {c}" for n, c in _cls_counts.items()))
 
     cverts, cfaces, n_canopy = city_model.build_canopy(
         seg_labels, dsm, ground, gsd, gsd, min_area_px=120)
