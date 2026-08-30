@@ -171,3 +171,68 @@ if __name__ == "__main__":
     print(f"  mean height above terrain   {s['mean_agl']:.2f}")
     print(f"  median height above terrain {s['median_agl']:.2f}")
     print(f"  fraction below terrain      {s['negative_fraction']*100:.1f}%  (want ~0%)")
+
+
+def ground_from_dsm(dsm: np.ndarray, gsd_m: float,
+                    max_building_m: float = 140.0,
+                    smooth_m: float = 40.0) -> np.ndarray:
+    """
+    Bare earth by morphological opening of the surface itself.
+
+    WHY THIS EXISTS ALONGSIDE estimate_dtm
+
+    `estimate_dtm` removes structures using the SEGMENTATION MASK and fills the
+    holes from the nearest unmasked pixel. That is only as good as the mask. At
+    ~0.6 building recall in a dense downtown the nearest "unmasked" pixel is
+    frequently another roof that segmentation missed, so roof height propagates
+    into the terrain -- and once terrain is wrong, every building height
+    measured against it is wrong by the same amount.
+
+    Measured on JAX_165 against LiDAR:
+
+        MVS surface on building pixels   +20.65 m above true ground
+        LiDAR on the same pixels         +19.84 m      <- MVS roofs are right
+        estimate_dtm's ground            +13.99 m too high
+        ... under buildings              +15.78 m too high
+
+    So roof - ground collapsed from about 20 m to about 5 m, and the whole city
+    rendered a third of its true height. The heights were never the problem; the
+    datum under them was.
+
+    This function never consults segmentation. A grey-scale opening with a
+    structuring element WIDER THAN THE WIDEST BUILDING cannot leave a building
+    behind: any structure narrower than the kernel is removed by construction,
+    while terrain, which is wider than the kernel everywhere, survives. That is
+    the standard DSM-to-DTM filter and its one assumption -- `max_building_m` --
+    is stated rather than implied.
+
+    The opening runs on a downsampled copy because an elliptical element of 560
+    pixels at 0.25 m/px is not separable and would take minutes; terrain is
+    smooth by definition, so nothing is lost by computing it coarsely and
+    resampling back.
+    """
+    z = dsm.astype(np.float32)
+    finite = np.isfinite(z)
+    if not finite.all():
+        z = np.where(finite, z, np.nanmedian(z[finite]) if finite.any() else 0.0)
+
+    h, w = z.shape
+    # Work at ~2 m/px: fine enough for terrain, and it keeps the kernel small.
+    target_gsd = 2.0
+    f = max(1, int(round(target_gsd / max(gsd_m, 1e-6))))
+    small = cv2.resize(z, (max(8, w // f), max(8, h // f)), interpolation=cv2.INTER_AREA)
+    small_gsd = gsd_m * f
+
+    k_px = int(round(max_building_m / small_gsd))
+    k_px = max(5, k_px | 1)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k_px, k_px))
+    opened = cv2.morphologyEx(small, cv2.MORPH_OPEN, kernel)
+
+    # The opening sits at or below the surface everywhere, and its output is
+    # blocky at the kernel scale, so it is smoothed before use.
+    sigma = max(1.0, smooth_m / small_gsd / 2.0)
+    opened = cv2.GaussianBlur(opened, (0, 0), sigmaX=sigma)
+
+    ground = cv2.resize(opened, (w, h), interpolation=cv2.INTER_LINEAR)
+    # Terrain can never rise above the observed surface.
+    return np.minimum(ground, z)
