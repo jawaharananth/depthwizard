@@ -78,32 +78,69 @@ def build(tile: str, out_px: int = 2048, stage: bool = True,
             print(f"[2/5] MVS unavailable ({exc}); falling back to monocular depth")
             mvs = None
 
+    mvs_dsm = None
     if mvs is not None:
-        # Absolute metres already. Terrain and building heights both come from
-        # the same measured surface, so there is no relative-to-metric step.
-        dsm = mvs_height.to_image_grid(mvs["dsm"], image_np)
-        tier = "A (MVS-triangulated, absolute metres)"
-        scale = 1.0
+        # MVS is kept ASIDE, not substituted for the working surface. It supplies
+        # the final height of each prism and nothing else -- see the fusion note
+        # below for the measurements behind that split.
+        mvs_dsm = mvs_height.to_image_grid(mvs["dsm"], image_np)
+        tier = "A (MVS-triangulated heights, absolute metres)"
         cal = {"n": mvs["views"], "method": "rpc_plane_sweep"}
         height = None
-    else:
-        cache_key = f"tiled_e{int(o['extent_m'])}"
-        height = height_cache.load(tile, cache_key, out_px)
-        if height is None:
-            backbone = DepthBackbone()
-            t0 = time.time()
-            height = backbone.predict_tiled(pil, verbose=False)
-            height_cache.save(tile, cache_key, out_px, height)
-            print(f"[2/5] height field in {time.time()-t0:.0f}s")
-        else:
-            print("[2/5] height field reused from cache")
 
-    # Segmentation needs a normalised height field. On the MVS path there is no
-    # "height" array -- the surface is already absolute metres -- so one is
-    # derived from it purely as a cue for segmentation.
-    if height is None:
-        rng = float(np.nanmax(dsm) - np.nanmin(dsm))
-        height = np.nan_to_num((dsm - np.nanmin(dsm)) / (rng + 1e-8))
+    # FUSION: monocular for SHAPE, MVS for MAGNITUDE.
+    #
+    # Each signal is better at a different thing, measured on JAX_165 against
+    # LiDAR over the 256 m the truth covers:
+    #
+    #                  nDSM shape corr      height MAE
+    #   monocular            0.413            8.53 m
+    #   MVS                  0.187            6.53 m
+    #
+    # MVS triangulates real metres but is spatially noisy: sweeping its
+    # elevated-region threshold across the whole range, precision against the
+    # LiDAR building mask never exceeded 0.49 at ANY setting, including at
+    # exactly the right coverage. The monocular field reached 0.606 at the same
+    # coverage. Its surface is smooth and wrong in magnitude; MVS is right in
+    # magnitude and rough in outline.
+    #
+    # So the monocular field decides WHERE buildings are -- segmentation and
+    # footprint extraction both run on it -- and MVS supplies only HOW TALL each
+    # finished building is.
+    #
+    # Using MVS for both, which the first version did, pushed the building mask
+    # to 81.9% of frame against a true 45.9%. Using MVS for footprint extraction
+    # too was also worse: IoU 0.472 against 0.635, at recall 0.496 against 0.756,
+    # because MVS under-measures low buildings and they fall below the height cut
+    # before shape is ever considered.
+    #
+    # Height is taken as a PERCENTILE OVER EACH FOOTPRINT, not per pixel. MVS
+    # noise is per-pixel and largely independent, so averaging over the hundreds
+    # of pixels inside a footprint suppresses it while keeping the metric
+    # accuracy that made MVS worth using (MAE 6.53 m against monocular's 8.53 m).
+    if mvs is not None:
+        seg_key = f"tiled_e{int(o['extent_m'])}"
+        height = height_cache.load(tile, seg_key, out_px)
+        if height is None:
+            print("      (monocular shape cue not cached; computing it -- "
+                  "heights still come from MVS)")
+            height = DepthBackbone().predict_tiled(pil, verbose=False)
+            height_cache.save(tile, seg_key, out_px, height)
+        else:
+            print("      shape from monocular (cached); heights from MVS")
+        refined = dsm_refine.refine_dsm(height, image_np)
+        # Segment ONCE. This block called seg.segment three times on a 2560x2560
+        # image -- the shape cue, the shadow calibration, and the fallback each
+        # recomputed it, and the build stalled before reaching the mesh stage.
+        _seg_tmp, _ = seg.segment(image_np, height=height)
+        cal_s = shadow_correction.calibrate_scale(
+            image_np, _seg_tmp, refined, o["sun_elev_deg"], o["sun_azimuth_deg"],
+            gsd, gsd)
+        sc = cal_s.get("scale_m_per_unit")
+        if sc is None or cal_s.get("n", 0) < 10:
+            sc = ASSUMED_TALL_M / max(float(np.percentile(np.maximum(
+                refined - dtm_mod.estimate_dtm(refined, _seg_tmp), 0.0), 99)), 1e-6)
+        dsm = refined * sc
 
     seg_labels, _ = seg.segment(image_np, height=height)
     oc = orientation_check(height, seg_labels)
@@ -180,8 +217,20 @@ def build(tile: str, out_px: int = 2048, stage: bool = True,
     for rec in disc["instances"]:
         rec["provenance"] = prov
 
+    # Prism heights come from the MVS surface when it is available; the
+    # monocular surface is used for everything up to this point. build_prisms
+    # takes a percentile inside each footprint, so this is where MVS's per-pixel
+    # noise gets averaged away and only its metric accuracy survives.
+    height_dsm = mvs_dsm if mvs_dsm is not None else dsm
+    height_ground = (dtm_mod.estimate_dtm(mvs_dsm, seg_labels)
+                     if mvs_dsm is not None else ground)
+    if mvs_dsm is not None:
+        height_ground = city_model.flatten_ground(height_ground, seg_labels,
+                                                  smooth_m=35.0, gsd_m=gsd)
+
     bverts, bfaces, binfo = city_model.build_prisms(
-        footprints, dsm, ground, gsd, gsd, min_height_m=1.5, image_np=image_np)
+        footprints, height_dsm, height_ground, gsd, gsd, min_height_m=1.5,
+        image_np=image_np)
 
     # Provenance (section 24): a height is only MEASURED when the scene carried a
     # metric scale. On a Tier C scene it remains INFERRED, whatever it looks like.
