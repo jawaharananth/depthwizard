@@ -350,6 +350,45 @@ def build(tile: str, out_px: int = 2048, stage: bool = True,
     # Vegetation and water as their own meshes. A prism city with neither reads
     # as a model of a car park; both are already segmented and were being
     # discarded, and both are what supplies colour in the reference imagery.
+    # Split buildings into height classes so each can carry its own material.
+    #
+    # A city rendered in one material reads as extruded plastic: a glass tower,
+    # a concrete block and a low retail unit all return light identically, so
+    # the only thing distinguishing them is silhouette. Building stock actually
+    # correlates strongly with height -- tall structures at this scale are
+    # curtain-walled, low ones are masonry or render -- so height is a defensible
+    # proxy for material rather than an arbitrary recolouring.
+    #
+    # The split happens here because a glTF primitive carries exactly one
+    # material. Three meshes is the simplest way to get three material responses
+    # without per-vertex shader work.
+    CLASS_BOUNDS = [("building_low", 0.0, 15.0),
+                    ("building_mid", 15.0, 40.0),
+                    ("building_tall", 40.0, 1e9)]
+    bclass = []
+    for name, lo, hi in CLASS_BOUNDS:
+        vsel, fsel, csel = [], [], []
+        base = 0
+        for rec in binfo["buildings"]:
+            if not (lo <= rec["height_m"] < hi):
+                continue
+            off, cnt = rec["vertex_offset"], rec["vertex_count"]
+            vsel.append(bverts[off:off + cnt])
+            cols = binfo.get("colors")
+            if cols is not None and len(cols) >= off + cnt:
+                csel.append(cols[off:off + cnt])
+            fmask = (bfaces >= off) & (bfaces < off + cnt)
+            keep = fmask.all(axis=1)
+            fsel.append(bfaces[keep] - off + base)
+            base += cnt
+        if vsel:
+            bclass.append((name,
+                           np.concatenate(vsel),
+                           np.concatenate(fsel),
+                           np.concatenate(csel) if csel else None))
+    print("      materials: " + "  ".join(
+        f"{n.split('_')[1]} {len(v)//8 if len(v) else 0}" for n, v, _, _ in bclass))
+
     cverts, cfaces, n_canopy = city_model.build_canopy(
         seg_labels, dsm, ground, gsd, gsd, min_area_px=120)
     wverts, wfaces, n_water = city_model.build_water(seg_labels, ground, gsd, gsd)
@@ -358,10 +397,13 @@ def build(tile: str, out_px: int = 2048, stage: bool = True,
     print(f"      {n_canopy} canopy volumes, {n_water} water bodies, "
           f"{n_veh} vehicle-sized objects (heuristic)")
 
-    export_glb(stem + ".glb", gverts, guvs, gfaces, bverts, bfaces,
+    export_glb(stem + ".glb", gverts, guvs, gfaces,
+               np.zeros((0, 3), np.float32), np.zeros((0, 3), np.int64),
                texture_bytes=tex.getvalue(), building_uvs=None,
-               building_colors=binfo.get("colors"),
+               building_colors=None,
                extra_meshes=[
+                   (n, v, f, (0.80, 0.82, 0.85, 1.0)) for n, v, f, _ in bclass
+               ] + [
                    ("canopy", cverts, cfaces, (0.29, 0.42, 0.24, 1.0)),
                    ("water", wverts, wfaces, (0.20, 0.35, 0.48, 1.0)),
                    ("vehicles", vverts, vfaces, (0.62, 0.63, 0.66, 1.0)),
