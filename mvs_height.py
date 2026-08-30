@@ -114,7 +114,7 @@ def compute(tile: str, truth_dir: str, rgb_dir: str, metadata_dir: str,
 
 
 def to_image_grid(dsm: np.ndarray, image_np: np.ndarray,
-                  guided_radius: int = 8, eps: float = 1e-3) -> np.ndarray:
+                  guided_radius: int = 8, eps: float = None) -> np.ndarray:
     """
     Upsample an MVS surface to the image grid and snap its edges to the image.
 
@@ -128,6 +128,15 @@ def to_image_grid(dsm: np.ndarray, image_np: np.ndarray,
     up = cv2.resize(dsm.astype(np.float32), (W, H), interpolation=cv2.INTER_LINEAR)
 
     guide = cv2.cvtColor(image_np, cv2.COLOR_RGB2GRAY).astype(np.float32) / 255.0
+
+    # Epsilon must scale with the DATA, not be a fixed constant. The guided
+    # filter's gain is cov/(var+eps); with heights in metres the covariance term
+    # is ~100x larger than with a normalised field, so a fixed 1e-3 makes the
+    # gain enormous and the output overshoots wildly at every strong image edge.
+    # Measured: an input spanning -40.5 to 66.5 m came back spanning -69 to
+    # 162 m -- inventing a 162 m building in a city whose tallest is about 70.
+    if eps is None:
+        eps = max(1e-6, 0.01 * float(np.nanvar(up)))
     r = guided_radius
     mean_g = cv2.boxFilter(guide, -1, (r, r))
     mean_p = cv2.boxFilter(up, -1, (r, r))
@@ -135,4 +144,7 @@ def to_image_grid(dsm: np.ndarray, image_np: np.ndarray,
     var = cv2.boxFilter(guide * guide, -1, (r, r)) - mean_g * mean_g
     a = cov / (var + eps)
     b = mean_p - a * mean_g
-    return cv2.boxFilter(a, -1, (r, r)) * guide + cv2.boxFilter(b, -1, (r, r))
+    out = cv2.boxFilter(a, -1, (r, r)) * guide + cv2.boxFilter(b, -1, (r, r))
+    # Edge sharpening must not extend the height RANGE: the filter may move a
+    # discontinuity, never invent a value outside what MVS actually measured.
+    return np.clip(out, float(np.nanmin(dsm)), float(np.nanmax(dsm)))
