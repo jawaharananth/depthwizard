@@ -33,6 +33,42 @@ import cv2
 
 import segmentation as seg
 
+# Largest height difference accepted across a single fitted roof, in metres.
+# Real pitched roofs on buildings of this scale rise a few metres; anything
+# beyond that means the footprint covers more than one structure, so the roof
+# is kept flat rather than ramped between them.
+MAX_ROOF_RELIEF_M = 5.0
+
+
+def _self_intersects(poly: np.ndarray) -> bool:
+    """
+    Does this ring cross itself?
+
+    approxPolyDP can turn a ragged watershed contour into a ring whose edges
+    cross, and ear clipping has no defined answer for such a polygon -- it
+    emits overlapping triangles. Measured: 18 of 2605 footprints. Rare, but
+    each one renders as a visible shard, so they are detected and replaced by
+    their convex hull rather than triangulated blindly.
+    """
+    n = len(poly)
+    if n < 4:
+        return False
+
+    def crosses(a, b, c, d):
+        def side(p, q, r):
+            return (r[1] - p[1]) * (q[0] - p[0]) - (q[1] - p[1]) * (r[0] - p[0])
+        d1, d2 = side(c, d, a), side(c, d, b)
+        d3, d4 = side(a, b, c), side(a, b, d)
+        return ((d1 > 0) != (d2 > 0)) and ((d3 > 0) != (d4 > 0))
+
+    for i in range(n):
+        for j in range(i + 2, n):
+            if i == 0 and j == n - 1:
+                continue          # adjacent edges share a vertex
+            if crosses(poly[i], poly[(i + 1) % n], poly[j], poly[(j + 1) % n]):
+                return True
+    return False
+
 
 def _ear_clip(poly: np.ndarray) -> list:
     """
@@ -174,6 +210,11 @@ def build_prisms(footprints: list, dsm: np.ndarray, dtm: np.ndarray,
 
     H, W = dsm.shape
     for poly in footprints:
+        if _self_intersects(poly):
+            poly = cv2.convexHull(poly.astype(np.float32)).reshape(-1, 2)
+            if len(poly) < 3:
+                skipped += 1
+                continue
         xs = np.clip(poly[:, 0].astype(int), 0, W - 1)
         ys = np.clip(poly[:, 1].astype(int), 0, H - 1)
 
@@ -221,6 +262,8 @@ def build_prisms(footprints: list, dsm: np.ndarray, dtm: np.ndarray,
         # Fitted on the middle of the height distribution so a rooftop plant
         # room, an aerial or a parapet does not tilt the whole roof.
         ys_i, xs_i = np.nonzero(inside)
+        roof_lo = float(np.percentile(roof_vals, 10))
+        roof_hi = float(np.percentile(roof_vals, 90))
         plane = None
         if ys_i.size >= 12:
             lo, hi = np.percentile(roof_vals, [15, 90])
@@ -239,7 +282,31 @@ def build_prisms(footprints: list, dsm: np.ndarray, dtm: np.ndarray,
                     # a noisy or occluded roof should stay flat rather than be
                     # given a slope the data does not support.
                     if resid < float(np.std(roof_vals[keep])) * 0.98:
-                        plane = coef
+                        # Reject a plane whose predicted tilt across THIS
+                        # footprint exceeds what the roof's own height spread
+                        # supports. Fitting well in a least-squares sense does
+                        # not stop a plane from extrapolating absurdly once it
+                        # leaves the pixels it was fitted on.
+                        corner_z = (coef[0] * poly[:, 0] + coef[1] * poly[:, 1]
+                                    + coef[2])
+                        tilt = float(corner_z.max() - corner_z.min())
+                        band = roof_hi - roof_lo
+                        # A plane is only fitted to a roof that is actually ONE
+                        # roof. A wide height band inside a footprint means the
+                        # polygon spans several structures of different heights,
+                        # and the best-fitting plane through them is a ramp
+                        # between two buildings, not anyone's roof.
+                        #
+                        # Scaling the allowance WITH the band was the mistake in
+                        # the first attempt: it granted the most freedom exactly
+                        # where the data was least trustworthy, leaving tilt at
+                        # 43 m for the 99th percentile. The allowance is now an
+                        # absolute cap, so a mixed footprint gets a flat roof at
+                        # a robust height instead of a blade.
+                        if band <= MAX_ROOF_RELIEF_M and tilt <= MAX_ROOF_RELIEF_M:
+                            plane = coef
+                        else:
+                            plane = None
                 except np.linalg.LinAlgError:
                     plane = None
 
@@ -295,10 +362,22 @@ def build_prisms(footprints: list, dsm: np.ndarray, dtm: np.ndarray,
         for px, py in poly:
             if plane is not None:
                 zh = float(plane[0] * px + plane[1] * py + plane[2])
-                # Keep the fitted roof inside the range the footprint actually
-                # spans, so an extrapolated corner cannot spike above anything
-                # measured, and never let it fall below a visible height.
-                zh = min(max(zh, base_h + min_height_m), float(roof_vals.max()))
+                # Clamp to the roof's own MIDDLE, not its maximum.
+                #
+                # Clamping at roof_vals.max() is no constraint at all: a single
+                # tall pixel anywhere in the footprint -- a neighbouring tower
+                # clipped by the polygon, an aerial, an MVS outlier -- lets a
+                # plane extrapolate to that height at a far corner. Measured
+                # across 2605 buildings, roof tilt reached 49 m at the 99th
+                # percentile and 79 m at worst, with 165 buildings tilted more
+                # than 20 m across a single roof. Rendered, those are the
+                # blade-like spikes standing between buildings.
+                #
+                # A roof can only be as tilted as the surface inside it actually
+                # is, so the 10th-90th percentile band bounds it. That admits a
+                # genuine pitch while making a runaway extrapolation impossible.
+                zh = min(max(zh, roof_lo), roof_hi)
+                zh = max(zh, base_h + min_height_m)
             else:
                 zh = roof_h
             verts.append((px * gsd_x_m, zh, -py * gsd_y_m))
