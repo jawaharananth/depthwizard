@@ -462,7 +462,7 @@ if (btnDof) {
  * geometry, the sun, and the environment -- which is exactly what makes a
  * clean prism city legible.
  */
-function shadeBuildingPrisms(mesh) {
+function shadeBuildingPrisms(mesh, mat) {
   const geom = mesh.geometry;
   const pos = geom.attributes.position;
   const idx = geom.index;
@@ -507,7 +507,7 @@ function shadeBuildingPrisms(mesh) {
     colorAttr = new THREE.Float32BufferAttribute(colors, 3);
   }
 
-  const mk = (indices, color, rough) => {
+  const mk = (indices, color, rough, m2, shade) => {
     if (!indices.length) return null;
     const g = new THREE.BufferGeometry();
     // Both attributes must be set on the NEW geometry. Setting the colour on
@@ -531,8 +531,13 @@ function shadeBuildingPrisms(mesh) {
   // Roofs face the sky and take its colour; walls sit in shade and go cooler and
   // slightly darker. The multiplier rides on top of each building's measured
   // colour rather than replacing it.
-  const roof = mk(roofIdx, 0xf2f6fb, 0.84);
-  const wall = mk(wallIdx, 0xc3ceda, 0.66);
+  // Roofs face the sky and take more of it; walls sit in shade. Both ride on
+  // the class material rather than replacing it, so a glass tower stays glassy
+  // on both surfaces while still reading as roof-vs-wall.
+  const m = mat || { roughness: 0.7, metalness: 0.0, color: 0xd0d4d8,
+                     envMapIntensity: 0.7 };
+  const roof = mk(roofIdx, m.color, Math.min(1, m.roughness * 1.15), m);
+  const wall = mk(wallIdx, m.color, m.roughness, m, 0.90);
   if (roof) mesh.parent.add(roof);
   if (wall) mesh.parent.add(wall);
   mesh.visible = false;
@@ -631,11 +636,50 @@ Promise.all([
           // sun does the rest. Deliberately plain, matching a vector city
           // model rather than pretending to facade detail the input does not
           // contain.
-          if (child.name === "canopy") {
+          if (child.name && child.name.startsWith("building_")) {
+            // Material by height class. Building stock correlates strongly with
+            // height at this scale -- tall structures are curtain-walled, low
+            // ones masonry or render -- so the class is a defensible proxy for
+            // material rather than an arbitrary recolouring. Without this every
+            // volume returns light identically and the city reads as one piece
+            // of extruded plastic.
+            const CLASS_MAT = {
+              // roughness, metalness, colour, envMapIntensity
+              building_tall: [0.16, 0.55, 0xc3d2e2, 1.35],  // glass curtain wall
+              building_mid:  [0.62, 0.04, 0xcfd4d8, 0.75],  // concrete / precast
+              building_low:  [0.86, 0.00, 0xd7d3cc, 0.55],  // render / masonry
+            };
+            const [rough, metal, col, env] =
+              CLASS_MAT[child.name] || CLASS_MAT.building_mid;
+            shadeBuildingPrisms(child, { roughness: rough, metalness: metal,
+                                         color: col, envMapIntensity: env });
+          } else if (child.name === "canopy") {
             // Foliage: fully diffuse, no specular sheen -- leaves scatter.
+            // Vary tone per clump. One flat green over every crown makes the
+            // canopy read as a repeated asset; real foliage differs in species,
+            // age and how much sky each crown sees. The variation is keyed to
+            // position so it is stable across reloads rather than shimmering.
+            {
+              const cg = child.geometry;
+              const cp = cg.attributes.position;
+              const cc = new Float32Array(cp.count * 3);
+              const v3 = new THREE.Vector3();
+              for (let i = 0; i < cp.count; i++) {
+                v3.fromBufferAttribute(cp, i);
+                const key = (Math.floor(v3.x / 9) * 73856093) ^
+                            (Math.floor(v3.z / 9) * 19349663);
+                const t = ((key >>> 0) % 1000) / 1000;
+                // darker, bluer green in shade; warmer, lighter in sun
+                cc[i * 3]     = 0.20 + 0.16 * t;
+                cc[i * 3 + 1] = 0.34 + 0.20 * t;
+                cc[i * 3 + 2] = 0.16 + 0.12 * (1 - t);
+              }
+              cg.setAttribute("color", new THREE.Float32BufferAttribute(cc, 3));
+            }
             child.material = new THREE.MeshStandardMaterial({
-              color: 0x4f7048, roughness: 1.0, metalness: 0.0,
-              envMapIntensity: 0.45, flatShading: true,
+              color: 0xffffff, vertexColors: true,
+              roughness: 1.0, metalness: 0.0,
+              envMapIntensity: 0.5, flatShading: true,
             });
           } else if (child.name === "vehicles") {
             // Vehicles read as painted metal: smoother and more specular than
@@ -647,9 +691,20 @@ Promise.all([
           } else if (child.name === "water") {
             // Water: smooth and slightly metallic so it reflects the sky
             // instead of just being a blue polygon.
-            child.material = new THREE.MeshStandardMaterial({
-              color: 0x2f5f86, roughness: 0.06, metalness: 0.62,
-              envMapIntensity: 1.6,
+            // Water reflects at grazing angles and absorbs when looked into --
+            // that angular falloff is what makes a surface read as water rather
+            // than as a blue polygon. MeshPhysicalMaterial's clearcoat plus a
+            // low roughness and high environment weight approximates it without
+            // a custom shader, and the environment now has a real sun disc for
+            // it to catch.
+            const WaterMat = THREE.MeshPhysicalMaterial || THREE.MeshStandardMaterial;
+            child.material = new WaterMat({
+              color: 0x24506e, roughness: 0.035, metalness: 0.30,
+              envMapIntensity: 2.2,
+              ...(THREE.MeshPhysicalMaterial
+                  ? { clearcoat: 1.0, clearcoatRoughness: 0.04,
+                      reflectivity: 1.0, ior: 1.333 }
+                  : {}),
             });
             child.castShadow = false;
           } else {
