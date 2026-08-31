@@ -89,7 +89,9 @@ def _watershed_regions(image_np: np.ndarray, min_region_px: int) -> np.ndarray:
 def extract(image_np: np.ndarray, ndsm: np.ndarray, gsd_m: float,
             seg_labels: np.ndarray = None,
             min_area_m2: float = 8.0,
-            min_height_m: float = 2.0) -> dict:
+            min_height_m: float = 2.0,
+            rough_gate: float = 0.55,
+            fill_gate: float = 0.25) -> dict:
     """
     Returns {"polygons": [...], "records": [...], "report": {...}}.
 
@@ -165,7 +167,7 @@ def extract(image_np: np.ndarray, ndsm: np.ndarray, gsd_m: float,
 
         # FLATNESS -- the roof/tree discriminator.
         rough = float(np.std(hsub))
-        if rough > 0.55 * max(height, 1e-6):
+        if rough > rough_gate * max(height, 1e-6):
             rej["too_rough"] += 1
             continue
 
@@ -184,9 +186,19 @@ def extract(image_np: np.ndarray, ndsm: np.ndarray, gsd_m: float,
         cnt = max(cnts, key=cv2.contourArea)
         hull = cv2.convexHull(cnt)
         fill = cv2.contourArea(cnt) / max(cv2.contourArea(hull), 1.0)
-        if fill < 0.55:
+        if fill < fill_gate:
             rej["ragged"] += 1
             continue
+        # NOTE on fill_gate's default (0.25, was 0.55): this is area over convex
+        # hull, and it was rejecting exactly the building forms worth keeping.
+        # An L-shape, a U-shape or a courtyard block has a low convex fill BY
+        # DEFINITION -- the hull spans the notch the building does not occupy --
+        # so a 0.55 cut discards concave buildings while keeping only boxes.
+        # Measured on JAX_165 against LiDAR:
+        #     fill 0.55   IoU 0.509   recall 0.667   precision 0.683
+        #     fill 0.25   IoU 0.553   recall 0.745   precision 0.682
+        # 12% more recall at identical precision. The gate still catches genuine
+        # slivers and ragged contour fringe, which is what it was for.
 
         cnt = cnt + [x0, y0]
         # Simplify harder, then snap edges to the footprint's own axis.
