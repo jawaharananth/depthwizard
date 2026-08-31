@@ -110,8 +110,22 @@ def extract(image_np: np.ndarray, ndsm: np.ndarray, gsd_m: float,
     has_colour = float(np.percentile(
         cv2.cvtColor(image_np, cv2.COLOR_RGB2HSV)[:, :, 1], 90)) > 40
 
-    ids = np.unique(ws)
-    ids = ids[ids > 1]                          # 1 = background seed, -1 = ridges
+    # Bounding box per region in ONE pass, instead of a full-image comparison
+    # per region.
+    #
+    # This loop was `mask = (ws == rid)` for every region: 4618 regions over a
+    # 2560x2560 label image is ~30 billion element comparisons, and it measured
+    # at 147 seconds -- 93% of the entire build. The same O(regions x pixels)
+    # pattern has now appeared four times in this codebase; it is always the
+    # answer when a per-object loop touches a whole raster.
+    #
+    # find_objects returns each label's slice directly, so every region is then
+    # examined only inside its own bounding box.
+    from scipy import ndimage as ndi
+    ws_pos = np.where(ws > 1, ws, 0)
+    max_id = int(ws_pos.max())
+    slices = ndi.find_objects(ws_pos) if max_id > 0 else []
+    ids = [i + 1 for i, sl in enumerate(slices) if sl is not None and i + 1 > 1]
 
     # Height cut.
     #
@@ -132,15 +146,16 @@ def extract(image_np: np.ndarray, ndsm: np.ndarray, gsd_m: float,
 
     # Per-region statistics in one pass each, via bounding boxes.
     for rid in ids:
-        mask = (ws == rid)
-        area_px = int(mask.sum())
+        sl = slices[rid - 1]
+        if sl is None:
+            continue
+        y0, y1 = sl[0].start, sl[0].stop
+        x0, x1 = sl[1].start, sl[1].stop
+        sub = (ws[y0:y1, x0:x1] == rid)
+        area_px = int(sub.sum())
         if area_px < min_px:
             rej["too_small"] += 1
             continue
-
-        ys, xs = np.nonzero(mask)
-        y0, y1, x0, x1 = ys.min(), ys.max() + 1, xs.min(), xs.max() + 1
-        sub = mask[y0:y1, x0:x1]
         hsub = ndsm[y0:y1, x0:x1][sub]
 
         height = float(np.median(hsub))
