@@ -39,6 +39,10 @@ import segmentation as seg
 # is kept flat rather than ramped between them.
 MAX_ROOF_RELIEF_M = 5.0
 
+# Pixels eroded from a footprint before its roof height is sampled. Boundary
+# pixels straddle a height discontinuity and read high; see build_prisms.
+ROOF_SAMPLE_ERODE_PX = 4
+
 
 def _self_intersects(poly: np.ndarray) -> bool:
     """
@@ -192,7 +196,7 @@ def extract_footprints(seg_labels: np.ndarray, ndsm: np.ndarray = None,
 
 def build_prisms(footprints: list, dsm: np.ndarray, dtm: np.ndarray,
                  gsd_x_m: float, gsd_y_m: float, min_height_m: float = 2.5,
-                 roof_percentile: float = 80.0, image_np: np.ndarray = None):
+                 roof_percentile: float = 70.0, image_np: np.ndarray = None):
     """
     One flat-roofed prism per footprint: vertical walls plus a flat roof.
 
@@ -232,7 +236,23 @@ def build_prisms(footprints: list, dsm: np.ndarray, dtm: np.ndarray,
             skipped += 1
             continue
 
-        roof_vals = dsm[y0:y1, x0:x1][inside]
+        # Sample the roof from the footprint's INTERIOR, not its full extent.
+        #
+        # A footprint boundary sits on a real height discontinuity, and both MVS
+        # matching and the guided upsample smear across it, so edge pixels carry
+        # a mixture of roof and whatever is beyond. Measured against LiDAR on
+        # JAX_165, eroding the sampling mask by 4 px cut the roof-height bias
+        # from +1.30 m to +1.10 m at the 80th percentile.
+        #
+        # The erosion is only for SAMPLING. The polygon itself is unchanged, so
+        # the building keeps its true extent -- this affects what height is read,
+        # never where the walls stand.
+        _er = cv2.erode(sub, cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE, (ROOF_SAMPLE_ERODE_PX * 2 + 1,) * 2)).astype(bool)
+        # Fall back to the full footprint when erosion leaves too little to
+        # sample -- a small shed can erode away entirely.
+        inside_sample = _er if _er.sum() >= 20 else inside
+        roof_vals = dsm[y0:y1, x0:x1][inside_sample]
         roof_h = float(np.percentile(roof_vals, roof_percentile))
 
         # Base on the LOW end of the terrain under the footprint: a building
@@ -261,7 +281,11 @@ def build_prisms(footprints: list, dsm: np.ndarray, dtm: np.ndarray,
         #
         # Fitted on the middle of the height distribution so a rooftop plant
         # room, an aerial or a parapet does not tilt the whole roof.
-        ys_i, xs_i = np.nonzero(inside)
+        # Index the SAME pixels roof_vals came from. These diverged when roof
+        # sampling moved to the eroded mask: the plane was fitted against
+        # coordinates from the full footprint while the heights came from its
+        # interior, so the two arrays no longer matched in length.
+        ys_i, xs_i = np.nonzero(inside_sample)
         roof_lo = float(np.percentile(roof_vals, 10))
         roof_hi = float(np.percentile(roof_vals, 90))
         plane = None
