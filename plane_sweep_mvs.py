@@ -94,6 +94,25 @@ def plane_sweep_dsm(ref_image_path: str, other_image_paths: list,
     best_score = np.full((size_px, size_px), -2.0, dtype=np.float32)
     best_height = np.full((size_px, size_px), np.nan, dtype=np.float32)
 
+    # SUB-STEP REFINEMENT
+    #
+    # Taking the discrete winner quantises every height to the sweep step, so a
+    # 1 m step carries up to +-0.5 m of quantisation before any matching error.
+    # That is invisible on a tall tower and dominant on a low building: measured
+    # per-building bias was +9.59 m for 2-10 m structures against +0.88 m for
+    # 25-50 m ones.
+    #
+    # The NCC score as a function of height peaks smoothly around the true
+    # surface, so fitting a parabola through the winning sample and its two
+    # neighbours recovers the peak between samples. This is the standard
+    # sub-pixel technique from stereo matching, and it costs three extra arrays
+    # rather than a finer -- and proportionally slower -- sweep.
+    s_at = np.full((size_px, size_px), -2.0, dtype=np.float32)   # score at best
+    s_before = np.full((size_px, size_px), np.nan, dtype=np.float32)
+    s_after = np.full((size_px, size_px), np.nan, dtype=np.float32)
+    prev_score = np.full((size_px, size_px), np.nan, dtype=np.float32)
+    awaiting_after = np.zeros((size_px, size_px), dtype=bool)
+
     for h in heights:
         h_arr = np.full_like(lon, h)
         ref_line, ref_samp = ref_rpc.project(lat, lon, h_arr)
@@ -112,15 +131,44 @@ def plane_sweep_dsm(ref_image_path: str, other_image_paths: list,
             valid_count += pair_valid.astype(np.float32)
 
         avg_score = np.where(valid_count > 0, scores / np.maximum(valid_count, 1), -2.0)
+
+        # A pixel still waiting for the sample AFTER its peak gets it now --
+        # before `improved` is recomputed, so a new peak overwrites it cleanly.
+        s_after = np.where(awaiting_after, avg_score, s_after)
+        awaiting_after = np.zeros_like(awaiting_after)
+
         improved = avg_score > best_score
+        s_before = np.where(improved, prev_score, s_before)
+        s_at = np.where(improved, avg_score, s_at)
+        s_after = np.where(improved, np.nan, s_after)   # invalidate the old one
+        awaiting_after |= improved
+
         best_score = np.where(improved, avg_score, best_score)
         best_height = np.where(improved, h, best_height)
+        prev_score = avg_score
 
     # Post-processing, standard in real MVS pipelines (this mirrors why VisSat
     # reports only 72.5% coverage rather than trusting every pixel): low-NCC
     # pixels are unreliable (occlusion, textureless surfaces, building-edge
     # mismatches) and get filled from their confident neighbors via median
     # filtering, rather than kept as wild individual outliers.
+    # Apply the parabolic peak offset where all three samples exist.
+    #
+    # delta = 0.5 * (s_before - s_after) / (s_before - 2*s_at + s_after), in
+    # units of one step. The denominator is the curvature: near zero means the
+    # three samples are collinear, so there is no peak to interpolate and the
+    # discrete winner stands. delta is clamped to +-0.5 because a true peak
+    # cannot lie outside the interval its own winning sample bounds -- an
+    # unclamped value there signals noise, not a better estimate.
+    denom = s_before - 2.0 * s_at + s_after
+    ok = (np.isfinite(s_before) & np.isfinite(s_after) & np.isfinite(denom)
+          & (np.abs(denom) > 1e-6))
+    delta = np.zeros_like(best_height)
+    delta[ok] = 0.5 * (s_before[ok] - s_after[ok]) / denom[ok]
+    delta = np.clip(delta, -0.5, 0.5)
+    best_height = np.where(np.isfinite(best_height) & ok,
+                           best_height + delta * height_step, best_height)
+
     # Replace NaN BEFORE any median filtering. cv2.medianBlur propagates NaN
     # through its whole kernel, so a handful of never-matched pixels -- which is
     # normal wherever the sweep extends past a view's coverage -- turns the
