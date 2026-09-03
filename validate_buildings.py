@@ -66,7 +66,15 @@ def validate(tile="JAX_165", extent_m=640.0, out_px=2560):
                                             min_height_m=2.0, image_np=img)
 
     rows = []
-    for rec, poly in zip(binfo["buildings"], polys[:len(binfo["buildings"])]):
+    # Pair by the RECORDED index, never by position. build_prisms skips
+    # footprints that fail its height or geometry checks, so the nth building is
+    # not the nth polygon -- and pairing by position compares one building's
+    # height against a different building's footprint.
+    for rec in binfo["buildings"]:
+        pi = rec.get("poly_index")
+        if pi is None or pi >= len(polys):
+            continue
+        poly = polys[pi]
         x, y, w_, h_ = cv2.boundingRect(poly.astype(np.int32))
         x0, y0 = max(x, 0), max(y, 0)
         x1, y1 = min(x + w_, W), min(y + h_, W)

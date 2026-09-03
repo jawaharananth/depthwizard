@@ -213,7 +213,7 @@ def build_prisms(footprints: list, dsm: np.ndarray, dtm: np.ndarray,
     skipped = 0
 
     H, W = dsm.shape
-    for poly in footprints:
+    for _poly_i, poly in enumerate(footprints):
         if _self_intersects(poly):
             poly = cv2.convexHull(poly.astype(np.float32)).reshape(-1, 2)
             if len(poly) < 3:
@@ -421,6 +421,13 @@ def build_prisms(footprints: list, dsm: np.ndarray, dtm: np.ndarray,
             faces.append((off + n + a, off + n + b, off + n + c))
 
         index.append({
+            # Which INPUT footprint this prism came from. Callers that pair
+            # buildings back to polygons cannot use position, because skipped
+            # footprints shift every later index -- a validation script doing
+            # zip(buildings, polys) silently compared one building's height
+            # against another building's footprint the moment anything was
+            # skipped, and reported MAE 12.48 m for a pipeline measuring 2.60 m.
+            "poly_index": int(_poly_i),
             "vertex_offset": off, "vertex_count": 2 * n, "n_sides": n,
             "base_h": base_h, "roof_h": roof_h,
             "height_m": roof_h - base_h,
