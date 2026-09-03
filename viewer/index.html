@@ -37,6 +37,7 @@
   <div class="row">
     <button id="btn-rgb" class="active">RGB</button>
     <button id="btn-heatmap">HEATMAP</button>
+    <button id="btn-conf">CONFIDENCE</button>
   </div>
   <div class="row">
     <button id="btn-measure">Measure Height</button>
@@ -72,6 +73,7 @@ import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 const MESH_URL = "./output/terrain.glb";
 const TEXTURE_RGB_URL = "./output/terrain_texture.png";
 const TEXTURE_HEATMAP_URL = "./output/terrain_heatmap.png";
+const TEXTURE_CONF_URL = "./output/terrain_confidence.png";
 const TEXTURE_NORMAL_URL = "./output/terrain_normal.png";
 const TEXTURE_AO_URL = "./output/terrain_ao.png";
 const TEXTURE_ROUGHNESS_URL = "./output/terrain_roughness.png";
@@ -93,6 +95,30 @@ try {
     if (typeof SCENE_META.sun_azimuth_deg === "number") SUN_AZIMUTH_DEG = SCENE_META.sun_azimuth_deg;
   }
 } catch (e) { /* no metadata: keep the defaults above */ }
+
+// ITEM 6: the evidence trail.
+//
+// The pipeline already records, per building, which channels supported it
+// (height, roof edge, texture, shadow), how confident the photometry was, and
+// whether its height is MEASURED or merely INFERRED. All of that was exported
+// to GeoJSON and then only reachable by opening a spreadsheet. Loading it here
+// turns the model from a black box into something that can be interrogated
+// building by building.
+let BUILDING_RECORDS = null;
+try {
+  const rb = await fetch("./output/buildings.geojson", { cache: "no-store" });
+  if (rb.ok) {
+    const gj = await rb.json();
+    BUILDING_RECORDS = (gj.features || []).map((f) => {
+      const ring = (f.geometry && f.geometry.coordinates && f.geometry.coordinates[0]) || [];
+      let sx = 0, sy = 0;
+      for (const pt of ring) { sx += pt[0]; sy += pt[1]; }
+      return { props: f.properties || {},
+               cx: ring.length ? sx / ring.length : 0,
+               cy: ring.length ? sy / ring.length : 0 };
+    });
+  }
+} catch (e) { /* evidence trail unavailable; height still works */ }
 
 // WebGPURenderer: uses the browser's WebGPU backend when available (Chrome/
 // Edge/Firefox/Safari all ship it as of late 2025), and automatically falls
@@ -545,7 +571,7 @@ function shadeBuildingPrisms(mesh, mat) {
 
 // --- Load terrain mesh ---
 let groundMesh = null;
-let rgbTexture = null, heatmapTexture = null, normalTexture = null;
+let rgbTexture = null, heatmapTexture = null, confidenceTexture = null, normalTexture = null;
 let aoTexture = null, roughnessTexture = null, metalnessTexture = null;
 
 const textureLoader = new THREE.TextureLoader();
@@ -554,13 +580,15 @@ const gltfLoader = new GLTFLoader();
 Promise.all([
   new Promise((res) => textureLoader.load(TEXTURE_RGB_URL, res, undefined, () => res(null))),
   new Promise((res) => textureLoader.load(TEXTURE_HEATMAP_URL, res, undefined, () => res(null))),
+  new Promise((res) => textureLoader.load(TEXTURE_CONF_URL, res, undefined, () => res(null))),
   new Promise((res) => textureLoader.load(TEXTURE_NORMAL_URL, res, undefined, () => res(null))),
   new Promise((res) => textureLoader.load(TEXTURE_AO_URL, res, undefined, () => res(null))),
   new Promise((res) => textureLoader.load(TEXTURE_ROUGHNESS_URL, res, undefined, () => res(null))),
   new Promise((res) => textureLoader.load(TEXTURE_METALNESS_URL, res, undefined, () => res(null))),
-]).then(([rgbTex, heatTex, normalTex, aoTex, roughTex, metalTex]) => {
+]).then(([rgbTex, heatTex, confTex, normalTex, aoTex, roughTex, metalTex]) => {
   rgbTexture = rgbTex;
   heatmapTexture = heatTex;
+  confidenceTexture = confTex;
   normalTexture = normalTex;
   aoTexture = aoTex;
   roughnessTexture = roughTex;
@@ -802,6 +830,7 @@ function countVerts(obj) {
 // --- RGB / Heatmap toggle ---
 document.getElementById("btn-rgb").addEventListener("click", () => setTextureMode("rgb"));
 document.getElementById("btn-heatmap").addEventListener("click", () => setTextureMode("heatmap"));
+document.getElementById("btn-conf").addEventListener("click", () => setTextureMode("confidence"));
 
 function setTextureMode(mode) {
   if (!groundMesh) return;
@@ -811,6 +840,23 @@ function setTextureMode(mode) {
   groundMesh.material.needsUpdate = true;
   document.getElementById("btn-rgb").classList.toggle("active", mode === "rgb");
   document.getElementById("btn-heatmap").classList.toggle("active", mode === "heatmap");
+  const cb = document.getElementById("btn-conf");
+  if (cb) cb.classList.toggle("active", mode === "confidence");
+  // Confidence is a diagnostic view, not a lit scene: a red patch means the
+  // imagery barely constrains the height there, and shading it would make that
+  // depend on where the sun happens to be.
+  const diag = (mode === "confidence");
+  groundMesh.material.envMapIntensity = diag ? 0.0 : 0.62;
+  groundMesh.material.roughness = diag ? 1.0 : (roughnessTexture ? 1.0 : 0.92);
+  scene.traverse((o2) => {
+    if (o2.isMesh && o2 !== groundMesh) o2.visible = !diag;
+  });
+  const note = document.getElementById("measure-panel");
+  if (diag && note) {
+    note.textContent = "Confidence: green = views agree, height well constrained. "
+      + "Red = weak photometric support (flat roof, shadow, water, single view). "
+      + "This is the plane sweep's own NCC, not a model guess.";
+  }
 }
 
 // --- Click-to-measure ---
@@ -920,6 +966,49 @@ renderer.domElement.addEventListener("click", (event) => {
   }
   // Terrain elevation is still useful, but as a clearly separate figure.
   label += "   |   terrain elevation " + groundY.toFixed(1) + " " + unit;
+
+  // Attach the evidence trail for the nearest recorded building.
+  //
+  // Matching is by world position rather than by an id baked into the mesh:
+  // the GLB carries merged geometry with no per-building identifiers, and the
+  // GeoJSON is in projected map coordinates, so the two are related through the
+  // scene's own transform. A generous radius is used because the click lands on
+  // a roof while the record's centroid is the footprint centre.
+  if (onBuilding && BUILDING_RECORDS && BUILDING_RECORDS.length && SCENE_META) {
+    const originX = SCENE_META.origin_x, originY = SCENE_META.origin_y;
+    let best = null, bestD = Infinity;
+    for (const r of BUILDING_RECORDS) {
+      // Scene X runs east and scene Z runs south, matching the mesh builder.
+      const dx = (r.cx - (originX || 0)) - p.x;
+      const dy = (r.cy - (originY || 0)) - (-p.z);
+      const d = dx * dx + dy * dy;
+      if (d < bestD) { bestD = d; best = r; }
+    }
+    if (best && bestD < 40 * 40) {
+      const q = best.props;
+      const ev = q.evidence || {};
+      const bar = (v) => {
+        const n = Math.max(0, Math.min(5, Math.round((v || 0) * 5)));
+        return "#".repeat(n) + ".".repeat(5 - n);
+      };
+      label += "\n\nWHY THIS HEIGHT";
+      label += "\nreliability   " + (q.reliability || "n/a")
+             + "   provenance " + (q.provenance || "n/a");
+      if (q.confidence_px !== undefined && q.confidence_px !== null) {
+        label += "\nphotometric   " + bar(q.confidence_px)
+               + "  " + q.confidence_px.toFixed(2);
+      }
+      label += "\nheight cue    " + bar(ev.height) + "  " + (ev.height ?? "-");
+      label += "\nroof edge     " + bar(ev.edge) + "  " + (ev.edge ?? "-");
+      label += "\ntexture       " + bar(ev.texture) + "  " + (ev.texture ?? "-");
+      label += "\nshadow        " + bar(ev.shadow) + "  " + (ev.shadow ?? "-");
+      label += "\nfootprint     " + (q.area_m2 ?? "-") + " m2, "
+             + (q.size_class || "-");
+      label += q.height_is_metric
+             ? "\nheight is MEASURED (metric scale established)"
+             : "\nheight is INFERRED (relative scale, not measured)";
+    }
+  }
   panel.textContent = label;
 });
 
