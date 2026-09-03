@@ -28,6 +28,7 @@ import building_discovery as bd
 import region_footprints as rf
 import mvs_height
 import dem_source
+import confidence as conf_mod
 import dfc2019_loader as L
 import shadow_correction
 from depth_model import DepthBackbone, orientation_check
@@ -297,6 +298,24 @@ def build(tile: str, out_px: int = 2048, stage: bool = True,
         footprints, height_dsm, height_ground, gsd, gsd, min_height_m=1.5,
         image_np=image_np)
 
+    # ITEM 1: per-pixel confidence from the plane sweep's own NCC.
+    #
+    # This was already computed for every pixel and then discarded. It measures
+    # how strongly the imagery constrains the height at each point -- textureless
+    # roofs, deep shadow, water and single-view areas all score low, and those
+    # are precisely where the reconstruction should not be trusted. Publishing a
+    # single RMSE hides all of it; this says WHERE that number applies.
+    conf01 = None
+    conf_stats = None
+    if mvs is not None and mvs.get("confidence") is not None:
+        conf01 = conf_mod.to_image_grid(mvs["confidence"], image_np.shape[:2])
+        conf_stats = conf_mod.summarise(conf01)
+        Image.fromarray(conf_mod.colourise(conf01)).save(stem + "_confidence.png")
+        print(f"      confidence: median {conf_stats['median']:.2f}, "
+              f"{conf_stats['frac_low']*100:.0f}% of pixels below "
+              f"{conf_mod.LOW_CONFIDENCE} (weakly constrained)")
+
+
     # Provenance (section 24): a height is only MEASURED when the scene carried a
     # metric scale. On a Tier C scene it remains INFERRED, whatever it looks like.
     prov = bd.MEASURED if tier[0] in ("A", "B") else bd.INFERRED
@@ -423,6 +442,19 @@ def build(tile: str, out_px: int = 2048, stage: bool = True,
     # Per-building export (sections 48, 49). GeoJSON carries a CRS only because this
     # scene is genuinely georeferenced through the RPC ortho; a relative-only scene
     # must never be given one.
+    # ITEMS 5 + 6: per-building confidence and reliability tier, so the export
+    # carries WHY each height should be believed rather than only the number.
+    _bconf, _btier = {}, {}
+    if conf01 is not None:
+        for rec, prism in zip(disc["instances"], binfo["buildings"]):
+            pi = prism.get("poly_index")
+            if pi is None or pi >= len(footprints):
+                continue
+            c = conf_mod.building_confidence(conf01, footprints[pi])
+            _bconf[rec["id"]] = c
+            _btier[rec["id"]] = conf_mod.reliability_tier(
+                c["confidence"], rec.get("evidence"), tier[0] in ("A", "B"))
+
     import json as _json
     tr = o["transform"]
     feats = []
@@ -436,6 +468,8 @@ def build(tile: str, out_px: int = 2048, stage: bool = True,
             "geometry": {"type": "Polygon", "coordinates": [ring]},
             "properties": {
                 "id": rec["id"],
+                "confidence_px": _bconf.get(rec["id"], {}).get("confidence"),
+                "reliability": _btier.get(rec["id"], "UNVERIFIED"),
                 "height_m": round(prism["height_m"], 2),
                 "area_m2": rec["area_m2"],
                 "perimeter_m": rec["perimeter_m"],
@@ -468,6 +502,11 @@ def build(tile: str, out_px: int = 2048, stage: bool = True,
         "off_nadir_deg": o["off_nadir_deg"],
         "sun_elevation_deg": o["sun_elev_deg"], "sun_azimuth_deg": o["sun_azimuth_deg"],
         "gsd_m": round(gsd, 4), "crs": o["crs"], "tier": tier,
+        # The viewer relates GeoJSON map coordinates to scene coordinates
+        # through this origin. Without it a clicked building cannot be matched
+        # to its record and the evidence trail stays silently empty.
+        "origin_x": float(o["transform"].c),
+        "origin_y": float(o["transform"].f),
         "scale_m_per_unit": round(float(scale), 2),
         "dem_anchor": dem_info,
         "model": "prism city (flat roofs, vertical walls)",
@@ -482,6 +521,9 @@ def build(tile: str, out_px: int = 2048, stage: bool = True,
         "max_height_m": round(float(heights.max()), 1),
         "build_seconds": round(time.time() - t_start, 1),
         "discovery": disc["report"],
+        "confidence": conf_stats,
+        "reliability_counts": {t: sum(1 for v in _btier.values() if v == t)
+                               for t in set(_btier.values())} if _btier else None,
         "provenance": prov,
         "height_is_metric": tier[0] in ("A", "B"),
         "confidence_median": round(float(np.median(
@@ -492,6 +534,9 @@ def build(tile: str, out_px: int = 2048, stage: bool = True,
         os.makedirs(VIEWER_DIR, exist_ok=True)
         shutil.copy2(stem + ".glb", os.path.join(VIEWER_DIR, "terrain.glb"))
         shutil.copy2(stem + "_texture.png", os.path.join(VIEWER_DIR, "terrain_texture.png"))
+        if conf01 is not None and os.path.exists(stem + "_confidence.png"):
+            shutil.copy2(stem + "_confidence.png",
+                         os.path.join(VIEWER_DIR, "terrain_confidence.png"))
         # Maps baked for the heightfield describe a surface this model no
         # longer has; leaving them staged would light the flat ground with a
         # previous scene's occlusion.
