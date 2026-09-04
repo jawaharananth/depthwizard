@@ -339,6 +339,33 @@ def build(image_path: str, name: str, gsd_m: float = None,
                    ("water", wverts, wfaces, (0.18, 0.37, 0.53, 1.0)),
                    ("vehicles", vverts, vfaces, (0.65, 0.70, 0.75, 1.0)),
                ])
+    # SPEC-LITERAL OUTPUT NAMING: rDSM vs DSM.
+    #
+    # The problem statement distinguishes a RELATIVE surface (rDSM) from an
+    # absolute metric one (DSM), and names them separately. The tier system
+    # already made that distinction functionally, but the filename did not carry
+    # it -- so a relative product and an absolute one landed on disk with
+    # identical names and nothing in the filename to tell them apart.
+    #
+    # The suffix now states which it is. A file that leaves this machine says
+    # what it is without anyone having to open its metadata.
+    import dsm_export as _dx
+    _metric = (src_crs is not None) and (anchor_height_m is not None or gsd_m is not None)
+    _suffix = "_DSM.tif" if _metric else "_rDSM.tif"
+    try:
+        _dx.export_dsm_geotiff_affine(
+            dsm, stem + _suffix,
+            transform=None, crs=src_crs if _metric else None,
+            tags={"TIER": tier, "HEIGHT_IS_METRIC": str(_metric),
+                  "PRODUCT": "DSM" if _metric else "rDSM",
+                  "SOURCE": os.path.basename(image_path),
+                  "PIPELINE": "DepthWizard"})
+        print(f"      {'DSM' if _metric else 'rDSM'} written: "
+              f"{os.path.basename(stem)}{_suffix}"
+              f"{'' if _metric else '  (relative heights, no CRS)'}")
+    except Exception as _e:
+        print(f"      DSM export failed: {_e}")
+
     print(f"[5/5] {len(gfaces)} ground + {len(bfaces)} building faces, "
           f"{os.path.getsize(stem + '.glb')/1e6:.1f} MB")
 
