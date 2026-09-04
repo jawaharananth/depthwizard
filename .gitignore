@@ -104,3 +104,10 @@ india/**/*.png
 # Explicitly allow authored assets.
 !docs/**
 !README*.png
+
+# Tauri build output. The Rust target directory reaches several GB, and the
+# installers are build products rather than source.
+src-tauri/target/
+dist/
+*.msi
+/*-setup.exe
