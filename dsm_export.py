@@ -69,3 +69,31 @@ if __name__ == "__main__":
     import os
     os.remove("test_export_georef.tif")
     os.remove("test_export_relative.tif")
+
+
+def export_dsm_geotiff_affine(dsm, out_path, transform=None, crs=None,
+                              nodata: float = -9999.0, tags: dict = None):
+    """
+    Write a DSM using an affine transform directly, rather than WGS84 bounds.
+
+    The bounds-based entry point assumes the caller has degrees. This pipeline
+    works in a projected UTM grid and already holds the exact affine transform
+    used to build the scene, so converting it to bounds and back would introduce
+    a rounding error into a file whose whole purpose is to be measured from.
+
+    Passing crs=None writes a valid GeoTIFF with no projection, which is the
+    correct representation of a relative-scale surface -- see the module
+    docstring for why a fake CRS is worse than none.
+    """
+    import numpy as _np
+    import rasterio as _rio
+
+    arr = _np.where(_np.isnan(dsm), nodata, dsm).astype(_np.float32)
+    h, w = arr.shape
+    with _rio.open(out_path, "w", driver="GTiff", height=h, width=w, count=1,
+                   dtype="float32", crs=crs, transform=transform,
+                   nodata=nodata, compress="deflate") as dst:
+        dst.write(arr, 1)
+        if tags:
+            dst.update_tags(**{k: str(v) for k, v in tags.items()})
+    return out_path
