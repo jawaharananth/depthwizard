@@ -29,6 +29,7 @@ import region_footprints as rf
 import mvs_height
 import dem_source
 import confidence as conf_mod
+import metric_calibration as mcal
 import dfc2019_loader as L
 import shadow_correction
 from depth_model import DepthBackbone, orientation_check
@@ -166,6 +167,18 @@ def build(tile: str, out_px: int = 2048, stage: bool = True,
         cal = shadow_correction.calibrate_scale(
             image_np, seg_labels, refined, o["sun_elev_deg"], o["sun_azimuth_deg"],
             gsd, gsd)
+        # ITEM 2: fuse every available scale signal rather than taking the first
+        # that answers. Two signals agreeing deserve more confidence than either
+        # alone, and disagreement is information the caller should see rather
+        # than have resolved silently by precedence.
+        _fused = mcal.fuse({
+            "shadow": {"scale": cal.get("scale_m_per_unit"),
+                       "spread_ratio": cal.get("spread_ratio"),
+                       "n": cal.get("n", 0)},
+            "prior": {"scale": None, "spread_ratio": 0.0, "n": 1},
+        })
+        if _fused.get("scale") is not None:
+            print("[3/5] " + mcal.describe(_fused))
         scale = cal["scale_m_per_unit"]
         if scale is None or cal["n"] < 10:
             rel = np.maximum(refined - dtm_mod.estimate_dtm(refined, seg_labels), 0.0)
