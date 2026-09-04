@@ -59,6 +59,29 @@ from rasterio.warp import transform as warp_transform
 
 COP30_BASE = "https://copernicus-dem-30m.s3.amazonaws.com"
 
+# SRTM 30 m (SRTMGL1 v3) mirrored as cloud-optimised GeoTIFF on AWS Open Data.
+# The problem statement names SRTM specifically, so it is offered as a named
+# source rather than silently substituted by Copernicus. Both are 30 m global
+# DEMs anchoring the same quantity; they differ in vintage, void handling and
+# vertical datum, and having both available lets the anchor be cross-checked
+# rather than trusted.
+SRTM_BASE = "https://s3.amazonaws.com/elevation-tiles-prod/skadi"
+
+DEM_SOURCES = ("glo30", "srtm")
+
+
+def _srtm_tile_name(lon: float, lat: float) -> str:
+    """
+    SRTM tiles are named by the integer degree of their SOUTH-WEST corner, the
+    same convention as Copernicus, so the coordinate is floored rather than
+    rounded -- 30.9N lives in N30, not N31.
+    """
+    ns = "N" if lat >= 0 else "S"
+    ew = "E" if lon >= 0 else "W"
+    la = int(math.floor(abs(lat))) if lat >= 0 else int(math.ceil(abs(lat)))
+    lo = int(math.floor(abs(lon))) if lon >= 0 else int(math.ceil(abs(lon)))
+    return f"{ns}{la:02d}{ew}{lo:03d}"
+
 
 def _cop30_tile_name(lon: float, lat: float) -> str:
     """
@@ -75,7 +98,8 @@ def _cop30_tile_name(lon: float, lat: float) -> str:
 
 def sample_grid(utm_x0: float, utm_y_top: float, size_px: int, gsd_m: float,
                 utm_epsg: str, dem_path: str = None,
-                geoid_offset_m: float = None) -> dict:
+                geoid_offset_m: float = None,
+                dem_source: str = "glo30") -> dict:
     """
     Sample an external DEM onto the scene's UTM grid.
 
@@ -96,6 +120,13 @@ def sample_grid(utm_x0: float, utm_y_top: float, size_px: int, gsd_m: float,
 
     if dem_path:
         url, source = dem_path, f"local: {os.path.basename(dem_path)}"
+    elif dem_source == "srtm":
+        t = _srtm_tile_name(float(lon.mean()), float(lat.mean()))
+        # /vsigzip/ wrapping /vsicurl/: the skadi mirror stores .hgt.gz, and
+        # GDAL cannot read a gzipped HGT through /vsicurl/ alone -- it needs the
+        # decompression layer named explicitly, outermost.
+        url = f"/vsigzip//vsicurl/{SRTM_BASE}/{t[:3]}/{t}.hgt.gz"
+        source = f"SRTM 30 m ({t})"
     else:
         tile = _cop30_tile_name(float(lon.mean()), float(lat.mean()))
         url = f"/vsicurl/{COP30_BASE}/{tile}/{tile}.tif"

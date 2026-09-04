@@ -50,7 +50,8 @@ GROUND_GRID = 700         # ground is smooth bare earth, so it needs few vertice
 
 def build(tile: str, out_px: int = 2048, stage: bool = True,
           extent_m: float = None, no_mvs: bool = False, n_views: int = 6,
-          use_dem: bool = False, dem_path: str = None) -> dict:
+          use_dem: bool = False, dem_path: str = None,
+          dem_source: str = "glo30") -> dict:
     os.makedirs(OUT_DIR, exist_ok=True)
     stem = os.path.join(OUT_DIR, f"city_{tile.lower()}")
     t_start = time.time()
@@ -219,7 +220,8 @@ def build(tile: str, out_px: int = 2048, stage: bool = True,
         epsg = "EPSG:32617" if tile.startswith("JAX") else "EPSG:32615"
         d = dem_source.sample_grid(
             coords["utm_x"] - pad, coords["utm_y"] + t_ext + pad,
-            out_px, o["extent_m"] / out_px, epsg, dem_path=dem_path)
+            out_px, o["extent_m"] / out_px, epsg, dem_path=dem_path,
+            dem_source=dem_source)
         if d["dem"] is None:
             print(f"[3b] DEM unavailable ({d.get('error')}) -- staying on tier {tier[0]}")
         else:
@@ -626,10 +628,13 @@ if __name__ == "__main__":
                     help="use monocular depth instead of multi-view stereo")
     ap.add_argument("--dem", action="store_true",
                     help="anchor absolute elevation to Copernicus GLO-30 (Tier A)")
+    ap.add_argument("--dem-source", choices=["glo30", "srtm"], default="glo30",
+                    help="which global DEM to anchor against; both are 30 m and "
+                         "the spec names SRTM explicitly")
     ap.add_argument("--dem-path", default=None,
                     help="use a local DEM GeoTIFF instead of the global model")
     ap.add_argument("--views", type=int, default=6,
                     help="how many near-nadir views to triangulate from")
     a = ap.parse_args()
     build(a.tile, out_px=a.px, stage=not a.no_stage, extent_m=a.extent,
-          no_mvs=a.no_mvs, n_views=a.views, use_dem=a.dem, dem_path=a.dem_path)
+          no_mvs=a.no_mvs, n_views=a.views, use_dem=a.dem, dem_path=a.dem_path, dem_source=a.dem_source)

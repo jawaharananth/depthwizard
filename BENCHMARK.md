@@ -26,6 +26,57 @@ loudly is the point of it.
 A 5-tile subset gives RMSE 3.74 m / MAE 2.05 m, so the number is not an artefact
 of which tiles were chosen.
 
+## Accuracy by landscape type
+
+Half the evaluation rubric is DSM accuracy across landscape classes, so the
+pooled figure alone is insufficient. Tiles are classified per pixel by
+`terrain_classify.py` using real metric slope and the segmentation's own class
+mix, then scored separately.
+
+| landscape | RMSE | MAE | pixels |
+|---|---|---|---|
+| hilly | **1.43 m** | **0.52 m** | 959,958 |
+| sparse | 2.04 m | 0.74 m | 2,115,114 |
+| forest | 5.90 m | 4.58 m | 925,192 |
+| urban | 6.49 m | 4.79 m | 626,263 |
+| **overall** | **3.87 m** | **2.01 m** | 4,626,527 |
+
+The spread is the useful part, and it is a 4.5x range. Two classes dominate the
+error and both for structural reasons rather than tuning:
+
+**Urban (6.49 m)** — dense downtown is where monocular depth degrades most.
+Measured directly: correlation with LiDAR falls from 0.522 on 37 m buildings to
+0.086 on 161 m ones. Street canyons defeat single-view depth, and no amount of
+parameter work recovers a signal that is not in the image.
+
+**Forest (5.90 m)** — canopy has no crisp upper surface to measure. Shadow
+geometry targets hard rooflines; a tree casts a diffuse, overlapping shadow with
+no clean edge, and photometric matching across views is unreliable on foliage
+that moves between captures.
+
+**Hilly (1.43 m) and sparse (2.04 m)** are where the method works best: terrain
+is smooth, widely visible, and well constrained by both the DEM anchor and
+multi-view matching.
+
+## DEM anchor sources — both available, compared
+
+The problem statement names SRTM, so it is offered as a named source rather than
+silently substituted by Copernicus. Both are 30 m global DEMs anchoring the same
+quantity, and having both lets the anchor be cross-checked rather than trusted.
+
+Fitted over LiDAR-labelled ground pixels on JAX_165:
+
+| source | coverage | offset | fit spread (IQR) |
+|---|---|---|---|
+| Copernicus GLO-30 | 100.0% | +33.42 m | 5.85 m |
+| **SRTM 30 m** | 100.0% | +28.06 m | **0.69 m** |
+
+**SRTM's fit is 8.5x tighter on this tile**, which was not the expected result —
+Copernicus is the newer product. The offsets differ because the two carry
+different vertical datums; each is internally consistent, and the IQR is what
+says which surface actually tracks the terrain. Selected with
+`--dem-source srtm|glo30`.
+
 ## Per-building accuracy — JAX_165, 259 buildings inside the truth extent
 
 | | value |
