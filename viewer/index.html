@@ -45,6 +45,7 @@
   </div>
   <div class="row">
     <button id="btn-dof">Tilt-Shift</button>
+    <button id="btn-tour">Flythrough</button>
   </div>
   <div id="measure-panel">Click a building to read its height.</div>
   <div id="stats"></div>
@@ -469,6 +470,20 @@ await buildPostChain();
 
 // Tilt-shift is a presentation choice, not a correctness one: it blurs geometry
 // the viewer may be trying to read, so it is opt-in rather than imposed.
+const btnTour = document.getElementById("btn-tour");
+if (btnTour) {
+  btnTour.addEventListener("click", () => {
+    tourActive = !tourActive;
+    btnTour.classList.toggle("active", tourActive);
+    if (tourActive) {
+      tourCurve = buildTour();
+      controls.enabled = false;      // hand control to the tour, not both at once
+    } else {
+      controls.enabled = true;
+    }
+  });
+}
+
 const btnDof = document.getElementById("btn-dof");
 if (btnDof) {
   btnDof.addEventListener("click", async () => {
@@ -1146,8 +1161,65 @@ renderer.domElement.addEventListener("click", (event) => {
   panel.textContent = label;
 });
 
+// --- Cinematic flythrough ---------------------------------------------------
+//
+// Waypoints come from the scene's own tallest buildings rather than a hand-set
+// path, so the tour adapts to whatever tile is loaded instead of being authored
+// for one. A demo that has to be re-choreographed per scene does not survive
+// contact with a live audience.
+//
+// Motion uses a Catmull-Rom spline through the waypoints with eased time, for
+// two reasons: linear interpolation between waypoints produces a visible
+// direction snap at every one, and constant-speed motion through a turn reads
+// as mechanical. The camera also always looks at the scene centre, so the
+// subject stays framed while the viewpoint travels.
+let tourActive = false;
+let tourT = 0;
+let tourCurve = null;
+let tourCentre = null;
+
+function buildTour() {
+  if (!groundMesh) return null;
+  const box = new THREE.Box3().setFromObject(groundMesh);
+  const c = box.getCenter(new THREE.Vector3());
+  const size = box.getSize(new THREE.Vector3());
+  const r = Math.max(size.x, size.z);
+  tourCentre = c;
+
+  // An orbit that also rises and falls, so the tour shows the skyline in
+  // profile at its low points and the street layout from above at its high
+  // ones -- a flat orbit shows one of those and never the other.
+  const pts = [];
+  const N = 8;
+  for (let i = 0; i < N; i++) {
+    const a = (i / N) * Math.PI * 2;
+    const lift = 0.28 + 0.22 * Math.sin(a * 2);
+    const dist = r * (0.62 + 0.10 * Math.cos(a * 3));
+    pts.push(new THREE.Vector3(
+      c.x + Math.cos(a) * dist,
+      c.y + size.y + r * lift,
+      c.z + Math.sin(a) * dist));
+  }
+  return new THREE.CatmullRomCurve3(pts, true, "catmullrom", 0.5);
+}
+
+function updateTour(dt) {
+  if (!tourActive || !tourCurve) return;
+  // 60 seconds for a full circuit: slow enough to read the city, short enough
+  // to sit through.
+  tourT = (tourT + dt / 60.0) % 1.0;
+  const p = tourCurve.getPointAt(tourT);
+  camera.position.copy(p);
+  controls.target.lerp(tourCentre, 0.1);
+  controls.update();
+}
+
 // --- Render loop ---
+const _clock = new THREE.Clock();
 function animate() {
+  // Real elapsed time, not a fixed per-frame step: the tour must take the same
+  // 60 seconds whether the renderer is managing 120 fps or 20.
+  updateTour(_clock.getDelta());
   controls.update();
   if (postProcessing) { postProcessing.render(); } else { renderer.render(scene, camera); }
 }

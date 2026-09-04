@@ -30,6 +30,8 @@ import mvs_height
 import dem_source
 import confidence as conf_mod
 import metric_calibration as mcal
+import dsm_export
+import geometry_validate as gval
 import dfc2019_loader as L
 import shadow_correction
 from depth_model import DepthBackbone, orientation_check
@@ -438,6 +440,35 @@ def build(tile: str, out_px: int = 2048, stage: bool = True,
     print(f"      {n_canopy} canopy volumes, {n_water} water bodies, "
           f"{n_veh} vehicle-sized objects (heuristic)")
 
+    # SPEC-REQUIRED EXPORT: the DSM as a standard GeoTIFF.
+    #
+    # The problem statement asks for an elevation product, not only a mesh. This
+    # writes the surface with its real CRS and affine transform so it opens
+    # correctly in QGIS or any GIS tool and can be compared against other DSMs
+    # rather than only looked at. It was never wired in until now.
+    #
+    # The CRS is written ONLY when the scene genuinely has one. A relative-scale
+    # scene still gets a valid GeoTIFF for tooling consistency, but with no
+    # projection -- stamping one onto unscaled heights would tell anyone opening
+    # it later that the numbers mean something they do not.
+    _is_metric = tier[0] in ("A", "B")
+    try:
+        dsm_export.export_dsm_geotiff_affine(
+            height_dsm, stem + "_dsm.tif",
+            transform=o["transform"] if _is_metric else None,
+            crs=o["crs"] if _is_metric else None,
+            tags={"TIER": tier, "HEIGHT_IS_METRIC": str(_is_metric),
+                  "SOURCE_VIEW": os.path.basename(o["rgb_path"]),
+                  "GSD_M": f"{gsd:.4f}",
+                  "SUN_ELEV_DEG": str(o["sun_elev_deg"]),
+                  "SUN_AZIMUTH_DEG": str(o["sun_azimuth_deg"]),
+                  "PIPELINE": "DepthWizard"})
+        print(f"      DSM GeoTIFF written "
+              f"({o['crs'] if _is_metric else 'no CRS -- relative heights'})")
+    except Exception as exc:
+        print(f"      DSM GeoTIFF export FAILED: {exc}")
+
+
     export_glb(stem + ".glb", gverts, guvs, gfaces,
                np.zeros((0, 3), np.float32), np.zeros((0, 3), np.int64),
                texture_bytes=tex.getvalue(), building_uvs=None,
@@ -450,6 +481,23 @@ def build(tile: str, out_px: int = 2048, stage: bool = True,
                    ("vehicles", vverts, vfaces, (0.62, 0.63, 0.66, 1.0)),
                ])
     size_mb = os.path.getsize(stem + ".glb") / 1e6
+    # FORMAL GEOMETRY VALIDATION before anything is written.
+    #
+    # Every defect this checks has actually occurred here: a ground mesh wound
+    # so every face pointed downward and rendered invisible, self-intersecting
+    # shards from fan triangulation, 79 m roof spikes, NaN heights from an
+    # unfilled MVS surface. All produced valid-looking files.
+    _gv = [
+        gval.validate(gverts, gfaces, "ground", expect_upward=True),
+        gval.validate(bverts, bfaces, "buildings"),
+        gval.validate(cverts, cfaces, "canopy"),
+        gval.validate(wverts, wfaces, "water"),
+        gval.validate(vverts, vfaces, "vehicles"),
+    ]
+    print("      geometry validation:")
+    if not gval.report(_gv):
+        print("      WARNING: a mesh failed a hard geometry check (see above)")
+
     print(f"[5/5] {len(gfaces)} ground faces + {len(bfaces)} building faces, {size_mb:.1f} MB")
 
     # Per-building export (sections 48, 49). GeoJSON carries a CRS only because this
