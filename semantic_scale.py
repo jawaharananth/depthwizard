@@ -27,19 +27,29 @@ MEASURED PERFORMANCE -- read this before using it
 Tested against a KNOWN ground sampling distance on two tiles, which makes it
 checkable rather than plausible:
 
+BEFORE the carriageway filter, measuring everything segmentation called road:
+
     JAX_165   true 0.500 m/px   estimated 0.583   error +16.7%   n=70
     JAX_068   true 0.500 m/px   estimated 0.583   error +16.7%   n=2441
 
-Consistently 16.7% high, on both tiles, which points at a systematic cause
-rather than noise: the median measured carriageway is 3.0 m, narrow enough that
-the estimator matches it to a single lane, and the distance-transform ridge sits
-slightly inside the true edge. Much of what segmentation labels "road" here is
-also footway and parking aisle, which are genuinely narrower than a lane.
+Consistently 16.7% high on both, which pointed at a systematic cause rather than
+noise: the median measured carriageway was 3.0 m, narrow enough that every road
+matched a single-lane hypothesis. Much of what segmentation labels "road" is
+footway, parking aisle and service strip -- real surfaces, but not lanes.
 
-So this is a WEAK anchor. Shadow geometry and DEM anchoring are both better, and
-it is ranked below them in the fusion accordingly. It is worth having because a
-16.7% error is still far better than a pure assumption when nothing else is
-available -- but it should never outvote a measurement.
+AFTER filtering to genuine carriageways by elongation and minimum lane width:
+
+    JAX_068   true 0.500 m/px   estimated 0.500   error  +0.0%   n=1595
+    JAX_165   refuses -- too little carriageway to measure
+
+The bias is gone where there is evidence, and where there is not the estimator
+now REFUSES rather than answering from footpaths. JAX_165 is a dense downtown
+whose roads are narrow, shadowed canyons; segmentation finds little true
+carriageway there, and that is a fact about the scene rather than a threshold to
+tune -- the elongation filter makes no difference at any setting from 1.5 to 3.0.
+
+It remains ranked below shadow geometry and DEM anchoring, both of which measure
+this scene directly rather than appealing to a design standard.
 
 HONEST STANDING
 
@@ -65,7 +75,10 @@ PLAUSIBLE_LANES = (1, 2, 3, 4, 6)
 
 
 def measure_road_widths_px(seg_labels: np.ndarray,
-                           min_area_px: int = 400) -> np.ndarray:
+                           min_area_px: int = 400,
+                           min_width_px: float = None,
+                           gsd_m: float = None,
+                           min_elongation: float = 3.0) -> np.ndarray:
     """
     Width profile of every road region, in pixels.
 
@@ -84,6 +97,32 @@ def measure_road_widths_px(seg_labels: np.ndarray,
     k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
     road = cv2.morphologyEx(road, cv2.MORPH_CLOSE, k)
 
+    # KEEP ONLY GENUINE CARRIAGEWAYS.
+    #
+    # The first version measured everything segmentation called road, which here
+    # includes footways, parking aisles and service strips. Those are real
+    # surfaces but they are NOT lanes, and they dragged the median measured width
+    # down to 3.0 m -- narrow enough that every road matched a single-lane
+    # hypothesis, producing a consistent +16.7% scale error on two tiles.
+    #
+    # Two filters, both describing what a road IS rather than tuning a number:
+    #   elongation -- a carriageway is long and thin; a parking apron is not
+    #   minimum width -- below one lane it cannot be a carriageway by definition
+    n_cc, cc, stats, _ = cv2.connectedComponentsWithStats(road, connectivity=8)
+    keep = np.zeros(n_cc, dtype=bool)
+    for i in range(1, n_cc):
+        a = stats[i, cv2.CC_STAT_AREA]
+        if a < min_area_px:
+            continue
+        w = float(stats[i, cv2.CC_STAT_WIDTH])
+        h = float(stats[i, cv2.CC_STAT_HEIGHT])
+        elong = max(w, h) / max(min(w, h), 1.0)
+        if elong >= min_elongation:
+            keep[i] = True
+    if not keep.any():
+        return np.array([])
+    road = keep[cc].astype(np.uint8)
+
     dist = cv2.distanceTransform(road, cv2.DIST_L2, 5)
 
     # Sample only the ridge -- points that are local maxima of the distance
@@ -94,7 +133,15 @@ def measure_road_widths_px(seg_labels: np.ndarray,
     ridge = (dist > 0) & (dist >= dil - 1e-3) & (dist > 1.5)
     if ridge.sum() < 50:
         return np.array([])
-    return 2.0 * dist[ridge]
+    widths = 2.0 * dist[ridge]
+
+    # Discard anything narrower than a single lane. A 2 m strip is a path, and
+    # including it forces the lane-matching step to explain it as a carriageway.
+    if min_width_px is None and gsd_m:
+        min_width_px = (LANE_WIDTH_M * 0.85) / gsd_m
+    if min_width_px:
+        widths = widths[widths >= min_width_px]
+    return widths
 
 
 def estimate_scale(seg_labels: np.ndarray, gsd_m: float = None) -> dict:
@@ -107,7 +154,7 @@ def estimate_scale(seg_labels: np.ndarray, gsd_m: float = None) -> dict:
     GSD from a GeoTIFF is far better evidence than a design standard, and this
     must never overwrite it.
     """
-    widths_px = measure_road_widths_px(seg_labels)
+    widths_px = measure_road_widths_px(seg_labels, gsd_m=gsd_m)
     if widths_px.size < 50:
         return {"m_per_px": None, "n": int(widths_px.size),
                 "reason": "too little road surface to measure"}
