@@ -46,6 +46,33 @@ average.
 buildings (2–10 m: +9.63 m, n=5) where structure height approaches the MVS noise
 floor.
 
+## Statistically guaranteed intervals (conformal prediction)
+
+Calibrated on half the buildings, coverage measured on the half held out —
+calibrating and scoring on the same set would be circular, since the quantile is
+fitted to make coverage come out right.
+
+| interval | half-width | held-out coverage | nominal |
+|---|---|---|---|
+| constant width | ±5.03 m | 91.5% | 90% |
+| **confidence-adaptive** | **±4.63 m** | **92.3%** | 90% |
+
+So a reported height carries a defensible claim: *"24.1 m, true value within
+±4.6 m at least 90% of the time."* The adaptive variant is 8% tighter at
+slightly better coverage, because it spends width where photometric support is
+weak rather than spreading it evenly.
+
+The guarantee is distribution-free and finite-sample, assuming only
+exchangeability between calibration and test data — not Gaussian errors, not a
+correctly specified model. That matters for a pipeline assembled from
+heuristics and classical CV rather than one probabilistic model.
+
+**Limit:** coverage is MARGINAL, averaged over the population. It does not
+promise 90% within every subgroup — low buildings are systematically worse
+(+9.63 m bias, n=5) and the interval will under-cover there while the overall
+guarantee still holds. Subgroup performance is reported separately above rather
+than hidden inside the average.
+
 ## Footprint accuracy — JAX_165
 
 | | value |
