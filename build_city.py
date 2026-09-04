@@ -566,6 +566,51 @@ def build(tile: str, out_px: int = 2048, stage: bool = True,
     # must never be given one.
     # ITEMS 5 + 6: per-building confidence and reliability tier, so the export
     # carries WHY each height should be believed rather than only the number.
+    # Per-building REFERENCE height, where LiDAR covers the footprint.
+    #
+    # The overlay shows error as a field; this gives the number for one building,
+    # which is what someone actually asks when they click it. Only populated
+    # inside the truth extent and only where the LiDAR agrees the footprint is
+    # built -- a footprint sitting mostly on ground has no reference building
+    # height, and reporting one would compare a roof against a road.
+    _bref = {}
+    try:
+        _cls_r = o["truth"]["cls"]
+        _gt_r = o["truth"]["dsm"].astype(np.float32)
+        _gm = (_cls_r == 2)
+        if _gm.sum() > 1000:
+            _gl_r = float(np.percentile(_gt_r[_gm], 50))
+            _ins = o["truth_inset_px"]
+            _twr = out_px - 2 * _ins
+            _gth = cv2.resize(_gt_r - _gl_r, (_twr, _twr), interpolation=cv2.INTER_LINEAR)
+            _gtc = cv2.resize(_cls_r, (_twr, _twr), interpolation=cv2.INTER_NEAREST)
+            for _rec, _pr in zip(disc["instances"], binfo["buildings"]):
+                _pi = _pr.get("poly_index")
+                if _pi is None or _pi >= len(footprints):
+                    continue
+                _pl = footprints[_pi]
+                _x, _y, _w, _h = cv2.boundingRect(_pl.astype(np.int32))
+                _y0, _x0 = max(_y, 0), max(_x, 0)
+                _y1, _x1 = min(_y + _h, out_px), min(_x + _w, out_px)
+                _gy0, _gy1 = _y0 - _ins, _y1 - _ins
+                _gx0, _gx1 = _x0 - _ins, _x1 - _ins
+                if _gy0 < 0 or _gx0 < 0 or _gy1 > _twr or _gx1 > _twr:
+                    continue
+                _m = np.zeros((_y1 - _y0, _x1 - _x0), np.uint8)
+                cv2.fillPoly(_m, [_pl.astype(np.int32) - [_x0, _y0]], 1)
+                _mb = _m.astype(bool)
+                if _mb.sum() < 20:
+                    continue
+                _sub = _gth[_gy0:_gy1, _gx0:_gx1]
+                _sc = _gtc[_gy0:_gy1, _gx0:_gx1]
+                if _sub.shape != _mb.shape:
+                    continue
+                if float((_sc[_mb] == 6).mean()) < 0.5:
+                    continue
+                _bref[_rec["id"]] = round(float(np.percentile(_sub[_mb], 80)), 2)
+    except Exception:
+        pass
+
     _bconf, _btier = {}, {}
     if conf01 is not None:
         for rec, prism in zip(disc["instances"], binfo["buildings"]):
@@ -592,6 +637,7 @@ def build(tile: str, out_px: int = 2048, stage: bool = True,
                 "id": rec["id"],
                 "confidence_px": _bconf.get(rec["id"], {}).get("confidence"),
                 "reliability": _btier.get(rec["id"], "UNVERIFIED"),
+                "reference_height_m": _bref.get(rec["id"]),
                 "height_m": round(prism["height_m"], 2),
                 "area_m2": rec["area_m2"],
                 "perimeter_m": rec["perimeter_m"],
