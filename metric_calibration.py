@@ -32,6 +32,11 @@ SIGNALS
           the per-building estimates.
   mvs     triangulated absolute metres. Scale is 1.0 by construction, and the
           weight is the mean photometric confidence.
+  semantic  road width against a standard lane. A real observation of the
+          scene, but a weak one: measured +16.7% against a known GSD on two
+          tiles, consistently. Ranked below shadow and DEM by giving it the
+          spread its measured error implies, so the weighting reflects its
+          accuracy rather than its availability.
   prior   a stated assumption about city form. Deliberately given a small fixed
           weight so it can break a tie but never override a measurement.
 """

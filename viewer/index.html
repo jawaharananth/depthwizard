@@ -38,6 +38,7 @@
     <button id="btn-rgb" class="active">RGB</button>
     <button id="btn-heatmap">HEATMAP</button>
     <button id="btn-conf">CONFIDENCE</button>
+    <button id="btn-err">VS LiDAR</button>
   </div>
   <div class="row">
     <button id="btn-measure">Measure Height</button>
@@ -75,6 +76,7 @@ const MESH_URL = "./output/terrain.glb";
 const TEXTURE_RGB_URL = "./output/terrain_texture.png";
 const TEXTURE_HEATMAP_URL = "./output/terrain_heatmap.png";
 const TEXTURE_CONF_URL = "./output/terrain_confidence.png";
+const TEXTURE_ERR_URL = "./output/terrain_error.png";
 const TEXTURE_NORMAL_URL = "./output/terrain_normal.png";
 const TEXTURE_AO_URL = "./output/terrain_ao.png";
 const TEXTURE_ROUGHNESS_URL = "./output/terrain_roughness.png";
@@ -719,7 +721,7 @@ function shadeBuildingPrisms(mesh, mat) {
 
 // --- Load terrain mesh ---
 let groundMesh = null;
-let rgbTexture = null, heatmapTexture = null, confidenceTexture = null, normalTexture = null;
+let rgbTexture = null, heatmapTexture = null, confidenceTexture = null, errorTexture = null, normalTexture = null;
 let aoTexture = null, roughnessTexture = null, metalnessTexture = null;
 
 const textureLoader = new THREE.TextureLoader();
@@ -729,14 +731,16 @@ Promise.all([
   new Promise((res) => textureLoader.load(TEXTURE_RGB_URL, res, undefined, () => res(null))),
   new Promise((res) => textureLoader.load(TEXTURE_HEATMAP_URL, res, undefined, () => res(null))),
   new Promise((res) => textureLoader.load(TEXTURE_CONF_URL, res, undefined, () => res(null))),
+  new Promise((res) => textureLoader.load(TEXTURE_ERR_URL, res, undefined, () => res(null))),
   new Promise((res) => textureLoader.load(TEXTURE_NORMAL_URL, res, undefined, () => res(null))),
   new Promise((res) => textureLoader.load(TEXTURE_AO_URL, res, undefined, () => res(null))),
   new Promise((res) => textureLoader.load(TEXTURE_ROUGHNESS_URL, res, undefined, () => res(null))),
   new Promise((res) => textureLoader.load(TEXTURE_METALNESS_URL, res, undefined, () => res(null))),
-]).then(([rgbTex, heatTex, confTex, normalTex, aoTex, roughTex, metalTex]) => {
+]).then(([rgbTex, heatTex, confTex, errTex, normalTex, aoTex, roughTex, metalTex]) => {
   rgbTexture = rgbTex;
   heatmapTexture = heatTex;
   confidenceTexture = confTex;
+  errorTexture = errTex;
   normalTexture = normalTex;
   aoTexture = aoTex;
   roughnessTexture = roughTex;
@@ -980,6 +984,7 @@ function countVerts(obj) {
 document.getElementById("btn-rgb").addEventListener("click", () => setTextureMode("rgb"));
 document.getElementById("btn-heatmap").addEventListener("click", () => setTextureMode("heatmap"));
 document.getElementById("btn-conf").addEventListener("click", () => setTextureMode("confidence"));
+document.getElementById("btn-err").addEventListener("click", () => setTextureMode("error"));
 
 function setTextureMode(mode) {
   if (!groundMesh) return;
@@ -991,20 +996,37 @@ function setTextureMode(mode) {
   document.getElementById("btn-heatmap").classList.toggle("active", mode === "heatmap");
   const cb = document.getElementById("btn-conf");
   if (cb) cb.classList.toggle("active", mode === "confidence");
+  const eb = document.getElementById("btn-err");
+  if (eb) eb.classList.toggle("active", mode === "error");
   // Confidence is a diagnostic view, not a lit scene: a red patch means the
   // imagery barely constrains the height there, and shading it would make that
   // depend on where the sun happens to be.
-  const diag = (mode === "confidence");
+  const diag = (mode === "confidence" || mode === "error");
   groundMesh.material.envMapIntensity = diag ? 0.0 : 0.62;
   groundMesh.material.roughness = diag ? 1.0 : (roughnessTexture ? 1.0 : 0.92);
   scene.traverse((o2) => {
     if (o2.isMesh && o2 !== groundMesh) o2.visible = !diag;
   });
   const note = document.getElementById("measure-panel");
-  if (diag && note) {
+  if (note && mode === "confidence") {
     note.textContent = "Confidence: green = views agree, height well constrained. "
       + "Red = weak photometric support (flat roof, shadow, water, single view). "
       + "This is the plane sweep's own NCC, not a model guess.";
+  } else if (note && mode === "error") {
+    // The overlay only exists where reference data does. Saying so is the point:
+    // an empty overlay on an arbitrary upload could be mistaken for agreement.
+    const v = SCENE_META && SCENE_META.validation;
+    if (!errorTexture || !v) {
+      note.textContent = "No reference data available for this scene, so no "
+        + "validation overlay can be shown. This view is only available for "
+        + "tiles with LiDAR ground truth.";
+    } else {
+      note.textContent = "Predicted minus LiDAR. Red = built too tall, "
+        + "blue = too short, pale = agreement. Grey border is outside the "
+        + "reference extent. RMSE " + v.rmse_m + " m, bias " + v.bias_m
+        + " m over the central " + v.covers_m + " m. Scale +/-"
+        + v.scale_limit_m + " m.";
+    }
   }
 }
 
