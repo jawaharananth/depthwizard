@@ -62,6 +62,9 @@ def validate(tile="JAX_165", extent_m=640.0, out_px=2560):
 
     polys = rf.extract(img, ndsm, gsd, seg_labels=seg_labels,
                        min_area_m2=8.0, min_height_m=2.0)["polygons"]
+    import confidence as _cm
+    _conf01 = (_cm.to_image_grid(mv["confidence"], img.shape[:2])
+               if mv.get("confidence") is not None else None)
     bv, bf, binfo = city_model.build_prisms(polys, dsm, ground, gsd, gsd,
                                             min_height_m=2.0, image_np=img)
 
@@ -100,13 +103,23 @@ def validate(tile="JAX_165", extent_m=640.0, out_px=2560):
         true_h = float(np.percentile(sub[mb], 80))
         if true_h < 2.0:
             continue
-        rows.append((rec["height_m"], true_h, float(mb.sum()) * gsd * gsd))
+        # Carry the building's own confidence so conformal intervals can adapt
+        # per building rather than being one constant width for the whole scene.
+        _c = 0.5
+        try:
+            import confidence as _cm
+            _cinfo = _cm.building_confidence(_conf01, poly) if _conf01 is not None else {}
+            if _cinfo.get("confidence") is not None:
+                _c = float(_cinfo["confidence"])
+        except Exception:
+            pass
+        rows.append((rec["height_m"], true_h, float(mb.sum()) * gsd * gsd, _c))
 
     if not rows:
         raise SystemExit("no buildings fell inside the truth extent")
 
     a = np.array(rows)
-    ours, true, area = a[:, 0], a[:, 1], a[:, 2]
+    ours, true, area, bconf = a[:, 0], a[:, 1], a[:, 2], a[:, 3]
     err = ours - true
 
     print(f"\nPER-BUILDING HEIGHT vs LiDAR -- {tile}, {len(rows)} buildings "
@@ -122,6 +135,44 @@ def validate(tile="JAX_165", extent_m=640.0, out_px=2560):
     print(f"\n  our median height {np.median(ours):6.2f} m   "
           f"LiDAR median {np.median(true):6.2f} m")
     print(f"  (the aggregate agreement that per-building error can hide)")
+
+    # CONFORMAL PREDICTION INTERVALS
+    #
+    # A confidence score is ordinal: it ranks buildings but does not say how
+    # wrong a height might be. Split conformal turns it into a guarantee that is
+    # distribution-free and finite-sample, assuming only exchangeability between
+    # the calibration and test sets -- not Gaussian errors, not a correctly
+    # specified model. That matters for a pipeline built from heuristics rather
+    # than one probabilistic model.
+    #
+    # Calibrated on half the buildings and scored on the half held out.
+    # Calibrating and reporting coverage on the SAME buildings would be
+    # circular: the quantile is fitted to make coverage come out right, so it
+    # always would.
+    import conformal as cf
+    idx = np.arange(len(err))
+    rs = np.random.default_rng(0)
+    rs.shuffle(idx)
+    half = len(idx) // 2
+    cal_i, test_i = idx[:half], idx[half:]
+
+    # Low confidence must WIDEN the interval, so the scale is inverted: a
+    # building the photometry barely constrained earns wider bounds, which is
+    # the whole point of an adaptive interval.
+    unc = 1.0 / np.clip(bconf, 0.05, 1.0)
+
+    print("")
+    print("  CONFORMAL PREDICTION INTERVALS (90% nominal)")
+    for name, u_cal, u_test in (("constant width", None, None),
+                                ("confidence-adaptive", unc[cal_i], unc[test_i])):
+        c = cf.calibrate(err[cal_i], alpha=0.10, uncertainty=u_cal)
+        if c.get("q") is None:
+            print(f"    {name:22s} {c.get('reason')}")
+            continue
+        cov = cf.check_coverage(err[test_i], c, uncertainty=u_test)
+        print(f"    {name:22s} half-width {cov['mean_half_width_m']:5.2f} m   "
+              f"held-out coverage {cov['coverage']*100:5.1f}%  "
+              f"(nominal {cov['nominal']*100:.0f}%, n={cov['n']})")
 
     print("\n  by true height band:")
     for lo, hi, nm in [(2, 10, "low   2-10 m"), (10, 25, "mid  10-25 m"),
