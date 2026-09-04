@@ -488,6 +488,99 @@ if (btnDof) {
  * geometry, the sun, and the environment -- which is exactly what makes a
  * clean prism city legible.
  */
+// --- Procedural facades -----------------------------------------------------
+//
+// A nadir satellite image photographs no vertical surface, so there is NO
+// facade data in the input. These textures are SYNTHETIC and the HUD says so.
+// They exist because an untextured prism reads as a blank mass: without a floor
+// rhythm the eye cannot judge a building's size, and a 12-storey tower and a
+// 3-storey block look identical apart from silhouette.
+//
+// FrankenGAN and Proc-GS solve this with learned or splat-based detail, and
+// both need a GPU this machine does not have. CityEngine solves it in a
+// separate application. Drawing the facade procedurally here needs neither, and
+// keeps every parameter inspectable rather than baked into weights.
+//
+// One storey is one texture tile, mapped against real world height, so windows
+// come out at a believable scale on a 5 m shed and an 80 m tower alike rather
+// than stretching with the building.
+const STOREY_M = 3.5;
+
+function makeFacadeTexture(kind) {
+  const S = 256;
+  const c = document.createElement("canvas");
+  c.width = c.height = S;
+  const g = c.getContext("2d");
+
+  // Per-class facade grammar. Building stock genuinely differs this way: a
+  // curtain-walled tower is mostly glass in a tight regular grid, a mid-rise
+  // has punched openings in a masonry field, a low building has fewer, wider
+  // windows and more solid wall between them.
+  const SPEC = {
+    building_tall: { cols: 6, winW: 0.74, winH: 0.62, spandrel: 0.16,
+                     wall: "#b9c4d2", glass: "#4d6076", reflect: 0.55 },
+    building_mid:  { cols: 4, winW: 0.52, winH: 0.54, spandrel: 0.26,
+                     wall: "#c4c2bc", glass: "#5a6470", reflect: 0.30 },
+    building_low:  { cols: 3, winW: 0.44, winH: 0.44, spandrel: 0.34,
+                     wall: "#cbc6bd", glass: "#63696f", reflect: 0.18 },
+  };
+  const s = SPEC[kind] || SPEC.building_mid;
+
+  g.fillStyle = s.wall;
+  g.fillRect(0, 0, S, S);
+
+  // Spandrel band at the floor line, slightly darker than the wall so the
+  // floor rhythm reads even at a distance where individual windows do not.
+  g.fillStyle = "rgba(0,0,0,0.10)";
+  g.fillRect(0, 0, S, S * s.spandrel);
+
+  const margin = (S * (1 - s.winW)) / (s.cols + 1);
+  const w = (S * s.winW) / s.cols;
+  const top = S * (s.spandrel + 0.06);
+  const h = S * s.winH;
+
+  for (let i = 0; i < s.cols; i++) {
+    const x = margin + i * (w + margin);
+    // Per-window variation. A perfectly uniform grid reads as printed pattern;
+    // real glazing differs with blinds, lighting and reflection angle. Keyed to
+    // the column index so it is deterministic, not flickering.
+    const v = 0.78 + 0.30 * (((i * 37) % 11) / 11);
+    const grad = g.createLinearGradient(x, top, x + w, top + h);
+    grad.addColorStop(0, shade(s.glass, v * (1 + s.reflect * 0.5)));
+    grad.addColorStop(1, shade(s.glass, v * (1 - s.reflect * 0.3)));
+    g.fillStyle = grad;
+    g.fillRect(x, top, w, h);
+
+    // Reveal: a thin light edge where the opening meets the wall. This is what
+    // makes a window read as an opening in a surface rather than a painted
+    // rectangle.
+    g.strokeStyle = "rgba(255,255,255,0.20)";
+    g.lineWidth = Math.max(1, S * 0.004);
+    g.strokeRect(x, top, w, h);
+  }
+
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = 8;
+  return t;
+}
+
+function shade(hex, k) {
+  const n = parseInt(hex.slice(1), 16);
+  const r = Math.min(255, Math.round(((n >> 16) & 255) * k));
+  const gg = Math.min(255, Math.round(((n >> 8) & 255) * k));
+  const b = Math.min(255, Math.round((n & 255) * k));
+  return "rgb(" + r + "," + gg + "," + b + ")";
+}
+
+const FACADE_CACHE = {};
+function facadeFor(kind) {
+  if (!FACADE_CACHE[kind]) FACADE_CACHE[kind] = makeFacadeTexture(kind);
+  return FACADE_CACHE[kind];
+}
+
+
 function shadeBuildingPrisms(mesh, mat) {
   const geom = mesh.geometry;
   const pos = geom.attributes.position;
@@ -563,7 +656,47 @@ function shadeBuildingPrisms(mesh, mat) {
   const m = mat || { roughness: 0.7, metalness: 0.0, color: 0xd0d4d8,
                      envMapIntensity: 0.7 };
   const roof = mk(roofIdx, m.color, Math.min(1, m.roughness * 1.15), m);
-  const wall = mk(wallIdx, m.color, m.roughness, m, 0.90);
+
+  // WALLS get their own geometry with UVs derived from WORLD POSITION.
+  //
+  // The mesh carries planar (top-down) UVs, which are meaningless on a vertical
+  // face: it spans almost no UV area, so one texel column stretches down the
+  // whole wall. Parameterising across the face horizontally and up its height,
+  // both in metres, puts one facade tile per storey regardless of building size.
+  let wall = null;
+  if (wallIdx.length) {
+    const wp = [], wuv = [], wn = [];
+    const a3 = new THREE.Vector3(), b3 = new THREE.Vector3(), c3 = new THREE.Vector3();
+    const ab3 = new THREE.Vector3(), ac3 = new THREE.Vector3(), n3 = new THREE.Vector3();
+    for (let t = 0; t < wallIdx.length; t += 3) {
+      const i0 = wallIdx[t], i1 = wallIdx[t + 1], i2 = wallIdx[t + 2];
+      a3.fromBufferAttribute(pos, i0);
+      b3.fromBufferAttribute(pos, i1);
+      c3.fromBufferAttribute(pos, i2);
+      ab3.subVectors(b3, a3); ac3.subVectors(c3, a3);
+      n3.crossVectors(ab3, ac3).normalize();
+      const horiz = new THREE.Vector3(-n3.z, 0, n3.x).normalize();
+      for (const v of [a3, b3, c3]) {
+        wp.push(v.x, v.y, v.z);
+        wuv.push((v.x * horiz.x + v.z * horiz.z) / STOREY_M, v.y / STOREY_M);
+        wn.push(n3.x, n3.y, n3.z);
+      }
+    }
+    const wg = new THREE.BufferGeometry();
+    wg.setAttribute("position", new THREE.Float32BufferAttribute(wp, 3));
+    wg.setAttribute("uv", new THREE.Float32BufferAttribute(wuv, 2));
+    wg.setAttribute("normal", new THREE.Float32BufferAttribute(wn, 3));
+    const wc = new THREE.Color(m.color).multiplyScalar(0.94);
+    wall = new THREE.Mesh(wg, new THREE.MeshStandardMaterial({
+      map: facadeFor(mesh.name || "building_mid"),
+      color: wc,
+      roughness: m.roughness,
+      metalness: m.metalness || 0.0,
+      envMapIntensity: m.envMapIntensity || 0.7,
+    }));
+    wall.castShadow = wall.receiveShadow = true;
+  }
+
   if (roof) mesh.parent.add(roof);
   if (wall) mesh.parent.add(wall);
   mesh.visible = false;
@@ -805,7 +938,8 @@ Promise.all([
           `sun ${SCENE_META.sun_elevation_deg}° el / ${SCENE_META.sun_azimuth_deg}° az`,
           `heights: tier ${SCENE_META.tier}` +
             (SCENE_META.shadow_samples ? ` (${SCENE_META.shadow_samples} shadows)` : ""),
-          `${SCENE_META.buildings_extruded} buildings extruded`);
+          `${SCENE_META.buildings_extruded} buildings extruded`,
+          `facades are SYNTHETIC (nadir imagery contains no facade pixels)`);
       }
       document.getElementById("stats").textContent = lines.join("\n");
 
