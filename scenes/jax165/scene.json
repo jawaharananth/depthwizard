@@ -1,0 +1,82 @@
+{
+  "tile": "JAX_165",
+  "view": "JAX_165_011_RGB.tif",
+  "off_nadir_deg": 4.8,
+  "sun_elevation_deg": 36.8,
+  "sun_azimuth_deg": 152.9,
+  "gsd_m": 0.25,
+  "crs": "EPSG:32617",
+  "tier": "A (MVS-triangulated heights, absolute metres)",
+  "origin_x": 436398.996041,
+  "origin_y": 3355895.999924,
+  "scale_m_per_unit": 1.0,
+  "dem_anchor": null,
+  "model": "prism city (flat roofs, vertical walls)",
+  "buildings_extruded": 1234,
+  "canopy_volumes": 334,
+  "water_bodies": 17,
+  "vehicles": 225,
+  "extent_m": 640.0,
+  "truth_extent_m": 256.0,
+  "coverage": 0.986,
+  "median_height_m": 15.1,
+  "max_height_m": 83.2,
+  "build_seconds": 50.3,
+  "discovery": {
+    "candidates_examined": 4449,
+    "retained": 1706,
+    "by_size": {
+      "tiny": 905,
+      "small": 484,
+      "medium": 282,
+      "large": 35
+    },
+    "rejected": {
+      "no_evidence": 14,
+      "duplicate": 2729,
+      "below_min_area": 0,
+      "degenerate": 0
+    },
+    "min_area_m2": 6.0,
+    "scales": [
+      1,
+      2,
+      4
+    ]
+  },
+  "confidence": {
+    "mean": 0.578,
+    "median": 0.6,
+    "frac_low": 0.149,
+    "frac_high": 0.359
+  },
+  "validation": {
+    "rmse_m": 13.54,
+    "mae_m": 7.4,
+    "bias_m": 5.66,
+    "scale_limit_m": 10.0,
+    "covers_m": 256.0
+  },
+  "slope": {
+    "median_deg": 1.01,
+    "p95_deg": 10.23,
+    "max_deg": 79.31,
+    "frac_flat": 0.929,
+    "frac_moderate": 0.032,
+    "frac_steep": 0.04,
+    "breaks_deg": [
+      5.0,
+      15.0,
+      30.0
+    ]
+  },
+  "reliability_counts": {
+    "HIGH": 602,
+    "LOW": 102,
+    "MEDIUM": 486,
+    "WEAK": 44
+  },
+  "provenance": "MEASURED",
+  "height_is_metric": true,
+  "confidence_median": 0.774
+}

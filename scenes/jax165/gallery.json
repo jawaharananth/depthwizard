@@ -1,0 +1,9 @@
+{
+  "id": "jax165",
+  "title": "Downtown Jacksonville",
+  "buildings": 1234,
+  "tier": "A (MVS-triangulated heights, absolute metres)",
+  "extent_m": 640.0,
+  "metric": true,
+  "thumb": "thumb.jpg"
+}
