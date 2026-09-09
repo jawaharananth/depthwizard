@@ -1,0 +1,9 @@
+{
+  "id": "varanasi",
+  "title": "Varanasi",
+  "buildings": 364,
+  "tier": "C (horizontal metric from measured GSD; vertical relative/assumed)",
+  "extent_m": null,
+  "metric": false,
+  "thumb": "thumb.jpg"
+}

@@ -26,12 +26,18 @@ __pycache__/
 *.pyc
 *.pyo
 *.egg-info/
-.ipynb_checkpoints/
+.ipynb_# checkpoints/ stays out. The only checkpoint here is the smoke-test model:
+# 1 epoch on 2 tiles on CPU, which scored MAE 7.16 m against the pretrained
+# baseline's 6.68 m and a correlation of -0.121. train_height.py's own guard
+# says not to swap it in. It is 372 MB in one file, over GitHub's 100 MB
+# limit, so it would need Git LFS -- most of a free account's quota spent on
+# a model that is worse than doing nothing. Re-add once a real run beats the
+# baseline.
+checkpoints/
 
 # Generated 3D output: meshes, textures, DSMs, baked maps
 final_out/
 viewer/output/
-scenes/
 cache/
 india/
 *.glb
@@ -119,8 +125,6 @@ dist/
 # GAMUS subsets. The full dataset is 80 GB and CC-BY-4.0 licensed by its
 # authors; what is here is a downloaded slice, reproducible with
 # `python gamus.py download`, so it is not source.
-gamus_data/
-gamus_probe/
 
 # Fine-tuned model weights. Hundreds of MB per checkpoint, and GitHub rejects
 # any file over 100 MB outright. The training report JSON is the part worth
@@ -129,12 +133,10 @@ gamus_probe/
 checkpoints/
 
 # Images people upload through the dashboard. Not ours to redistribute.
-uploads/
 
 # Stage timings are calibrated per machine. Committing this laptop's numbers
 # would give a different machine wrong ETAs on its first run, which is worse
 # than having none -- progress.py already handles an empty calibration.
-stage_timings.json
 
 # One-off experiment scripts, same convention as the diag_/tune_/chk_ rules
 # above. Each answered one question and is superseded by the measurement it
