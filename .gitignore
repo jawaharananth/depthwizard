@@ -111,3 +111,47 @@ src-tauri/target/
 dist/
 *.msi
 /*-setup.exe
+
+# ---------------------------------------------------------------------------
+# Added with the GAMUS work and the dashboard.
+# ---------------------------------------------------------------------------
+
+# GAMUS subsets. The full dataset is 80 GB and CC-BY-4.0 licensed by its
+# authors; what is here is a downloaded slice, reproducible with
+# `python gamus.py download`, so it is not source.
+gamus_data/
+gamus_probe/
+
+# Fine-tuned model weights. Hundreds of MB per checkpoint, and GitHub rejects
+# any file over 100 MB outright. The training report JSON is the part worth
+# keeping, and it is small -- but it lives alongside the weights, so the whole
+# directory goes and the report is quoted in BENCHMARK.md instead.
+checkpoints/
+
+# Images people upload through the dashboard. Not ours to redistribute.
+uploads/
+
+# Stage timings are calibrated per machine. Committing this laptop's numbers
+# would give a different machine wrong ETAs on its first run, which is worse
+# than having none -- progress.py already handles an empty calibration.
+stage_timings.json
+
+# One-off experiment scripts, same convention as the diag_/tune_/chk_ rules
+# above. Each answered one question and is superseded by the measurement it
+# produced, which is recorded in BENCHMARK.md.
+ab_metrics.py
+ceiling_test.py
+compare_fp.py
+mvs_test.py
+profile_build.py
+sweep2.py
+sweep_recall.py
+test_ground*.py
+test_ortho_poly.py
+test_sc_real.py
+test_vdvi.py
+tune_minh.py
+tune_mvs_seg.py
+
+# Tauri generated sources (icons, platform scaffolding) are build products.
+src-tauri/gen/

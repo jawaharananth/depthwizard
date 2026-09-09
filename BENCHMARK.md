@@ -4,6 +4,7 @@
 **Reference:** airborne LiDAR (the contest's own ground truth)
 **Metric:** nDSM vs nDSM — object height above local terrain, not absolute elevation
 **Input:** single RPC-orthorectified satellite view per tile, straightest available
+**Scale:** per-tile affine alignment to the reference before scoring — see below
 **Date:** 2026-09-04
 
 ---
@@ -25,6 +26,27 @@ loudly is the point of it.
 
 A 5-tile subset gives RMSE 3.74 m / MAE 2.05 m, so the number is not an artefact
 of which tiles were chosen.
+
+### What this number does and does not measure
+
+**All 18 scored tiles were scale-aligned to the ground truth before scoring.**
+`rescore_baseline.py` fits one free parameter per tile when the scene yields no
+metric scale of its own:
+
+```python
+s = np.nanpercentile(gt_ndsm, 99) / max(np.percentile(pred, 99), 1e-6)
+pred = pred * s
+```
+
+Zero tiles reached a blind shadow calibration; every one recorded
+`scale_source: "aligned (Tier C)"`. So 3.87 m measures how well the recovered
+height field matches the SHAPE of the true surface, under the most favourable
+scaling available. It is not blind absolute accuracy, and it is not what a
+single uncalibrated image would produce.
+
+This is stated because the alternative is being asked. The project has already
+withdrawn one headline for a measurement error nobody outside would have caught;
+volunteering the caveat costs a sentence, and being caught costs the number.
 
 ## Accuracy by landscape type
 
@@ -78,6 +100,10 @@ says which surface actually tracks the terrain. Selected with
 `--dem-source srtm|glo30`.
 
 ## Per-building accuracy — JAX_165, 259 buildings inside the truth extent
+
+**Input: 6-view plane-sweep MVS, not single view.** `validate_buildings.py` calls
+`mvs_height.compute()`, so these figures are NOT comparable with the single-view
+tile-level numbers above and must not be quoted as single-image accuracy.
 
 | | value |
 |---|---|
@@ -182,3 +208,44 @@ python benchmark_all.py 20        # tile-level table
 python validate_buildings.py JAX_165   # per-building
 python verify_pipeline.py JAX_165      # 8-stage invariant checks
 ```
+
+## Domain gap — measured on GAMUS (Philadelphia, Washington DC)
+
+The SAC reference repository recommends GAMUS for "addressing domain gaps
+between natural and top-down imagery". This measures that gap on the shipped
+backbone, on cities the pipeline has never seen. The HuggingFace copy of GAMUS
+contains PHL/NYC/DC and no Jacksonville, so nothing here overlaps the tiles the
+pipeline was tuned on.
+
+GAMUS supplies nDSM in metres (AGL) paired 1:1 with RGB, plus six-class labels.
+
+| | mean over 6 tiles |
+|---|---|
+| height correlation with true nDSM | **0.299** |
+| MAE after best-fit affine | 4.28 m |
+| RMSE after best-fit affine | 5.43 m |
+| building precision | **0.343** |
+| building recall | 0.932 |
+| building IoU | 0.335 |
+
+Two findings worth stating plainly.
+
+**One tile correlates NEGATIVELY (-0.248).** On DC_02_26 the monocular field
+predicts high where the ground is low. That is not a calibration problem; it is
+the backbone being outside the data it was trained on. Depth Anything V2 is
+trained on ground-level photography and is being applied to nadir satellite
+imagery.
+
+**Building precision is 0.343 at recall 0.932.** The segmentation calls almost
+everything a building. That matches what was measured against DFC LiDAR
+(precision 0.576) and is worse on unseen cities.
+
+The MAE and RMSE above are computed AFTER a per-tile best-fit affine — the
+lowest error any scaling could achieve. They are a floor, not an estimate of
+deployed accuracy.
+
+This is the strongest available argument for fine-tuning on GAMUS rather than
+continuing to tune heuristics around an out-of-domain backbone: five separate
+heuristic approaches were measured against LiDAR and all plateaued near IoU
+0.56-0.63.
+

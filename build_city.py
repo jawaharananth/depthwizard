@@ -24,6 +24,7 @@ import height_cache
 import dsm_refine
 import dtm as dtm_mod
 import city_model
+import image_grade
 import building_discovery as bd
 import region_footprints as rf
 import mvs_height
@@ -33,6 +34,10 @@ import metric_calibration as mcal
 import semantic_scale
 import dsm_export
 import geometry_validate as gval
+import mesh_repair
+import model_audit
+import float_check as fcheck
+import terrain_analysis as terra
 import dfc2019_loader as L
 import shadow_correction
 from depth_model import DepthBackbone, orientation_check
@@ -129,12 +134,18 @@ def build(tile: str, out_px: int = 2048, stage: bool = True,
     # of pixels inside a footprint suppresses it while keeping the metric
     # accuracy that made MVS worth using (MAE 6.53 m against monocular's 8.53 m).
     if mvs is not None:
-        seg_key = f"tiled_e{int(o['extent_m'])}"
+        import depth_model as _dm
+        seg_key = f"tiled_e{int(o['extent_m'])}_{_dm.backbone_tag()}"
         height = height_cache.load(tile, seg_key, out_px)
         if height is None:
             print("      (monocular shape cue not cached; computing it -- "
                   "heights still come from MVS)")
-            height = DepthBackbone().predict_tiled(pil, verbose=False)
+            # predict_tiled wants a PIL image; image_np is the uint8 RGB array
+            # this function has been carrying since line 63. The name `pil` was
+            # never bound here -- the branch only runs on a cold height cache,
+            # so every earlier run took the cached path and skipped the error.
+            height = DepthBackbone().predict_tiled(
+                Image.fromarray(image_np), verbose=False)
             height_cache.save(tile, seg_key, out_px, height)
         else:
             print("      shape from monocular (cached); heights from MVS")
@@ -284,6 +295,10 @@ def build(tile: str, out_px: int = 2048, stage: bool = True,
     rres = rf.extract(image_np, ndsm, gsd, seg_labels=seg_labels, min_area_m2=8.0,
                       min_height_m=min_h)
     footprints = rres["polygons"]
+    footprints, _thr = rf.drop_low_regions(footprints, ndsm)
+    if _thr is not None:
+        print(f"      flat-region gate: kept {len(footprints)} "
+              f"(cut below height {_thr:.1f} m)")
     print(f"[4/5] footprints from image regions: {rres['report']['retained']} of "
           f"{rres['report']['regions_examined']} regions")
     print(f"      rejected: " + "  ".join(f"{k} {v}" for k, v in
@@ -320,9 +335,22 @@ def build(tile: str, out_px: int = 2048, stage: bool = True,
     #   opening (this)           -3.04 m      22.84 m     (LiDAR 19.84 m)
     height_ground = dtm_mod.ground_from_dsm(height_dsm, gsd)
 
-    bverts, bfaces, binfo = city_model.build_prisms(
-        footprints, height_dsm, height_ground, gsd, gsd, min_height_m=1.5,
-        image_np=image_np)
+    _gsmall_pre, _ = mg._resize_for_mesh(height_ground, seg_labels, GROUND_GRID)
+    _cell_pre = gsd * (height_ground.shape[0] / _gsmall_pre.shape[0])
+    # Roof colours are sampled from the WHITE-BALANCED image, not the raw one.
+    # Correcting the ground texture alone would leave every roof carrying the
+    # atmospheric blue cast while the terrain under it reads neutral -- the two
+    # would not look like the same scene.
+    _balanced = image_grade.white_balance(image_np)
+    _rep = mesh_repair.repair_build(
+        footprints, height_dsm, height_ground, gsd, image_np=_balanced,
+        min_height_m=1.5, ground_small=_gsmall_pre, cell_m=_cell_pre)
+    bverts, bfaces, binfo = _rep["verts"], _rep["faces"], _rep["binfo"]
+    footprints = _rep["footprints"]
+    _rr = _rep["report"]
+    print(f"      repair: {'converged' if _rr['converged'] else 'stalled'} in "
+          f"{_rr['iterations']} pass(es), {_rr['final_built']} buildings"
+          + ("" if _rr["converged"] else f", {_rr['unrepaired']} unrepaired"))
 
     # ITEM 1: per-pixel confidence from the plane sweep's own NCC.
     #
@@ -341,6 +369,22 @@ def build(tile: str, out_px: int = 2048, stage: bool = True,
     # It is produced ONLY where truth exists. For an arbitrary upload there is no
     # reference, and the viewer says so rather than showing an empty overlay that
     # could be mistaken for agreement.
+    # SLOPE LAYER -- the spec asks for analysis of heights AND slopes.
+    #
+    # Computed on the full-resolution ground raster in real metres, not in the
+    # browser: the ground mesh is adaptively simplified, so a slope derived from
+    # it would partly measure tessellation rather than terrain.
+    slope_stats = None
+    try:
+        _slope = terra.slope_degrees(height_ground, gsd)
+        slope_stats = terra.slope_stats(_slope)
+        Image.fromarray(terra.colourise_slope(_slope)).save(stem + "_slope.png")
+        print(f"      slope: median {slope_stats['median_deg']}deg, "
+              f"{slope_stats['frac_flat']*100:.0f}% flat, "
+              f"{slope_stats['frac_steep']*100:.0f}% steep (>15deg)")
+    except Exception as _e:
+        print(f"      slope layer failed: {_e}")
+
     err_stats = None
     try:
         _gt = o["truth"]["dsm"].astype(np.float32)
@@ -424,18 +468,11 @@ def build(tile: str, out_px: int = 2048, stage: bool = True,
     # a lit 3D scene it reads as washed-out grey. This is a display grade, not
     # a change to anything measured: the texture is decoration on the ground
     # mesh and no height, footprint or metric is derived from it.
-    g = image_np.astype(np.float32) / 255.0
-    lum = (g * np.array([0.299, 0.587, 0.114], np.float32)).sum(axis=2, keepdims=True)
-    g = lum + (g - lum) * 1.12                      # saturation, restrained
-    # Contrast about a point ABOVE mid-grey, with a shadow lift. Pivoting at
-    # 0.5 on imagery whose median sits near 0.49 drove the shaded half of the
-    # scene toward black, and the saturation boost then turned it blue.
-    g = np.clip((g - 0.42) * 1.14 + 0.46, 0, 1)
-    # Cool cast on the ground so terrain, buildings and sky read as one palette.
-    # Applied as a per-channel gain, which shifts colour temperature without
-    # touching relative brightness -- roads stay darker than rooftops.
-    g = np.clip(g * np.array([0.94, 0.985, 1.06], np.float32), 0, 1)
-    graded = (g * 255).astype(np.uint8)
+    # White balance first, then grade. The previous version boosted saturation
+    # and applied an explicit cool gain to imagery that was ALREADY blue from
+    # atmospheric scattering, taking R-B from -27.6 to -48.3 and saturation from
+    # 30.7 to 49.9 -- a grey-blue monochrome scene. See image_grade.py.
+    graded = image_grade.grade(image_np)
 
     Image.fromarray(graded).save(stem + "_texture.png")
     import io
@@ -493,11 +530,37 @@ def build(tile: str, out_px: int = 2048, stage: bool = True,
     print("      materials: " + "  ".join(
         f"{n.split('_')[1]} {c}" for n, c in _cls_counts.items()))
 
+    # These three take the SAME surface the terrain mesh and the buildings use.
+    #
+    # They were passed `dsm`/`ground` -- the monocular pair, which carries an
+    # arbitrary datum -- while the terrain mesh and every prism were built from
+    # `height_dsm`/`height_ground` in absolute MVS metres. The two surfaces sit
+    # about 32 m apart, so trees, cars and water hovered a storey above the
+    # ground they were supposed to rest on while the buildings sat correctly.
+    #
+    # This is the third time the same mistake has appeared in this file, each
+    # time as a different pair of variables. There is one ground in a scene; any
+    # object placed on a different one is floating by construction.
     cverts, cfaces, n_canopy = city_model.build_canopy(
-        seg_labels, dsm, ground, gsd, gsd, min_area_px=120)
-    wverts, wfaces, n_water = city_model.build_water(seg_labels, ground, gsd, gsd)
+        seg_labels, height_dsm, height_ground, gsd, gsd, min_area_px=120)
+    # Water is placed against the terrain AS DRAWN, not against the full-res
+    # ground field the other objects use.
+    #
+    # Every other object may sink into the terrain harmlessly -- a prism base or
+    # a tree trunk below the surface is invisible and intended. A water body is
+    # different: its surface IS the visible object, so a plane a metre under the
+    # mesh does not read as shallow water, it disappears. Averaging the ground
+    # onto the 700-vertex grid pulls the banks down into narrow bodies, so the
+    # drawn terrain sits above the true water level by more than the deliberate
+    # 0.3 m sink. Sampling the drawn surface makes that sink exact by
+    # construction, whatever the grid resolution.
+    rendered_ground = cv2.resize(gsmall, (height_ground.shape[1],
+                                          height_ground.shape[0]),
+                                 interpolation=cv2.INTER_LINEAR)
+    wverts, wfaces, n_water = city_model.build_water(
+        seg_labels, rendered_ground, gsd, gsd)
     vverts, vfaces, n_veh = city_model.detect_vehicles(
-        image_np, seg_labels, ground, gsd)
+        image_np, seg_labels, height_ground, gsd)
     print(f"      {n_canopy} canopy volumes, {n_water} water bodies, "
           f"{n_veh} vehicle-sized objects (heuristic)")
 
@@ -558,6 +621,28 @@ def build(tile: str, out_px: int = 2048, stage: bool = True,
     print("      geometry validation:")
     if not gval.report(_gv):
         print("      WARNING: a mesh failed a hard geometry check (see above)")
+
+    # A well-formed mesh can still hover. Objects are based on the full-res
+    # ground field, but the terrain drawn is that field on a coarser grid, and
+    # nothing above compares the two.
+    _fc = [
+        fcheck.check(bverts, gsmall, gsd * gscale, "buildings"),
+        fcheck.check(cverts, gsmall, gsd * gscale, "canopy"),
+        fcheck.check(vverts, gsmall, gsd * gscale, "vehicles"),
+        fcheck.check(wverts, gsmall, gsd * gscale, "water", flat=True),
+    ]
+    if not fcheck.report(_fc):
+        print("      WARNING: a class floats above the rendered terrain")
+
+    try:
+        _audit = model_audit.audit(
+            footprints, binfo, image_np,
+            np.maximum(height_dsm - height_ground, 0.0),
+            seg_labels == seg.CLASS_IDX["building"],
+            sun_azimuth_deg=o.get("sun_azimuth_deg"))
+        print(model_audit.report(_audit))
+    except Exception as _e:
+        print(f"      model-vs-image audit failed: {_e}")
 
     print(f"[5/5] {len(gfaces)} ground faces + {len(bfaces)} building faces, {size_mb:.1f} MB")
 
@@ -691,6 +776,7 @@ def build(tile: str, out_px: int = 2048, stage: bool = True,
         "discovery": disc["report"],
         "confidence": conf_stats,
         "validation": err_stats,
+        "slope": slope_stats,
         "reliability_counts": {t: sum(1 for v in _btier.values() if v == t)
                                for t in set(_btier.values())} if _btier else None,
         "provenance": prov,
@@ -706,6 +792,9 @@ def build(tile: str, out_px: int = 2048, stage: bool = True,
         if conf01 is not None and os.path.exists(stem + "_confidence.png"):
             shutil.copy2(stem + "_confidence.png",
                          os.path.join(VIEWER_DIR, "terrain_confidence.png"))
+        for _extra, _dst in (("_slope.png", "terrain_slope.png"),):
+            if os.path.exists(stem + _extra):
+                shutil.copy2(stem + _extra, os.path.join(VIEWER_DIR, _dst))
         _errp = os.path.join(VIEWER_DIR, "terrain_error.png")
         if os.path.exists(stem + "_error.png"):
             shutil.copy2(stem + "_error.png", _errp)
@@ -731,9 +820,18 @@ def build(tile: str, out_px: int = 2048, stage: bool = True,
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("tile", nargs="?", default="JAX_068")
-    ap.add_argument("--px", type=int, default=2048)
+    # The defaults build only the 256 m truth tile at 2048 px, which is the
+    # right scope for VALIDATION -- it is exactly the ground LiDAR covers. It is
+    # the wrong scope for a deliverable: it renders a quarter of the area at half
+    # the resolution and drops roughly 60% of the buildings (549 against 1344 on
+    # JAX_165). Running the bare defaults and judging the 3D model on the result
+    # has already happened once, so the production values are named here rather
+    # than only in the README.
+    ap.add_argument("--px", type=int, default=2048,
+                    help="output raster size (production: 2560)")
     ap.add_argument("--extent", type=float, default=None,
-                    help="ground extent in metres (default: the 256 m truth tile)")
+                    help="ground extent in metres (default: the 256 m truth tile, "
+                         "for validation only; production: 640)")
     ap.add_argument("--no-stage", action="store_true")
     ap.add_argument("--no-mvs", action="store_true",
                     help="use monocular depth instead of multi-view stereo")
@@ -747,5 +845,12 @@ if __name__ == "__main__":
     ap.add_argument("--views", type=int, default=6,
                     help="how many near-nadir views to triangulate from")
     a = ap.parse_args()
+
+    # Say plainly which scope is being built. A quarter-area preview and a full
+    # deliverable look identical in the log line otherwise.
+    if a.extent is None:
+        print("NOTE: building the 256 m validation tile at "
+              f"{a.px} px. For the full deliverable run:")
+        print(f"      python build_city.py {a.tile} --extent 640 --px 2560")
     build(a.tile, out_px=a.px, stage=not a.no_stage, extent_m=a.extent,
           no_mvs=a.no_mvs, n_views=a.views, use_dem=a.dem, dem_path=a.dem_path, dem_source=a.dem_source)
