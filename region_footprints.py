@@ -87,6 +87,27 @@ def _watershed_regions(image_np: np.ndarray, min_region_px: int) -> np.ndarray:
 
 
 def extract(image_np: np.ndarray, ndsm: np.ndarray, gsd_m: float,
+            # DEAD PARAMETER -- accepted, never read. Documented rather than
+            # removed because callers pass it and its absence would look like an
+            # oversight rather than a finding.
+            #
+            # Every building/not-building decision here is made by the height
+            # field via watershed regions. Segmentation contributes nothing.
+            # Measured consequences:
+            #   * feeding PERFECT segmentation (LiDAR labels) changes the output
+            #     by exactly zero on all tiles tested;
+            #   * feeding a learned satellite segmenter (SegFormer-B4, classes
+            #     others/buildings/road) also changes it by exactly zero.
+            # That is why false buildings on car parks cannot be fixed by any
+            # improvement to segmentation: the stage is not consulted.
+            #
+            # Wiring it in WAS tested, as a per-region semantic support gate.
+            # It did not pay off: mean IoU over four tiles fell 0.564 -> 0.487,
+            # because the learned model is unreliable per scene (IoU 0.556 on
+            # JAX_165, 0.068 on JAX_033) and gating inherits that. A
+            # corroboration guard that skips the gate when the two sources
+            # disagree recovers to 0.562 -- still no gain. Recorded so the next
+            # person does not repeat it.
             seg_labels: np.ndarray = None,
             min_area_m2: float = 8.0,
             min_height_m: float = 2.0,
@@ -306,3 +327,70 @@ def orthogonalize(poly: np.ndarray, angle_tol_deg: float = 22.0,
         out[j] = mid + u * (ln / 2.0)
 
     return out.astype(np.float32)
+
+def region_median_height(poly, ndsm):
+    """Median nDSM inside one footprint."""
+    p = np.asarray(poly, np.int32)
+    H, W = ndsm.shape
+    x, y, w, h = cv2.boundingRect(p)
+    x0, y0 = max(x, 0), max(y, 0)
+    x1, y1 = min(x + w, W), min(y + h, H)
+    if x1 <= x0 or y1 <= y0:
+        return 0.0
+    sub = np.zeros((y1 - y0, x1 - x0), np.uint8)
+    cv2.fillPoly(sub, [p - [x0, y0]], 1)
+    v = ndsm[y0:y1, x0:x1][sub.astype(bool)]
+    v = v[np.isfinite(v)]
+    return float(np.median(v)) if v.size else 0.0
+
+
+# DEFAULT OFF. The gate improves precision on all four DFC tiles it was tuned
+# against, and then made things worse on the first real upload it met: IoU fell
+# from 0.565 to 0.397 and recall from 0.627 to 0.423, because it assumes roughly
+# 30% of candidates are junk and that scene's upstream had already removed them.
+#
+# A percentile gate cannot know how much junk it is being handed. Left available
+# for scenes visibly full of false positives, but not applied by default -- a
+# heuristic tuned on four tiles that fails on the fifth is not ready to be on.
+ADAPTIVE_HEIGHT_PCTILE = 0.0
+
+
+def drop_low_regions(polys, ndsm, pctile: float = ADAPTIVE_HEIGHT_PCTILE):
+    """Drop the flattest share of candidate regions, judged per scene.
+
+    False footprints sit on car parks, bare earth and road -- flat things the
+    monocular height field reads as slightly raised. Measured against LiDAR on
+    JAX_165 the true buildings have a median nDSM of 17.7 against 8.3 for the
+    false ones, so the signal is there; the difficulty is that no ABSOLUTE
+    threshold transfers between tiles. Tier C normalises heights so the tallest
+    structure reads ~40, and where that outlier sits differs per scene: the
+    cut that lifts JAX_165 to IoU 0.691 drops JAX_068's recall from 0.739 to
+    0.308.
+
+    So the threshold is a percentile of THIS scene's own candidate heights.
+    Measured across four tiles it is the only gate tried that improves
+    precision on every one of them:
+
+        tile      precision           recall
+        JAX_165   0.762 -> 0.787      0.789 -> 0.789
+        JAX_068   0.794 -> 0.803      0.739 -> 0.736
+        JAX_167   0.835 -> 0.942      0.620 -> 0.557
+        JAX_033   0.505 -> 0.544      0.812 -> 0.794
+
+    Otsu on the same distribution was tried and rejected: it is far more
+    aggressive and collapsed recall on three of the four tiles (JAX_167 to
+    0.310), which is the same failure mode Otsu has already produced twice in
+    this project.
+
+    A local-contrast test -- is this region raised above its own surroundings --
+    was also tried and rejected. It assumes buildings are isolated; in a dense
+    downtown a building's surroundings ARE other buildings, and recall fell from
+    0.789 to 0.219 on JAX_165.
+    """
+    if not polys or pctile <= 0:
+        return polys, None
+    hs = np.array([region_median_height(p, ndsm) for p in polys], dtype=np.float32)
+    if hs.size < 10:
+        return polys, None
+    thr = float(np.percentile(hs, pctile))
+    return [p for p, h in zip(polys, hs) if h >= thr], thr

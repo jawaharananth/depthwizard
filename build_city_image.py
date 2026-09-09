@@ -47,14 +47,21 @@ import cv2
 from PIL import Image
 
 import segmentation as seg
+import progress as prog
 import height_cache
 import dsm_refine
 import dtm as dtm_mod
 import city_model
+import image_grade
+import mesh_repair
+import model_audit
+import geometry_validate as gval
+import float_check as fcheck
+import region_footprints
 import building_discovery as bd
 import shadow_correction
 import overlay_rejection
-from depth_model import DepthBackbone, orientation_check
+from depth_model import DepthBackbone, orientation_check, backbone_tag
 from glb_export import export_glb
 import mesh_generation as mg
 
@@ -100,40 +107,104 @@ def estimate_sun_azimuth(image_np: np.ndarray, seg_labels: np.ndarray) -> float:
     return (best_dir + 180.0) % 360.0
 
 
+# Thresholds for the obliqueness screen. The separation they sit in is wide --
+# nadir orthos measured 144 and 388 holes, oblique frames 0 to 2 -- so these are
+# not tuned to the edge of anything.
+SKY_MIN_SPAN = 0.60      # fraction of image width a sky region must cover
+SKY_MAX_HOLES = 5        # above this the region is a roof mosaic, not sky
+HOLE_MIN_AREA_PX = 40    # ignore speckle when counting holes
+
+
 def check_nadir(image_np: np.ndarray) -> dict:
     """
-    Cheap obliqueness screen.
+    Obliqueness screen: is there real sky in this frame?
 
-    In a nadir view, building facades are not visible, so strong vertical image
-    structure is rare and roof edges dominate. In an oblique or ground-level
-    photo, facades occupy a large fraction of the frame and produce a strong,
-    consistently-oriented gradient field plus a sky region at the top.
+    The previous version asked whether the top of the image was bright and
+    smooth. That is true of sky and equally true of every flat commercial
+    rooftop, so it rejected the pipeline's own orthorectified tiles -- JAX_167
+    scored 0.43 against a 0.25 threshold, and a downtown ortho scored 0.38. A
+    screen that refuses the primary input format is worse than no screen.
 
-    A sky test is the most reliable single cue available without metadata: a
-    nadir frame has no horizon, so a large bright low-texture region across the
-    top of the image means the camera was not pointing down.
+    Brightness cannot separate the two, and neither can shape: a hazy downtown
+    ortho produces a bright region that touches the top edge and spans the full
+    width, exactly like sky. What does separate them is TOPOLOGY.
+
+    Sky is one simple region. A field of bright roofs is perforated by streets,
+    shadows, courtyards and vehicles, so its mask is riddled with holes.
+    Measured over the available images the gap is two orders of magnitude:
+
+        nadir orthos      144 and 388 holes
+        oblique / ground  0, 1, 1 and 2 holes
+
+    So sky is claimed only when a wide region touching the top edge is also
+    nearly solid. Images with no wide bright region at the top -- most nadir
+    imagery -- never reach that test at all.
     """
     h, w = image_np.shape[:2]
-    top = image_np[: h // 4]
-    gray_top = cv2.cvtColor(top, cv2.COLOR_RGB2GRAY).astype(np.float32)
-    tex = cv2.blur(gray_top ** 2, (9, 9)) - cv2.blur(gray_top, (9, 9)) ** 2
-    bright_flat = float(((gray_top > 150) & (tex < 60)).mean())
+    half = image_np[: h // 2]
 
-    hsv_top = cv2.cvtColor(top, cv2.COLOR_RGB2HSV)
-    blueish = float(((hsv_top[:, :, 0] > 90) & (hsv_top[:, :, 0] < 135) &
-                     (hsv_top[:, :, 1] > 40)).mean())
+    gray = cv2.cvtColor(half, cv2.COLOR_RGB2GRAY).astype(np.float32)
+    tex = cv2.blur(gray ** 2, (9, 9)) - cv2.blur(gray, (9, 9)) ** 2
+    bright_flat = (gray > 150) & (tex < 60)
 
-    sky_fraction = max(bright_flat, blueish)
-    return {"sky_fraction_top": round(sky_fraction, 3),
-            "likely_nadir": sky_fraction < 0.25}
+    hsv = cv2.cvtColor(half, cv2.COLOR_RGB2HSV)
+    blueish = ((hsv[:, :, 0] > 90) & (hsv[:, :, 0] < 135) & (hsv[:, :, 1] > 40))
+
+    mask = (bright_flat | blueish).astype(np.uint8)
+    # Close small gaps so an aerial, a bird or a thin mast does not split the
+    # sky into two components and halve its measured span.
+    mask = cv2.morphologyEx(
+        mask, cv2.MORPH_CLOSE,
+        cv2.getStructuringElement(cv2.MORPH_RECT, (9, 9)))
+
+    n, lab, stats, _ = cv2.connectedComponentsWithStats(mask, 8)
+    best_i, span = None, 0.0
+    for i in range(1, n):
+        comp = lab == i
+        if not comp[0].any():          # sky must touch the top edge
+            continue
+        s_i = comp.any(axis=0).sum() / float(w)
+        if s_i > span:
+            span, best_i = s_i, i
+
+    holes = 0
+    if best_i is not None:
+        comp = (lab == best_i).astype(np.uint8)
+        x = stats[best_i, cv2.CC_STAT_LEFT]
+        y = stats[best_i, cv2.CC_STAT_TOP]
+        bw = stats[best_i, cv2.CC_STAT_WIDTH]
+        bh = stats[best_i, cv2.CC_STAT_HEIGHT]
+        sub = comp[y:y + bh, x:x + bw]
+        inv = (1 - sub).astype(np.uint8)
+        hn, hlab, hstats, _ = cv2.connectedComponentsWithStats(inv, 4)
+        for j in range(1, hn):
+            if hstats[j, cv2.CC_STAT_AREA] <= HOLE_MIN_AREA_PX:
+                continue
+            ys, xs = np.where(hlab == j)
+            # A background region touching the bounding box edge is outside the
+            # component, not a hole in it.
+            if (ys.min() == 0 or xs.min() == 0
+                    or ys.max() == bh - 1 or xs.max() == bw - 1):
+                continue
+            holes += 1
+
+    is_sky = (span >= SKY_MIN_SPAN) and (holes <= SKY_MAX_HOLES)
+    return {"sky_span": round(float(span), 3),
+            "sky_holes": int(holes),
+            "likely_nadir": not is_sky}
 
 
-def build(image_path: str, name: str, gsd_m: float = None,
+def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
           anchor_height_m: float = None, max_px: int = 2560,
           stage: bool = True) -> dict:
     os.makedirs(OUT_DIR, exist_ok=True)
     stem = os.path.join(OUT_DIR, f"city_{name}")
     t0 = time.time()
+    # A null tracker when none was supplied, so the five instrumentation
+    # points below are bare calls rather than five guarded blocks -- each
+    # guard would be another place the timing could silently be skipped.
+    _tr = tracker if tracker is not None else prog.NullTracker()
+    _tr.enter("load")
 
     # A GeoTIFF carries its own ground sampling distance and CRS. Reading them
     # is strictly better than accepting a --gsd flag: the horizontal scale
@@ -174,6 +245,8 @@ def build(image_path: str, name: str, gsd_m: float = None,
     image_np = np.array(pil)
     H, W = image_np.shape[:2]
     print(f"[1/5] {os.path.basename(image_path)}  {W}x{H}")
+    if tracker is not None:
+        tracker.megapixels = (W * H) / 1e6
     if min(W, H) < 800:
         raise SystemExit(
             f"image is {W}x{H} -- too small to resolve buildings. This pipeline "
@@ -183,20 +256,25 @@ def build(image_path: str, name: str, gsd_m: float = None,
     nad = check_nadir(image_np)
     if not nad["likely_nadir"]:
         raise SystemExit(
-            f"this does not look like a nadir (top-down) view -- "
-            f"{nad['sky_fraction_top']*100:.0f}% of the upper frame reads as sky. "
+            f"this does not look like a nadir (top-down) view -- a sky region "
+            f"spanning {nad['sky_span']*100:.0f}% of the frame width sits above "
+            f"the horizon. "
             "Every stage of this pipeline assumes a top-down view: depth is read as "
             "height, footprints as plan geometry, shadow length as building height. "
             "On an oblique or ground-level photo the output would be confident "
             "nonsense, so the build stops here rather than producing it.")
 
-    key = f"plainimg_{name}"
+    _tr.leave(); _tr.enter("height_field")
+    # The backbone tag is part of the key: a cached field from a different
+    # model is not a cache hit, it is a different measurement.
+    key = f"plainimg_{name}_{backbone_tag()}"
     height = height_cache.load(key, "tiled", H) if H == W else None
     if height is None:
         height = DepthBackbone().predict_tiled(pil)
         if H == W:
             height_cache.save(key, "tiled", H, height)
     print(f"[2/5] height field in {time.time()-t0:.0f}s")
+    _tr.leave(); _tr.enter("scale")
 
     # Strip map-overlay graphics before anything reads the image as terrain.
     # A pin or label is opaque paint: segmentation calls it a building, the prism
@@ -252,6 +330,7 @@ def build(image_path: str, name: str, gsd_m: float = None,
     print(f"[3/5] scale: {scale_source}")
     print(f"      sun azimuth estimated from shadows: "
           f"{'%.0f deg' % sun_az if sun_az is not None else 'not determinable'}")
+    _tr.leave(); _tr.enter("buildings")
 
     dsm = refined * scale
     terrain = dtm_mod.estimate_dtm(dsm, seg_labels)
@@ -293,19 +372,68 @@ def build(image_path: str, name: str, gsd_m: float = None,
                        min_area_m2=6.0)
     print("[4/5] building discovery")
     print(bd.format_report(disc["report"]))
+    _tr.leave(); _tr.enter("export")
 
-    footprints = []
-    for rec in disc["instances"]:
-        cnt = rec["contour"]
-        eps = 0.012 * cv2.arcLength(cnt, True)
-        poly = cv2.approxPolyDP(cnt, eps, True).reshape(-1, 2).astype(np.float32)
-        if len(poly) >= 3:
-            footprints.append(poly)
+    # Footprints come from the SAME extractor the benchmarked path uses.
+    #
+    # This path previously traced building_discovery's segmentation contours
+    # directly. Segmentation merges adjacent structures, so a contour is often a
+    # whole city block rather than a building: measured on one uploaded tile the
+    # largest was 9403 m2, and the roof triangles it produced spanned 126 m
+    # across a 400 m scene. Extruded, those are the enormous flat plates that
+    # made the render unusable -- and no per-polygon repair helps, because the
+    # outline is a faithful trace of the wrong thing.
+    #
+    # region_footprints splits regions by watershed before tracing, which is why
+    # it is the path with measured footprint numbers behind it (IoU 0.553,
+    # recall 0.745). One extractor, used everywhere.
+    #
+    # min_height_m is in ndsm's units, which on this Tier C path are not metres
+    # -- the surface was rescaled so the tallest structure reads TARGET_TALL_M,
+    # so a 2 m threshold means "2 units on that assumed scale".
+    rres = region_footprints.extract(
+        image_np, ndsm, gsd, seg_labels=seg_labels,
+        min_area_m2=8.0, min_height_m=1.5)
+    footprints = rres["polygons"]
+    # Drop the flattest share of candidates, judged against this scene's own
+    # height distribution. These are the car parks and bare ground the height
+    # field reads as slightly raised -- the buildings-on-roads problem.
+    footprints, _thr = region_footprints.drop_low_regions(footprints, ndsm)
+    if _thr is not None:
+        print(f"      flat-region gate: kept {len(footprints)} "
+              f"(cut below height {_thr:.1f})")
+    print(f"      footprints from image regions: {rres['report']['retained']} "
+          f"of {rres['report']['regions_examined']} regions")
+    _rej = "  ".join(f"{k} {v}" for k, v in rres["report"]["rejected"].items() if v)
+    if _rej:
+        print(f"      rejected: {_rej}")
+
     for rec in disc["instances"]:
         rec["provenance"] = bd.INFERRED   # never MEASURED on this path
 
-    bverts, bfaces, binfo = city_model.build_prisms(
-        footprints, dsm, ground, gsd, gsd, min_height_m=1.5, image_np=image_np)
+    # Build, localise defects, repair the offenders, re-check. The loop is
+    # bounded: each pass must strictly reduce the defect count or the strategy
+    # escalates, and the last strategy removes the building, so it terminates.
+    _gsmall_pre, _ = mg._resize_for_mesh(ground, seg_labels, GROUND_GRID)
+    _cell_pre = gsd * (ground.shape[0] / _gsmall_pre.shape[0])
+    # Roof colours are sampled from the WHITE-BALANCED image, not the raw one.
+    # Correcting the ground texture alone would leave every roof carrying the
+    # atmospheric blue cast while the terrain under it reads neutral -- the two
+    # would not look like the same scene.
+    _balanced = image_grade.white_balance(image_np)
+    _rep = mesh_repair.repair_build(
+        footprints, dsm, ground, gsd, image_np=_balanced, min_height_m=1.5,
+        ground_small=_gsmall_pre, cell_m=_cell_pre)
+    bverts, bfaces, binfo = _rep["verts"], _rep["faces"], _rep["binfo"]
+    footprints = _rep["footprints"]
+    _rr = _rep["report"]
+    if _rr["converged"]:
+        print(f"      repair: converged in {_rr['iterations']} pass(es), "
+              f"{_rr['final_built']} buildings, no defects remaining")
+    else:
+        print(f"      repair: {_rr['iterations']} pass(es), "
+              f"{_rr['final_built']} buildings, "
+              f"{_rr['unrepaired']} could not be repaired")
     heights = np.array([r["height_m"] for r in binfo["buildings"]]) \
         if binfo["buildings"] else np.zeros(1)
     print(f"      {len(binfo['buildings'])} prisms; heights median "
@@ -321,12 +449,45 @@ def build(image_path: str, name: str, gsd_m: float = None,
     gscale = ground.shape[0] / gsmall.shape[0]
     gverts, guvs, gfaces = mg.build_ground_mesh(gsmall, gsd * gscale, gsd * gscale)
 
-    g = image_np.astype(np.float32) / 255.0
-    lum = (g * np.array([0.299, 0.587, 0.114], np.float32)).sum(axis=2, keepdims=True)
-    g = lum + (g - lum) * 1.12
-    g = np.clip((g - 0.42) * 1.14 + 0.46, 0, 1)
-    g = np.clip(g * np.array([0.94, 0.985, 1.06], np.float32), 0, 1)
-    graded = (g * 255).astype(np.uint8)
+    # The same checks the benchmark path runs. This path had none, so malformed
+    # geometry shipped silently -- which is how a scene full of crossing plates
+    # reached a viewer without anything objecting.
+    _gv = [
+        gval.validate(gverts, gfaces, "ground", expect_upward=True),
+        gval.validate(bverts, bfaces, "buildings"),
+        gval.validate(cverts, cfaces, "canopy"),
+        gval.validate(wverts, wfaces, "water"),
+        gval.validate(vverts, vfaces, "vehicles"),
+    ]
+    print("      geometry validation:")
+    if not gval.report(_gv):
+        print("      WARNING: a mesh failed a hard geometry check (see above)")
+    _fc = [
+        fcheck.check(bverts, gsmall, gsd * gscale, "buildings"),
+        fcheck.check(cverts, gsmall, gsd * gscale, "canopy"),
+        fcheck.check(vverts, gsmall, gsd * gscale, "vehicles"),
+        fcheck.check(wverts, gsmall, gsd * gscale, "water", flat=True),
+    ]
+    if not fcheck.report(_fc):
+        print("      WARNING: a class floats above the rendered terrain")
+
+    # Second system: does the finished model agree with the image it came from?
+    # Everything above checks the model against itself.
+    try:
+        _audit = model_audit.audit(
+            footprints, binfo, image_np, ndsm,
+            seg_labels == seg.CLASS_IDX["building"],
+            sun_azimuth_deg=sun_az)
+        print(model_audit.report(_audit))
+    except Exception as _e:
+        _audit = {"error": str(_e)}
+        print(f"      model-vs-image audit failed: {_e}")
+
+    # White balance first, then grade. The previous version boosted saturation
+    # and applied an explicit cool gain to imagery that was ALREADY blue from
+    # atmospheric scattering, taking R-B from -27.6 to -48.3 and saturation from
+    # 30.7 to 49.9 -- a grey-blue monochrome scene. See image_grade.py.
+    graded = image_grade.grade(image_np)
     Image.fromarray(graded).save(stem + "_texture.png")
     import io
     tex = io.BytesIO(); Image.fromarray(graded).save(tex, format="PNG")
@@ -368,6 +529,7 @@ def build(image_path: str, name: str, gsd_m: float = None,
 
     print(f"[5/5] {len(gfaces)} ground + {len(bfaces)} building faces, "
           f"{os.path.getsize(stem + '.glb')/1e6:.1f} MB")
+    _tr.leave()
 
     meta = {
         "source_image": os.path.abspath(image_path),

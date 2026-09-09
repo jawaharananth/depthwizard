@@ -26,6 +26,14 @@
     color: #ccc; font-size: 16px; z-index: 20; background: #05070a;
   }
   #stats { margin-top: 8px; font-size: 11px; color: #899; white-space: pre-line; }
+  #xsec { display:none; margin-top:8px; width:100%; max-width:320px;
+           border-radius:4px; border:1px solid rgba(255,255,255,0.12); }
+  .slider-row { display:flex; align-items:center; gap:7px; margin-top:7px; }
+  .slider-row label { font-size:11px; color:#9ab; min-width:38px;
+                      letter-spacing:0.04em; text-transform:uppercase; }
+  .slider-row input[type=range] { flex:1; accent-color:#6ab6cd; }
+  .readout { font-size:11px; color:#9cb3c2; margin-top:3px;
+             font-variant-numeric:tabular-nums; }
 </style>
 </head>
 <body>
@@ -48,6 +56,26 @@
     <button id="btn-dof">Tilt-Shift</button>
     <button id="btn-tour">Flythrough</button>
   </div>
+  <div class="row">
+    <button id="btn-slope">SLOPE</button>
+    <button id="btn-los">Line of Sight</button>
+    <button id="btn-xsec">Cross-Section</button>
+  </div>
+  <div class="row">
+    <button id="btn-pdf">Export PDF</button>
+    <button id="btn-xr" style="display:none;">Enter VR</button>
+  </div>
+  <div class="slider-row">
+    <label for="flood">Flood</label>
+    <input type="range" id="flood" min="0" max="60" step="0.5" value="0">
+  </div>
+  <div class="readout" id="flood-readout">Water off</div>
+  <div class="slider-row">
+    <label for="sunhr">Sun</label>
+    <input type="range" id="sunhr" min="6" max="18" step="0.25" value="10.5">
+  </div>
+  <div class="readout" id="sun-readout">10:30   (matches capture)</div>
+  <canvas id="xsec" width="320" height="120"></canvas>
   <div id="measure-panel">Click a building to read its height.</div>
   <div id="stats"></div>
 </div>
@@ -72,15 +100,25 @@ import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 // Config: which mesh/texture to load. Point MESH_URL at your run_pipeline.py
 // output (mesh_generation.generate_mesh's out_path/texture_path/heatmap_path).
 // ---------------------------------------------------------------------
-const MESH_URL = "./output/terrain.glb";
-const TEXTURE_RGB_URL = "./output/terrain_texture.png";
-const TEXTURE_HEATMAP_URL = "./output/terrain_heatmap.png";
-const TEXTURE_CONF_URL = "./output/terrain_confidence.png";
-const TEXTURE_ERR_URL = "./output/terrain_error.png";
-const TEXTURE_NORMAL_URL = "./output/terrain_normal.png";
-const TEXTURE_AO_URL = "./output/terrain_ao.png";
-const TEXTURE_ROUGHNESS_URL = "./output/terrain_roughness.png";
-const TEXTURE_METALNESS_URL = "./output/terrain_metalness.png";
+// Scene root. Defaults to ./output (whatever the pipeline last staged), but a
+// ?scene=<name> parameter points at a pre-built scene under /scenes/<name>/.
+// That is what lets a gallery serve several finished cities without copying one
+// of them over the others, which is how scenes.py restore works and why only
+// one scene could exist at a time.
+const _params = new URLSearchParams(location.search);
+const _scene = _params.get("scene");
+const BASE = _scene ? `/scenes/${encodeURIComponent(_scene)}` : "./output";
+
+const MESH_URL = `${BASE}/terrain.glb`;
+const TEXTURE_RGB_URL = `${BASE}/terrain_texture.png`;
+const TEXTURE_HEATMAP_URL = `${BASE}/terrain_heatmap.png`;
+const TEXTURE_CONF_URL = `${BASE}/terrain_confidence.png`;
+const TEXTURE_ERR_URL = `${BASE}/terrain_error.png`;
+const TEXTURE_SLOPE_URL = `${BASE}/terrain_slope.png`;
+const TEXTURE_NORMAL_URL = `${BASE}/terrain_normal.png`;
+const TEXTURE_AO_URL = `${BASE}/terrain_ao.png`;
+const TEXTURE_ROUGHNESS_URL = `${BASE}/terrain_roughness.png`;
+const TEXTURE_METALNESS_URL = `${BASE}/terrain_metalness.png`;
 // Sun angles come from the capture metadata written by build_scene.py, not
 // from a chosen-looking-good constant. The satellite texture has the real
 // shadows baked into it, so lighting the geometry from a different direction
@@ -91,7 +129,7 @@ let SUN_ELEVATION_DEG = 40;
 let SUN_AZIMUTH_DEG = 200;
 let SCENE_META = null;
 try {
-  const r = await fetch("./output/scene.json", { cache: "no-store" });
+  const r = await fetch(`${BASE}/scene.json`, { cache: "no-store" });
   if (r.ok) {
     SCENE_META = await r.json();
     if (typeof SCENE_META.sun_elevation_deg === "number") SUN_ELEVATION_DEG = SCENE_META.sun_elevation_deg;
@@ -109,7 +147,7 @@ try {
 // building by building.
 let BUILDING_RECORDS = null;
 try {
-  const rb = await fetch("./output/buildings.geojson", { cache: "no-store" });
+  const rb = await fetch(`${BASE}/buildings.geojson`, { cache: "no-store" });
   if (rb.ok) {
     const gj = await rb.json();
     BUILDING_RECORDS = (gj.features || []).map((f) => {
@@ -722,6 +760,7 @@ function shadeBuildingPrisms(mesh, mat) {
 // --- Load terrain mesh ---
 let groundMesh = null;
 let rgbTexture = null, heatmapTexture = null, confidenceTexture = null, errorTexture = null, normalTexture = null;
+let slopeTexture = null;
 let aoTexture = null, roughnessTexture = null, metalnessTexture = null;
 
 const textureLoader = new THREE.TextureLoader();
@@ -732,15 +771,17 @@ Promise.all([
   new Promise((res) => textureLoader.load(TEXTURE_HEATMAP_URL, res, undefined, () => res(null))),
   new Promise((res) => textureLoader.load(TEXTURE_CONF_URL, res, undefined, () => res(null))),
   new Promise((res) => textureLoader.load(TEXTURE_ERR_URL, res, undefined, () => res(null))),
+  new Promise((res) => textureLoader.load(TEXTURE_SLOPE_URL, res, undefined, () => res(null))),
   new Promise((res) => textureLoader.load(TEXTURE_NORMAL_URL, res, undefined, () => res(null))),
   new Promise((res) => textureLoader.load(TEXTURE_AO_URL, res, undefined, () => res(null))),
   new Promise((res) => textureLoader.load(TEXTURE_ROUGHNESS_URL, res, undefined, () => res(null))),
   new Promise((res) => textureLoader.load(TEXTURE_METALNESS_URL, res, undefined, () => res(null))),
-]).then(([rgbTex, heatTex, confTex, errTex, normalTex, aoTex, roughTex, metalTex]) => {
+]).then(([rgbTex, heatTex, confTex, errTex, slopeTex, normalTex, aoTex, roughTex, metalTex]) => {
   rgbTexture = rgbTex;
   heatmapTexture = heatTex;
   confidenceTexture = confTex;
   errorTexture = errTex;
+  slopeTexture = slopeTex;
   normalTexture = normalTex;
   aoTexture = aoTex;
   roughnessTexture = roughTex;
@@ -964,6 +1005,7 @@ Promise.all([
 
       document.getElementById("loading").style.display = "none";
       document.getElementById("ui").style.display = "block";
+      calibrateFloodRange();
     },
     undefined,
     (err) => {
@@ -988,7 +1030,12 @@ document.getElementById("btn-err").addEventListener("click", () => setTextureMod
 
 function setTextureMode(mode) {
   if (!groundMesh) return;
-  const tex = mode === "heatmap" ? heatmapTexture : rgbTexture;
+  const byMode = { rgb: rgbTexture, heatmap: heatmapTexture,
+                   confidence: confidenceTexture, error: errorTexture,
+                   slope: slopeTexture };
+  // Fall back to RGB rather than returning early: a missing diagnostic
+  // raster should still leave a usable scene on screen, not a dead button.
+  const tex = byMode[mode] || rgbTexture;
   if (!tex) return;
   groundMesh.material.map = tex;
   groundMesh.material.needsUpdate = true;
@@ -1001,7 +1048,9 @@ function setTextureMode(mode) {
   // Confidence is a diagnostic view, not a lit scene: a red patch means the
   // imagery barely constrains the height there, and shading it would make that
   // depend on where the sun happens to be.
-  const diag = (mode === "confidence" || mode === "error");
+  const sb = document.getElementById("btn-slope");
+  if (sb) sb.classList.toggle("active", mode === "slope");
+  const diag = (mode === "confidence" || mode === "error" || mode === "slope");
   groundMesh.material.envMapIntensity = diag ? 0.0 : 0.62;
   groundMesh.material.roughness = diag ? 1.0 : (roughnessTexture ? 1.0 : 0.92);
   scene.traverse((o2) => {
@@ -1066,6 +1115,7 @@ function clearMeasure() {
 }
 
 renderer.domElement.addEventListener("click", (event) => {
+  if (toolMode) { handleToolClick(event); return; }
   if (!measureActive) return;
   pointer.x = (event.clientX / window.innerWidth) * 2 - 1;
   pointer.y = -(event.clientY / window.innerHeight) * 2 + 1;
@@ -1236,6 +1286,572 @@ function updateTour(dt) {
   controls.update();
 }
 
+
+// --- Analysis tools ---------------------------------------------------------
+//
+// Five tools sharing one principle: they read the geometry already on screen
+// rather than a second copy of the data. A flood level compared against a
+// separately loaded height raster could disagree with what the viewer draws;
+// raycasting the actual mesh cannot.
+
+const CAPTURE_HOUR = 10.5;   // typical sun-synchronous overpass, local solar
+
+function analysisTargets() {
+  const t = [];
+  scene.traverse(function (o) {
+    if (o.isMesh && o.visible && o !== floodMesh) t.push(o);
+  });
+  return t;
+}
+
+function heightUnit() {
+  return (SCENE_META && SCENE_META.height_is_metric) ? "m" : "units";
+}
+
+// ---- FLOOD / INUNDATION ----------------------------------------------------
+//
+// A horizontal plane at a chosen elevation. Terrain below it reads as submerged
+// because the plane is drawn over it; anything taller pokes through. No
+// per-vertex work and no shader recompile, so the slider stays responsive while
+// it is being dragged.
+let floodMesh = null;
+
+function ensureFloodPlane() {
+  if (floodMesh || !groundMesh) return floodMesh;
+  const box = new THREE.Box3().setFromObject(groundMesh);
+  const size = box.getSize(new THREE.Vector3());
+  const c = box.getCenter(new THREE.Vector3());
+  const g = new THREE.PlaneGeometry(size.x * 1.02, size.z * 1.02);
+  g.rotateX(-Math.PI / 2);
+  floodMesh = new THREE.Mesh(g, new THREE.MeshStandardMaterial({
+    color: 0x1c5f86, transparent: true, opacity: 0.62,
+    roughness: 0.06, metalness: 0.25, depthWrite: false
+  }));
+  floodMesh.position.set(c.x, box.min.y, c.z);
+  floodMesh.visible = false;
+  floodMesh.renderOrder = 2;
+  scene.add(floodMesh);
+  return floodMesh;
+}
+
+function setFloodLevel(rise) {
+  const m = ensureFloodPlane();
+  if (!m || !groundMesh) return;
+  const box = new THREE.Box3().setFromObject(groundMesh);
+  m.position.y = box.min.y + rise;
+  m.visible = rise > 0.01;
+
+  // Count what the water reaches AND how much of that we are confident about.
+  // A flood extent alone is a picture; extent plus where the height data is
+  // weakest is a decision-support statement, because those are the buildings
+  // someone would go and verify before acting on this map.
+  let hit = 0, weak = 0;
+  if (BUILDING_RECORDS) {
+    for (const r of BUILDING_RECORDS) {
+      const h = r.props.height_m;
+      if (typeof h !== "number") continue;
+      if (h <= rise) {
+        hit++;
+        const rel = r.props.reliability;
+        if (rel === "LOW" || rel === "WEAK") weak++;
+      }
+    }
+  }
+  const el = document.getElementById("flood-readout");
+  if (!el) return;
+  el.textContent = rise < 0.01 ? "Water off"
+    : "Water " + rise.toFixed(1) + " " + heightUnit() + " above the low point - "
+      + hit + " buildings submerged, " + weak + " with low-confidence heights";
+}
+
+// ---- LINE OF SIGHT ---------------------------------------------------------
+//
+// Marches between two picked points and asks at each step whether the scene
+// surface rises above the straight line joining them. Sampling casts a ray
+// DOWNWARD onto the scene rather than reading a height raster, so the answer
+// matches the geometry actually rendered, buildings included - a bare terrain
+// raster would miss those entirely.
+let losLine = null;
+
+function clearLineOfSight() {
+  if (losLine) { scene.remove(losLine); losLine = null; }
+}
+
+function runLineOfSight(a, b) {
+  clearLineOfSight();
+  const STEPS = 200;
+  const EYE = 1.7;                     // eye height of an observer, not feet
+  const down = new THREE.Raycaster();
+  down.far = 4000;
+  const dir = new THREE.Vector3(0, -1, 0);
+  const targets = analysisTargets();
+
+  let blockedAt = null, blockedBy = null;
+  const pts = [], cols = [];
+
+  for (let i = 0; i <= STEPS; i++) {
+    const t = i / STEPS;
+    const p = new THREE.Vector3().lerpVectors(a, b, t);
+    p.y += EYE;
+    down.set(new THREE.Vector3(p.x, p.y + 900, p.z), dir);
+    const h = down.intersectObjects(targets, false);
+    const surf = h.length ? h[0].point.y : null;
+    const clear = (surf === null) || (surf <= p.y + 0.25);
+    if (!clear && blockedAt === null) {
+      blockedAt = t;
+      blockedBy = h.length ? ((h[0].object.userData && h[0].object.userData.isBuilding) ? "a building" : "terrain") : "terrain";
+    }
+    pts.push(p.x, p.y, p.z);
+    if (blockedAt === null) cols.push(0.30, 0.85, 0.45);
+    else cols.push(0.90, 0.28, 0.22);
+  }
+
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.Float32BufferAttribute(pts, 3));
+  g.setAttribute("color", new THREE.Float32BufferAttribute(cols, 3));
+  losLine = new THREE.Line(g, new THREE.LineBasicMaterial({ vertexColors: true }));
+  losLine.renderOrder = 3;
+  scene.add(losLine);
+
+  const dist = a.distanceTo(b);
+  const panel = document.getElementById("measure-panel");
+  if (!panel) return;
+  panel.textContent = (blockedAt === null)
+    ? "Line of sight CLEAR over " + dist.toFixed(0) + " " + heightUnit() + "."
+    : "Line of sight BLOCKED at " + (blockedAt * dist).toFixed(0) + " "
+      + heightUnit() + " of " + dist.toFixed(0) + " ("
+      + (blockedAt * 100).toFixed(0) + "% along), by " + blockedBy + ".";
+}
+
+// ---- ELEVATION CROSS-SECTION -----------------------------------------------
+//
+// Samples the rendered surface along a line and draws the profile. Buildings
+// appear as sharp vertical steps because the sampling hits the roof, which is
+// the point: a terrain-only profile would draw a smooth curve straight through
+// a tower block.
+function drawCrossSection(a, b) {
+  const cv = document.getElementById("xsec");
+  if (!cv) return;
+  const N = 260;
+  const down = new THREE.Raycaster();
+  down.far = 4000;
+  const dir = new THREE.Vector3(0, -1, 0);
+  const targets = analysisTargets();
+
+  const ys = [];
+  for (let i = 0; i <= N; i++) {
+    const p = new THREE.Vector3().lerpVectors(a, b, i / N);
+    down.set(new THREE.Vector3(p.x, p.y + 900, p.z), dir);
+    const h = down.intersectObjects(targets, false);
+    ys.push(h.length ? h[0].point.y : null);
+  }
+  const valid = ys.filter(function (v) { return v !== null; });
+  if (valid.length < 5) return;
+  let lo = valid[0], hi = valid[0];
+  for (const v of valid) { if (v < lo) lo = v; if (v > hi) hi = v; }
+  const span = Math.max(hi - lo, 1);
+
+  cv.style.display = "block";
+  const ctx = cv.getContext("2d");
+  const W = cv.width, H = cv.height;
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = "rgba(12,16,20,0.90)";
+  ctx.fillRect(0, 0, W, H);
+
+  // A profile without a scale is a squiggle, so grid and end labels stay.
+  ctx.strokeStyle = "rgba(255,255,255,0.12)";
+  ctx.lineWidth = 1;
+  for (let gi = 0; gi <= 4; gi++) {
+    const y = 16 + (H - 32) * (gi / 4);
+    ctx.beginPath(); ctx.moveTo(34, y); ctx.lineTo(W - 8, y); ctx.stroke();
+  }
+  ctx.fillStyle = "rgba(220,232,242,0.8)";
+  ctx.font = "10px ui-monospace, monospace";
+  ctx.fillText(hi.toFixed(0), 4, 20);
+  ctx.fillText(lo.toFixed(0), 4, H - 16);
+
+  ctx.beginPath();
+  let started = false;
+  for (let i = 0; i < ys.length; i++) {
+    if (ys[i] === null) continue;
+    const x = 34 + (W - 42) * (i / N);
+    const y = 16 + (H - 32) * (1 - (ys[i] - lo) / span);
+    if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
+  }
+  ctx.strokeStyle = "#6ab6cd";
+  ctx.lineWidth = 1.6;
+  ctx.stroke();
+
+  ctx.fillStyle = "rgba(220,232,242,0.8)";
+  ctx.fillText(a.distanceTo(b).toFixed(0) + " " + heightUnit() + " section, relief "
+               + span.toFixed(1), 38, H - 4);
+}
+
+function hideCrossSection() {
+  const cv = document.getElementById("xsec");
+  if (cv) cv.style.display = "none";
+}
+
+// ---- TIME-OF-DAY SUN -------------------------------------------------------
+//
+// Reuses the scene real solar geometry rather than spinning an arbitrary light.
+// The capture own elevation and azimuth fix one point on the day arc; the
+// slider walks that arc, so midday genuinely sits higher than morning and the
+// azimuth sweeps the correct way.
+//
+// The satellite texture has the capture shadows baked into it and those cannot
+// move, so this is a lighting study, not a claim about another time of day.
+// The readout marks the hour that matches the capture.
+function sunForHour(hour) {
+  const noon = 12.0;
+  const shape = function (h) { return Math.cos((h - noon) / 6.0 * (Math.PI / 2)); };
+  const k = SUN_ELEVATION_DEG / Math.max(shape(CAPTURE_HOUR), 1e-3);
+  const el = Math.max(3, Math.min(88, k * shape(hour)));
+  const az = SUN_AZIMUTH_DEG + (hour - CAPTURE_HOUR) * 15.0;
+  return { el: el, az: az };
+}
+
+function applySunHour(hour) {
+  const s = sunForHour(hour);
+  const d = sunDirectionFromAngles(s.el, s.az);
+  if (groundMesh) {
+    const box = new THREE.Box3().setFromObject(groundMesh);
+    const c = box.getCenter(new THREE.Vector3());
+    const size = box.getSize(new THREE.Vector3());
+    const span = Math.max(size.x, size.z);
+    sunLight.position.copy(c).addScaledVector(d, span * 2);
+    sunLight.target.position.copy(c);
+    sunLight.target.updateMatrixWorld();
+  }
+  // Low sun is warmer and dimmer, as real low sun is.
+  const t = Math.max(0, Math.min(1, s.el / 60));
+  sunLight.intensity = 0.9 + 2.4 * t;
+  sunLight.color.setRGB(1.0, 0.86 + 0.10 * t, 0.66 + 0.28 * t);
+
+  const out = document.getElementById("sun-readout");
+  if (!out) return;
+  const hh = Math.floor(hour), mm = Math.round((hour - hh) * 60);
+  const azn = ((Math.round(s.az) % 360) + 360) % 360;
+  out.textContent = ("0" + hh).slice(-2) + ":" + ("0" + mm).slice(-2)
+    + "   sun " + s.el.toFixed(0) + " deg elevation, " + azn + " deg azimuth"
+    + (Math.abs(hour - CAPTURE_HOUR) < 0.3 ? "   (matches capture)" : "");
+}
+
+
+// --- Tool wiring ------------------------------------------------------------
+//
+// Line-of-sight and cross-section both want two picked points, and both want
+// the picks to come from the same raycast the height tool already uses. They
+// share one collector rather than each growing a private copy of it, so a
+// change to how picking works cannot leave one tool behaving differently from
+// the other.
+let toolMode = null;                  // null | "los" | "xsec"
+let toolPoints = [];
+const toolMarkers = [];
+
+function clearToolPicks() {
+  toolPoints = [];
+  toolMarkers.forEach((m) => scene.remove(m));
+  toolMarkers.length = 0;
+}
+
+function setToolMode(next) {
+  toolMode = (toolMode === next) ? null : next;
+  clearToolPicks();
+  clearLineOfSight();
+  hideCrossSection();
+  document.getElementById("btn-los").classList.toggle("active", toolMode === "los");
+  document.getElementById("btn-xsec").classList.toggle("active", toolMode === "xsec");
+  if (toolMode) {
+    // Turning a two-point tool on cancels the one-point tool: leaving both
+    // armed would make a single click mean two different things.
+    measureActive = false;
+    document.getElementById("btn-measure").classList.remove("active");
+    document.getElementById("measure-panel").textContent =
+      (toolMode === "los")
+        ? "Click the observer position, then the target."
+        : "Click the two ends of the section line.";
+  } else {
+    document.getElementById("measure-panel").textContent =
+      "Click a building to read its height.";
+  }
+}
+
+function handleToolClick(event) {
+  pointer.x = (event.clientX / window.innerWidth) * 2 - 1;
+  pointer.y = -(event.clientY / window.innerHeight) * 2 + 1;
+  raycaster.setFromCamera(pointer, camera);
+  const hits = raycaster.intersectObjects(scene.children, true)
+    .filter((h) => h.object.isMesh && h.object.visible && h.object !== floodMesh);
+  if (hits.length === 0) return;
+
+  const p = hits[0].point.clone();
+  toolPoints.push(p);
+
+  const marker = new THREE.Mesh(
+    new THREE.SphereGeometry(Math.max(0.8, camera.position.distanceTo(p) * 0.003), 12, 12),
+    new THREE.MeshBasicMaterial({ color: toolMode === "los" ? 0x44dd77 : 0x6ab6cd })
+  );
+  marker.position.copy(p);
+  scene.add(marker);
+  toolMarkers.push(marker);
+
+  if (toolPoints.length < 2) {
+    document.getElementById("measure-panel").textContent = "Now click the second point.";
+    return;
+  }
+  const [a, b] = toolPoints;
+  if (toolMode === "los") runLineOfSight(a, b);
+  else drawCrossSection(a, b);
+  // Keep the tool armed but drop the picks, so the next click starts a fresh
+  // pair instead of silently extending the old one.
+  toolPoints = [];
+}
+
+document.getElementById("btn-los").addEventListener("click", () => setToolMode("los"));
+document.getElementById("btn-xsec").addEventListener("click", () => setToolMode("xsec"));
+document.getElementById("btn-slope").addEventListener("click", () => setTextureMode("slope"));
+document.getElementById("btn-pdf").addEventListener("click", () => exportReport());
+initXR();
+
+// The flood slider is capped at the scene relief rather than a fixed 60: on a
+// 12 m-relief tile a 60 m range spends most of its travel fully submerged.
+document.getElementById("flood").addEventListener("input", (e) => {
+  setFloodLevel(parseFloat(e.target.value));
+});
+document.getElementById("sunhr").addEventListener("input", (e) => {
+  applySunHour(parseFloat(e.target.value));
+});
+
+function calibrateFloodRange() {
+  if (!groundMesh) return;
+  const box = new THREE.Box3().setFromObject(groundMesh);
+  const relief = Math.max(6, box.max.y - box.min.y);
+  const el = document.getElementById("flood");
+  el.max = (relief * 1.1).toFixed(1);
+  el.step = (relief / 120).toFixed(2);
+}
+
+
+// --- Frame capture ----------------------------------------------------------
+//
+// The WebGPU canvas is not guaranteed to hold its contents after a frame ends,
+// so a toDataURL issued from a button handler can come back blank. Capture is
+// therefore queued and serviced inside the render loop, immediately after the
+// draw, while the surface is still valid.
+let _captureRequest = null;
+
+function captureFrame() {
+  return new Promise((resolve) => { _captureRequest = resolve; });
+}
+
+function servicePendingCapture() {
+  if (!_captureRequest) return;
+  const done = _captureRequest;
+  _captureRequest = null;
+  let url = null;
+  try { url = renderer.domElement.toDataURL("image/png"); } catch (e) { url = null; }
+  done(url);
+}
+
+// --- WebXR ------------------------------------------------------------------
+//
+// Feature-detected rather than assumed. WebXR needs both a browser that exposes
+// navigator.xr and a renderer whose backend can drive an XR session; the WebGPU
+// path does not have that on every build. The button is only shown when both
+// are actually present, because a control that silently does nothing is worse
+// than one that was never offered.
+async function initXR() {
+  const btn = document.getElementById("btn-xr");
+  if (!btn) return;
+  const supported = !!(navigator.xr && renderer.xr)
+    && await navigator.xr.isSessionSupported("immersive-vr").catch(() => false);
+  if (!supported) { btn.style.display = "none"; return; }
+
+  renderer.xr.enabled = true;
+  let session = null;
+  btn.style.display = "";
+  btn.textContent = "Enter VR";
+  btn.addEventListener("click", async () => {
+    if (session) { await session.end(); return; }
+    try {
+      session = await navigator.xr.requestSession("immersive-vr", {
+        optionalFeatures: ["local-floor", "bounded-floor"]
+      });
+    } catch (e) {
+      btn.textContent = "VR unavailable";
+      return;
+    }
+    await renderer.xr.setSession(session);
+    btn.textContent = "Exit VR";
+    session.addEventListener("end", () => {
+      session = null;
+      btn.textContent = "Enter VR";
+    });
+  });
+}
+
+// --- PDF report -------------------------------------------------------------
+//
+// Printed from a generated document rather than assembled with a PDF library:
+// the browser print pipeline already produces correct vector text, correct page
+// breaks and a real PDF, and it adds nothing to the bundle. The viewer is
+// offline-only and CSP-restricted, so pulling in a PDF library was not an
+// option in any case.
+//
+// The report states what the scene is, how it was derived, and how far it can
+// be trusted. Omitting the validation and confidence figures would turn a
+// measurement into a picture.
+function reportRows() {
+  const m = SCENE_META || {};
+  const rows = [];
+  const push = (k, v) => { if (v !== undefined && v !== null && v !== "") rows.push([k, v]); };
+  push("Tile", m.tile);
+  push("View", m.view);
+  push("Off-nadir", m.off_nadir_deg !== undefined ? m.off_nadir_deg + " deg" : null);
+  push("Ground sample distance", m.gsd_m !== undefined ? m.gsd_m + " m/px" : null);
+  push("Sun at capture", (m.sun_elevation_deg !== undefined)
+    ? m.sun_elevation_deg + " deg elevation / " + m.sun_azimuth_deg + " deg azimuth" : null);
+  push("Height calibration tier", m.tier);
+  push("Buildings extruded", m.buildings_extruded);
+  if (m.slope) {
+    push("Terrain slope (median)", m.slope.median_deg + " deg");
+    push("Terrain slope (95th pct)", m.slope.p95_deg + " deg");
+    push("Ground classed steep (>15 deg)",
+         (m.slope.frac_steep * 100).toFixed(1) + " %");
+  }
+  if (m.validation) {
+    push("RMSE vs LiDAR", m.validation.rmse_m + " m");
+    push("MAE vs LiDAR", m.validation.mae_m + " m");
+    push("Bias vs LiDAR", m.validation.bias_m + " m");
+    push("Reference extent", m.validation.covers_m + " m (central)");
+  }
+  return rows;
+}
+
+async function exportReport() {
+  const btn = document.getElementById("btn-pdf");
+  if (btn) btn.textContent = "Rendering...";
+  const shot = await captureFrame();
+  if (btn) btn.textContent = "Export PDF";
+
+  const rows = reportRows();
+  const w = window.open("", "_blank");
+  if (!w) {
+    document.getElementById("measure-panel").textContent =
+      "The browser blocked the report window. Allow pop-ups for this page and try again.";
+    return;
+  }
+
+  const doc = w.document;
+  doc.title = "DepthWizard - " + ((SCENE_META && SCENE_META.tile) || "scene") + " report";
+
+  const style = doc.createElement("style");
+  style.textContent = [
+    "@page { size: A4; margin: 18mm; }",
+    "body { font: 11pt/1.5 Georgia, 'Times New Roman', serif; color: #14181c; }",
+    "h1 { font-size: 20pt; margin: 0 0 2pt; letter-spacing: -0.01em; }",
+    ".sub { font-size: 9.5pt; color: #55606a; margin-bottom: 16pt; }",
+    "img { width: 100%; border: 1px solid #c8ced4; margin-bottom: 14pt; }",
+    "table { border-collapse: collapse; width: 100%; font-size: 10pt; }",
+    "th, td { text-align: left; padding: 5pt 8pt; border-bottom: 1px solid #dde2e6; }",
+    "th { width: 45%; font-weight: normal; color: #55606a; }",
+    "td { font-variant-numeric: tabular-nums; }",
+    "p.note { font-size: 9pt; color: #55606a; margin-top: 14pt; }"
+  ].join("\n");
+  doc.head.appendChild(style);
+
+  const h1 = doc.createElement("h1");
+  h1.textContent = "Elevation report";
+  doc.body.appendChild(h1);
+
+  const sub = doc.createElement("div");
+  sub.className = "sub";
+  sub.textContent = ((SCENE_META && SCENE_META.tile) || "Scene") + "  -  generated "
+    + new Date().toISOString().slice(0, 16).replace("T", " ") + " UTC";
+  doc.body.appendChild(sub);
+
+  if (shot) {
+    const img = doc.createElement("img");
+    img.src = shot;
+    doc.body.appendChild(img);
+  }
+
+  const table = doc.createElement("table");
+  for (const [k, v] of rows) {
+    const tr = doc.createElement("tr");
+    const th = doc.createElement("th");
+    th.textContent = k;
+    const td = doc.createElement("td");
+    td.textContent = String(v);
+    tr.appendChild(th); tr.appendChild(td);
+    table.appendChild(tr);
+  }
+  doc.body.appendChild(table);
+
+  const note = doc.createElement("p");
+  note.className = "note";
+  note.textContent = "Heights are derived from a single nadir view by plane-sweep "
+    + "multi-view stereo; facades are synthetic, because nadir imagery contains no "
+    + "facade pixels. Figures above the reference extent line are measured against "
+    + "LiDAR ground truth; outside it, no reference exists and accuracy is not "
+    + "established.";
+  doc.body.appendChild(note);
+
+  // Wait for the embedded frame to decode before printing, or the page prints
+  // with an empty image box.
+  const imgs = Array.from(doc.images);
+  await Promise.all(imgs.map((im) => im.complete
+    ? Promise.resolve()
+    : new Promise((r) => { im.onload = r; im.onerror = r; })));
+  w.focus();
+  w.print();
+}
+
+// Expose the scene graph for external capture and debugging.
+//
+// The module scope is otherwise sealed, so nothing outside the page can frame a
+// shot, switch texture mode or wait for the mesh to finish loading. Screenshots
+// for documentation would otherwise have to be taken by hand, which is neither
+// repeatable nor consistent between builds.
+window.__dw = {
+  get ready() { return groundMesh !== null; },
+  scene, camera, controls, renderer,
+  setTextureMode: (m) => setTextureMode(m),
+  // Presentation controls. The HUD is essential in the app and unwanted in a
+  // still, and the fog that gives the live scene depth reads as a wash in a
+  // single frame where the viewer cannot orbit to resolve it.
+  setChrome(visible) {
+    const ui = document.getElementById("ui");
+    if (ui) ui.style.display = visible ? "block" : "none";
+  },
+  setFog(nearFactor, farFactor) {
+    if (!scene.fog || !groundMesh) return;
+    const box = new THREE.Box3().setFromObject(groundMesh);
+    const size = box.getSize(new THREE.Vector3());
+    const maxDim = Math.max(size.x, size.z);
+    scene.fog.near = maxDim * nearFactor;
+    scene.fog.far = maxDim * farFactor;
+  },
+  frame(azimuthDeg, elevationDeg, distanceFactor) {
+    if (!groundMesh) return false;
+    const box = new THREE.Box3().setFromObject(groundMesh);
+    const c = box.getCenter(new THREE.Vector3());
+    const size = box.getSize(new THREE.Vector3());
+    const span = Math.max(size.x, size.z);
+    const az = THREE.MathUtils.degToRad(azimuthDeg);
+    const el = THREE.MathUtils.degToRad(elevationDeg);
+    const d = span * (distanceFactor === undefined ? 1.1 : distanceFactor);
+    camera.position.set(
+      c.x + d * Math.cos(el) * Math.sin(az),
+      c.y + d * Math.sin(el),
+      c.z + d * Math.cos(el) * Math.cos(az));
+    controls.target.copy(c);
+    controls.update();
+    return true;
+  },
+};
+
 // --- Render loop ---
 const _clock = new THREE.Clock();
 function animate() {
@@ -1244,6 +1860,7 @@ function animate() {
   updateTour(_clock.getDelta());
   controls.update();
   if (postProcessing) { postProcessing.render(); } else { renderer.render(scene, camera); }
+  servicePendingCapture();
 }
 renderer.setAnimationLoop(animate); // WebGPURenderer's own loop driver, handles both backends correctly
 

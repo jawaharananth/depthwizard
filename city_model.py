@@ -194,9 +194,68 @@ def extract_footprints(seg_labels: np.ndarray, ndsm: np.ndarray = None,
     return polys
 
 
+# A repaired footprint must stay the shape it was. The convex hull does not:
+# it is the SMALLEST shape containing the ring, which for a C-shape, an L-shape
+# or a figure-of-eight is dramatically larger than the building. Measured on one
+# uploaded tile, 17 of 200 rings self-intersected and the worst spanned 9403 m2
+# at solidity 0.325 -- hulling those produced the enormous flat plates that made
+# the render unusable.
+MIN_SOLIDITY = 0.35        # below this the ring is a merged blob, not a building
+MIN_REPAIR_AREA_PX = 20
+
+
+def _repair_ring(poly, shape):
+    """Return a valid simple ring for a self-intersecting footprint, or None.
+
+    Rasterise the ring and re-trace its outer contour. Filling uses the even-odd
+    rule, so the crossing lobes that made the ring invalid resolve into a single
+    filled region, and the contour of that region is simple by construction --
+    while still following the building's actual outline rather than jumping to
+    its convex hull.
+    """
+    H, W = shape
+    x, y, w, h = cv2.boundingRect(poly.astype(np.int32))
+    pad = 2
+    x0, y0 = max(x - pad, 0), max(y - pad, 0)
+    x1, y1 = min(x + w + pad, W), min(y + h + pad, H)
+    if x1 - x0 < 2 or y1 - y0 < 2:
+        return None
+
+    sub_mask = np.zeros((y1 - y0, x1 - x0), np.uint8)
+    cv2.fillPoly(sub_mask, [poly.astype(np.int32) - [x0, y0]], 1)
+    if sub_mask.sum() < MIN_REPAIR_AREA_PX:
+        return None
+
+    cnts, _ = cv2.findContours(sub_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not cnts:
+        return None
+    cnt = max(cnts, key=cv2.contourArea)
+
+    eps = 0.02 * cv2.arcLength(cnt, True)
+    approx = cv2.approxPolyDP(cnt, eps, True).reshape(-1, 2).astype(np.float32)
+    if len(approx) < 3:
+        return None
+    approx = approx + [x0, y0]
+
+    # A ring that is still not simple, or that is a sprawling blob rather than a
+    # building, is dropped. Losing a footprint costs one building; keeping a bad
+    # one costs a plate across the whole scene.
+    if _self_intersects(approx):
+        return None
+    area = cv2.contourArea(approx.astype(np.float32))
+    if area < MIN_REPAIR_AREA_PX:
+        return None
+    hull = cv2.convexHull(approx.astype(np.float32))
+    hull_area = cv2.contourArea(hull)
+    if hull_area > 0 and (area / hull_area) < MIN_SOLIDITY:
+        return None
+    return approx
+
+
 def build_prisms(footprints: list, dsm: np.ndarray, dtm: np.ndarray,
                  gsd_x_m: float, gsd_y_m: float, min_height_m: float = 2.5,
-                 roof_percentile: float = 70.0, image_np: np.ndarray = None):
+                 roof_percentile: float = 70.0, image_np: np.ndarray = None,
+                 flat_roof_indices: set = None):
     """
     One flat-roofed prism per footprint: vertical walls plus a flat roof.
 
@@ -215,10 +274,11 @@ def build_prisms(footprints: list, dsm: np.ndarray, dtm: np.ndarray,
     H, W = dsm.shape
     for _poly_i, poly in enumerate(footprints):
         if _self_intersects(poly):
-            poly = cv2.convexHull(poly.astype(np.float32)).reshape(-1, 2)
-            if len(poly) < 3:
+            repaired = _repair_ring(poly, (H, W))
+            if repaired is None or len(repaired) < 3:
                 skipped += 1
                 continue
+            poly = repaired
         xs = np.clip(poly[:, 0].astype(int), 0, W - 1)
         ys = np.clip(poly[:, 1].astype(int), 0, H - 1)
 
@@ -289,6 +349,13 @@ def build_prisms(footprints: list, dsm: np.ndarray, dtm: np.ndarray,
         roof_lo = float(np.percentile(roof_vals, 10))
         roof_hi = float(np.percentile(roof_vals, 90))
         plane = None
+        # Footprints the repair loop has flagged get a flat roof at the robust
+        # percentile instead of a fitted plane. A runaway plane and a height
+        # that disagrees with every neighbour are both symptoms of the roof
+        # SAMPLE being wrong -- a crane, a tree crown, a shadow edge -- and a
+        # plane fitted to a wrong sample tilts to follow it. Refusing to fit is
+        # the repair; the percentile is robust to the same contamination.
+        _force_flat = bool(flat_roof_indices) and _poly_i in flat_roof_indices
         if ys_i.size >= 12:
             lo, hi = np.percentile(roof_vals, [15, 90])
             keep = (roof_vals >= lo) & (roof_vals <= hi)
@@ -327,7 +394,9 @@ def build_prisms(footprints: list, dsm: np.ndarray, dtm: np.ndarray,
                         # 43 m for the 99th percentile. The allowance is now an
                         # absolute cap, so a mixed footprint gets a flat roof at
                         # a robust height instead of a blade.
-                        if band <= MAX_ROOF_RELIEF_M and tilt <= MAX_ROOF_RELIEF_M:
+                        if (not _force_flat
+                                and band <= MAX_ROOF_RELIEF_M
+                                and tilt <= MAX_ROOF_RELIEF_M):
                             plane = coef
                         else:
                             plane = None
@@ -447,6 +516,17 @@ def build_prisms(footprints: list, dsm: np.ndarray, dtm: np.ndarray,
     # orientation per footprint, fix it empirically -- point each wall normal
     # away from its own building centre.
     f = _orient_outward(v, f, index)
+
+    # Drop degenerate triangles before they leave the builder. Orthogonalising a
+    # footprint can leave two vertices coincident, and the resulting zero-area
+    # face has no normal -- it renders as nothing but trips every downstream
+    # geometry check, so the warning outlives the triangle that caused it.
+    if len(f):
+        a, b, c = v[f[:, 0]], v[f[:, 1]], v[f[:, 2]]
+        area2 = np.linalg.norm(np.cross(b - a, c - a), axis=1)
+        keep = area2 > 1e-9
+        if not keep.all():
+            f = f[keep]
     return v, f, {"buildings": index, "skipped": skipped,
                   "colors": np.asarray(colors, dtype=np.float32)}
 
@@ -617,7 +697,13 @@ def build_water(seg_labels: np.ndarray, ground: np.ndarray,
             continue
         xs = np.clip(poly[:, 0].astype(int), 0, ground.shape[1] - 1)
         ys = np.clip(poly[:, 1].astype(int), 0, ground.shape[0] - 1)
-        level = float(np.percentile(ground[ys, xs], 25)) - 0.3
+        # Median of the bank ring, not its 25th percentile. Water is untextured,
+        # so plane-sweep NCC is weak over it and the ground estimate around a
+        # body scatters by roughly 2 m; a quartile of that scatter puts the
+        # surface a couple of metres UNDER its own banks, which hides the body
+        # completely. The median tracks the banks, and the 0.3 m is the only
+        # deliberate sink -- enough to stop z-fighting, not enough to submerge.
+        level = float(np.median(ground[ys, xs])) - 0.3
 
         off = len(verts)
         for px, py in poly:
