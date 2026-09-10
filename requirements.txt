@@ -9,3 +9,20 @@ scipy==1.18.1
 matplotlib==3.11.1
 safetensors==0.8.0
 huggingface-hub==1.28.0
+
+# Added after a fresh-clone audit found these imported but unlisted.
+
+# GAMUS tiles are HDF5. Without this, gamus.py and train_height.py fail on
+# import, which is the entire fine-tuning path.
+h5py==3.16.0
+
+# skimage.transform, used by the validation and georeferencing paths.
+scikit-image==0.26.0
+
+# capture.py drives a real browser to screenshot the WebGPU viewer. Optional:
+# needed only to regenerate presentation stills, not to build or view a scene.
+playwright==1.58.0
+
+# OpenVINO accelerates depth inference on Intel integrated graphics. Optional,
+# and pointless on a CUDA machine -- install only if there is no NVIDIA GPU.
+# openvino==2026.3.1
