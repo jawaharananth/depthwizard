@@ -81,6 +81,7 @@
     <button id="btn-xsec">Cross-Section</button>
     <button id="btn-gcp">Ground Control</button>
     <button id="btn-flood">Flood Source</button>
+    <button id="btn-bands">Uncertainty</button>
   </div>
   <div id="gcp-panel"></div>
   <div class="row">
@@ -176,7 +177,10 @@ try {
       const ring = (f.geometry && f.geometry.coordinates && f.geometry.coordinates[0]) || [];
       let sx = 0, sy = 0;
       for (const pt of ring) { sx += pt[0]; sy += pt[1]; }
-      return { props: f.properties || {},
+      // The ring is kept, not just its centroid: the uncertainty bands are
+      // drawn over each building's actual footprint, and a centroid cannot be
+      // extruded into one.
+      return { props: f.properties || {}, ring,
                cx: ring.length ? sx / ring.length : 0,
                cy: ring.length ? sy / ring.length : 0 };
     });
@@ -1527,6 +1531,132 @@ function setGcpMode(on) {
   gcpRender();
 }
 
+
+// --- Conformal interval as geometry -----------------------------------------
+//
+// The interval already exists per building, in the readout, as a number nobody
+// reads until they click. Drawn as a cap spanning roof-q to roof+q it becomes
+// the first thing visible about the scene: a confident building wears a thin
+// sliver, an uncertain one a thick slab, and the eye sorts them without being
+// told what the number means.
+//
+// Unlit, like the confidence overlay and for the same reason. A lit band would
+// be bright on one side and dark on the other, so its apparent thickness -- the
+// only thing it encodes -- would depend on where the sun happens to be.
+//
+// Tier C scenes get no bands at all. The interval is a claim in metres, and a
+// relative-scale scene has none; drawing a band there would put a metric
+// uncertainty on a height that was never measured.
+let bandGroup = null;
+let bandsOn = false;
+
+function buildBands() {
+  if (bandGroup) return bandGroup;
+  if (!BUILDING_RECORDS || !SCENE_META || !groundMesh) return null;
+  if (!SCENE_META.height_is_metric) return null;
+
+  const ox = SCENE_META.origin_x || 0, oy = SCENE_META.origin_y || 0;
+  const datum = new THREE.Box3().setFromObject(groundMesh).min.y;
+  bandGroup = new THREE.Group();
+  bandGroup.name = "conformal-bands";
+
+  let made = 0;
+  for (const rec of BUILDING_RECORDS) {
+    const q = rec.props;
+    const hw = q.interval_half_width_m;
+    const h = q.height_m;
+    if (typeof hw !== "number" || typeof h !== "number" || !rec.ring.length) continue;
+
+    // Footprint into scene coordinates, same convention as everything else:
+    // x runs east from the origin, z IS (cy - origin_y).
+    // The shape is built in XY and then rotated -90 deg about X, which maps a
+    // shape point (x, y) to scene (x, 0, -y). Scene z must come out as
+    // (cy - origin_y), so the shape's y has to be its NEGATION -- feeding
+    // (cy - origin_y) straight in mirrors every footprint to the far side of
+    // the origin, which put the whole band layer in the sky beside the city.
+    const pts = [];
+    for (const pt of rec.ring) {
+      pts.push(new THREE.Vector2(pt[0] - ox, -(pt[1] - oy)));
+    }
+    if (pts.length < 3) continue;
+
+    let shape;
+    try { shape = new THREE.Shape(pts); } catch (e) { continue; }
+    const geo = new THREE.ExtrudeGeometry(shape, { depth: 2 * hw, bevelEnabled: false });
+    // Shape lies in XY and extrudes along +Z; rotate so it extrudes vertically.
+    geo.rotateX(-Math.PI / 2);
+
+    // The ground beneath this footprint, so the cap sits at the roof rather
+    // than at a scene-wide datum -- a building on a rise would otherwise wear
+    // its band buried in the hillside.
+    const gy = sampleGroundAt(rec.cx - ox, rec.cy - oy, datum);
+    const roofY = gy + h;
+
+    const mesh = new THREE.Mesh(geo, bandMaterial(hw, h));
+    mesh.position.y = roofY - hw;
+    mesh.renderOrder = 3;
+    bandGroup.add(mesh);
+    made++;
+  }
+  bandGroup.visible = false;
+  scene.add(bandGroup);
+  bandGroup.userData.count = made;
+  return bandGroup;
+}
+
+// Colour by RELATIVE uncertainty, not absolute. A +/-4.5 m band on a 90 m tower
+// is tight; the same band on a 6 m house is the whole building. Shading by the
+// raw half-width would paint every building the same, since the fitted quantile
+// is constant across the scene, and encode nothing.
+function bandMaterial(hw, h) {
+  const rel = Math.min(1, (hw / Math.max(h, 1e-6)) / 0.6);
+  const col = new THREE.Color().setHSL(
+    0.33 * (1 - rel),          // green -> amber -> red
+    0.75,
+    0.5);
+  return new THREE.MeshBasicMaterial({
+    color: col, transparent: true,
+    opacity: 0.22 + 0.28 * rel,
+    depthWrite: false, side: THREE.DoubleSide,
+  });
+}
+
+function sampleGroundAt(x, z, fallback) {
+  const g = (typeof floodBuildGrid === "function") ? floodBuildGrid() : null;
+  if (!g) return fallback;
+  const c = Math.round((x - g.x0) / (g.dx || 1));
+  const r = Math.round((z - g.z0) / (g.dz || 1));
+  if (r < 0 || r >= g.h || c < 0 || c >= g.w) return fallback;
+  return g.y[r * g.w + c];
+}
+
+function setBands(on) {
+  bandsOn = on === undefined ? !bandsOn : on;
+  const btn = document.getElementById("btn-bands");
+  const grp = buildBands();
+  if (!grp) {
+    if (btn) btn.classList.remove("active");
+    bandsOn = false;
+    document.getElementById("measure-panel").textContent =
+      (SCENE_META && !SCENE_META.height_is_metric)
+        ? "No uncertainty bands: this scene's heights are on a relative scale, "
+          + "so there is no metre interval to draw."
+        : "No uncertainty bands: no conformal interval is attached to these "
+          + "buildings (run scripts/fit_conformal.py and rebuild).";
+    return;
+  }
+  grp.visible = bandsOn;
+  if (btn) btn.classList.toggle("active", bandsOn);
+  if (bandsOn) {
+    document.getElementById("measure-panel").textContent =
+      `Uncertainty bands on ${grp.userData.count} buildings. Each cap spans the `
+      + `90% conformal interval, so its thickness is how far the true roof could `
+      + `be from the one drawn. Colour is the band as a FRACTION of the `
+      + `building's height: green where the interval is tight relative to the `
+      + `structure, red where it is most of it.`;
+  }
+}
+
 // --- Cinematic flythrough ---------------------------------------------------
 //
 // Waypoints come from the scene's own tallest buildings rather than a hand-set
@@ -2074,6 +2204,7 @@ document.getElementById("btn-flood").addEventListener("click", () => {
   }
 });
 document.getElementById("btn-slope").addEventListener("click", () => setTextureMode("slope"));
+document.getElementById("btn-bands").addEventListener("click", () => setBands());
 document.getElementById("btn-pdf").addEventListener("click", () => exportReport());
 initXR();
 
@@ -2289,6 +2420,8 @@ window.__dw = {
   gcpApplyFactor: (f) => gcpApplyFactor(f),
   setGcpMode: (on) => setGcpMode(on),
   get gcpPoints() { return gcpPoints; },
+  setBands: (on) => setBands(on),
+  get bandGroup() { return bandGroup; },
   floodUpdate: (r) => floodUpdate(r),
   floodFill: (y) => floodFill(y),
   floodBuildGrid: () => floodBuildGrid(),

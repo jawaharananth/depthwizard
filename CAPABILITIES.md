@@ -20,7 +20,7 @@ Status legend: **LIVE** reachable on the default path · **OPT-IN** implemented+
 
 ## Viewer tool inventory
 
-15 `<button id=...>` elements found in `viewer/index.html`. Exact on-screen labels below, as they appear in the markup (not assumed from naming convention).
+16 `<button id=...>` elements found in `viewer/index.html`. Exact on-screen labels below, as they appear in the markup (not assumed from naming convention).
 
 | Claim | Status | Proof | Notes |
 |---|---|---|---|
@@ -52,6 +52,7 @@ Status legend: **LIVE** reachable on the default path · **OPT-IN** implemented+
 | `btn-xsec` | Cross-Section | True | False |
 | `btn-gcp` | Ground Control | True | False |
 | `btn-flood` | Flood Source | True | False |
+| `btn-bands` | Uncertainty | True | True |
 | `btn-pdf` | Export PDF | True | True |
 | `btn-xr` | Enter VR | True | True |
 
