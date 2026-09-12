@@ -15,12 +15,12 @@ Status legend: **LIVE** reachable on the default path · **OPT-IN** implemented+
 | Per-building confidence + reliability tiers | **LIVE** | build_city.py:707 calls confidence.reliability_tier() per building | gated on mvs confidence existing (build_city.py:430); true whenever MVS ran successfully, which is the default path -- absent only if MVS fails and the monocular fallback is used |
 | Self-repair loop (mesh_repair.py) | **LIVE** | repair_build() defined mesh_repair.py:484, called from build_city.py:345, build_city_image.py:701 | runs on every build in both entry points; bounded iterative repair with a terminating strategy (last resort removes the building) |
 | Model-vs-image audit (model_audit.py) | **LIVE** | audit() defined model_audit.py:199, called from build_city.py:638, build_city_image.py:754 | wrapped in try/except in both callers -- failure prints a message and continues rather than aborting the build |
-| Change detection (change_detection.py) | **DORMANT** | change_detection.py has its own `if __name__ == "__main__"` block (runnable as `python change_detection.py ...`) but is not imported by any entry point -- a build or upload never touches it |  |
+| Change detection (change_detection.py) | **DORMANT** | imported only by non-entry-point script(s): ['damage.py'] |  |
 | GAMUS fine-tuning (train_height.py) | **DORMANT** | train_height.py has its own `if __name__ == "__main__"` block (runnable as `python train_height.py ...`) but is not imported by any entry point -- a build or upload never touches it |  |
 
 ## Viewer tool inventory
 
-16 `<button id=...>` elements found in `viewer/index.html`. Exact on-screen labels below, as they appear in the markup (not assumed from naming convention).
+17 `<button id=...>` elements found in `viewer/index.html`. Exact on-screen labels below, as they appear in the markup (not assumed from naming convention).
 
 | Claim | Status | Proof | Notes |
 |---|---|---|---|
@@ -53,6 +53,7 @@ Status legend: **LIVE** reachable on the default path · **OPT-IN** implemented+
 | `btn-gcp` | Ground Control | True | False |
 | `btn-flood` | Flood Source | True | False |
 | `btn-bands` | Uncertainty | True | True |
+| `btn-damage` | Damage | True | True |
 | `btn-pdf` | Export PDF | True | True |
 | `btn-xr` | Enter VR | True | True |
 
@@ -60,7 +61,7 @@ Status legend: **LIVE** reachable on the default path · **OPT-IN** implemented+
 
 Claims in this manifest that a normal build/upload never reaches, or that do not exist at all:
 
-- **Change detection (change_detection.py)** — DORMANT: change_detection.py has its own `if __name__ == "__main__"` block (runnable as `python change_detection.py ...`) but is not imported by any entry point -- a build or upload never touches it
+- **Change detection (change_detection.py)** — DORMANT: imported only by non-entry-point script(s): ['damage.py']
 - **GAMUS fine-tuning (train_height.py)** — DORMANT: train_height.py has its own `if __name__ == "__main__"` block (runnable as `python train_height.py ...`) but is not imported by any entry point -- a build or upload never touches it
 
 ## Doc-vs-manifest scan (report only, nothing edited)
