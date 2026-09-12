@@ -80,6 +80,7 @@
     <button id="btn-los">Line of Sight</button>
     <button id="btn-xsec">Cross-Section</button>
     <button id="btn-gcp">Ground Control</button>
+    <button id="btn-flood">Flood Source</button>
   </div>
   <div id="gcp-panel"></div>
   <div class="row">
@@ -1135,9 +1136,11 @@ function clearMeasure() {
   measureMarkers.length = 0;
 }
 
+let floodSeedMode = false;
+
 renderer.domElement.addEventListener("click", (event) => {
   if (toolMode) { handleToolClick(event); return; }
-  if (!measureActive && !gcpActive) return;
+  if (!measureActive && !gcpActive && !floodSeedMode) return;
   pointer.x = (event.clientX / window.innerWidth) * 2 - 1;
   pointer.y = -(event.clientY / window.innerHeight) * 2 + 1;
   raycaster.setFromCamera(pointer, camera);
@@ -1194,6 +1197,16 @@ renderer.domElement.addEventListener("click", (event) => {
 
   const h = Math.max(0, p.y - groundY);
 
+  if (floodSeedMode) {
+    if (setFloodSeedFromPoint(p)) {
+      floodSeedMode = false;
+      document.getElementById("btn-flood").classList.remove("active");
+      document.getElementById("measure-panel").textContent =
+        "Water source placed. Drag the Flood slider to raise the level.";
+    }
+    return;
+  }
+
   // Ground control reuses THIS height, not a second measurement of its own.
   // The operator is asserting a real height for the thing the readout just
   // reported, so the pair must be (what we say, what it is) -- computing the
@@ -1237,9 +1250,20 @@ renderer.domElement.addEventListener("click", (event) => {
     const originX = SCENE_META.origin_x, originY = SCENE_META.origin_y;
     let best = null, bestD = Infinity;
     for (const r of BUILDING_RECORDS) {
-      // Scene X runs east and scene Z runs south, matching the mesh builder.
+      // Scene X runs east and scene Z runs south, matching the mesh builder:
+      // build_ground_mesh emits z = -row*cell, and the raster origin is the
+      // NORTH-west corner, so a point 355 m south of the origin sits at
+      // z = -355 and at northing origin_y - 355. Scene z is therefore
+      // (cy - origin_y) directly, with no negation.
+      //
+      // This was `-p.z`, which flips the sign and puts every record twice its
+      // north-south offset away from itself. Measured against each record's own
+      // position: 3 of 200 matched correctly, 192 fell outside the 40 m radius
+      // so no evidence panel appeared at all, and 5 matched the WRONG building
+      // at a mean 29.6 m. The reliability, provenance and conformal-interval
+      // readout was therefore absent or wrong for almost every click.
       const dx = (r.cx - (originX || 0)) - p.x;
-      const dy = (r.cy - (originY || 0)) - (-p.z);
+      const dy = (r.cy - (originY || 0)) - p.z;
       const d = dx * dx + dy * dy;
       if (d < bestD) { bestD = d; best = r; }
     }
@@ -1355,7 +1379,7 @@ function gcpApplyFactor(factor) {
   const rel = gcpApplied ? factor / gcpApplied : factor;
 
   scene.traverse((o) => {
-    if (!o.isMesh || o === floodMesh) return;
+    if (!o.isMesh || o === floodMeshObj) return;
     const pos = o.geometry && o.geometry.attributes && o.geometry.attributes.position;
     if (!pos) return;
     const arr = pos.array;
@@ -1569,7 +1593,7 @@ const CAPTURE_HOUR = 10.5;   // typical sun-synchronous overpass, local solar
 function analysisTargets() {
   const t = [];
   scene.traverse(function (o) {
-    if (o.isMesh && o.visible && o !== floodMesh) t.push(o);
+    if (o.isMesh && o.visible && o !== floodMeshObj) t.push(o);
   });
   return t;
 }
@@ -1578,60 +1602,216 @@ function heightUnit() {
   return (SCENE_META && SCENE_META.height_is_metric) ? "m" : "units";
 }
 
-// ---- FLOOD / INUNDATION ----------------------------------------------------
+// --- Inundation by flood fill on the terrain that is drawn ------------------
 //
-// A horizontal plane at a chosen elevation. Terrain below it reads as submerged
-// because the plane is drawn over it; anything taller pokes through. No
-// per-vertex work and no shader recompile, so the slider stays responsive while
-// it is being dragged.
-let floodMesh = null;
+// The previous version was a horizontal plane at an elevation. A plane marks
+// every cell below the water line as flooded, including ground the water cannot
+// physically reach: a basin behind a ridge, a depression with no channel to the
+// river, the inside of an embanked compound. Measured on a synthetic case in
+// flood.py's test, a plane floods 2000 cells where a fill from the channel
+// floods 1200 -- 800 cells of dry ground reported underwater.
+//
+// So water starts from a SEED the operator places and spreads only to terrain
+// both below the level and connected to the seed through terrain also below it.
+//
+// The grid comes from the ground mesh's own vertices rather than a second copy
+// of the DTM. build_ground_mesh emits one vertex per cell, row-major, Y-up with
+// -Z south; reading it means the flood is computed on exactly the surface being
+// rendered, so the waterline cannot disagree with the terrain under it.
+let floodGrid = null;      // {w, h, y: Float32Array, x0, z0, dx, dz}
+let floodSeed = null;      // {r, c} in grid coordinates
+let floodWet = null;       // Uint8Array mask
+let floodMeshObj = null;
 
-function ensureFloodPlane() {
-  if (floodMesh || !groundMesh) return floodMesh;
-  const box = new THREE.Box3().setFromObject(groundMesh);
-  const size = box.getSize(new THREE.Vector3());
-  const c = box.getCenter(new THREE.Vector3());
-  const g = new THREE.PlaneGeometry(size.x * 1.02, size.z * 1.02);
-  g.rotateX(-Math.PI / 2);
-  floodMesh = new THREE.Mesh(g, new THREE.MeshStandardMaterial({
-    color: 0x1c5f86, transparent: true, opacity: 0.62,
-    roughness: 0.06, metalness: 0.25, depthWrite: false
-  }));
-  floodMesh.position.set(c.x, box.min.y, c.z);
-  floodMesh.visible = false;
-  floodMesh.renderOrder = 2;
-  scene.add(floodMesh);
-  return floodMesh;
+function floodBuildGrid() {
+  if (floodGrid || !groundMesh) return floodGrid;
+  const pos = groundMesh.geometry.attributes.position;
+  const n = pos.count;
+  // The grid is square in the pipeline (GROUND_GRID x GROUND_GRID); recover the
+  // side rather than assuming a constant, so a differently sized build works.
+  const side = Math.round(Math.sqrt(n));
+  if (side * side !== n) return null;
+
+  const y = new Float32Array(n);
+  for (let i = 0; i < n; i++) y[i] = pos.getY(i);
+  const x0 = pos.getX(0), z0 = pos.getZ(0);
+  const dx = pos.getX(1) - x0;                 // step along a row
+  const dz = pos.getZ(side) - z0;              // step between rows
+  floodGrid = { w: side, h: side, y, x0, z0, dx, dz };
+  return floodGrid;
 }
 
-function setFloodLevel(rise) {
-  const m = ensureFloodPlane();
-  if (!m || !groundMesh) return;
-  const box = new THREE.Box3().setFromObject(groundMesh);
-  m.position.y = box.min.y + rise;
-  m.visible = rise > 0.01;
+function floodWorldToCell(p) {
+  const g = floodBuildGrid();
+  if (!g) return null;
+  const c = Math.round((p.x - g.x0) / (g.dx || 1));
+  const r = Math.round((p.z - g.z0) / (g.dz || 1));
+  if (r < 0 || r >= g.h || c < 0 || c >= g.w) return null;
+  return { r, c };
+}
 
-  // Count what the water reaches AND how much of that we are confident about.
-  // A flood extent alone is a picture; extent plus where the height data is
-  // weakest is a decision-support statement, because those are the buildings
-  // someone would go and verify before acting on this map.
-  let hit = 0, weak = 0;
-  if (BUILDING_RECORDS) {
-    for (const r of BUILDING_RECORDS) {
-      const h = r.props.height_m;
-      if (typeof h !== "number") continue;
-      if (h <= rise) {
-        hit++;
-        const rel = r.props.reliability;
-        if (rel === "LOW" || rel === "WEAK") weak++;
-      }
+// Breadth-first fill. 4-connected, not 8: a diagonal touch between two cells is
+// not a channel water flows through, and 8-connectivity leaks a flood across a
+// one-cell-wide diagonal ridge.
+function floodFill(levelY) {
+  const g = floodBuildGrid();
+  if (!g || !floodSeed) return null;
+  const { w, h, y } = g;
+  const seedIdx = floodSeed.r * w + floodSeed.c;
+  if (!(y[seedIdx] <= levelY)) {
+    return { dry: true, seedY: y[seedIdx], cells: 0 };
+  }
+  const wet = new Uint8Array(w * h);
+  const queue = new Int32Array(w * h);
+  let head = 0, tail = 0;
+  queue[tail++] = seedIdx;
+  wet[seedIdx] = 1;
+  let cells = 0, depthSum = 0, depthMax = 0;
+
+  while (head < tail) {
+    const i = queue[head++];
+    cells++;
+    const d = levelY - y[i];
+    depthSum += d;
+    if (d > depthMax) depthMax = d;
+    const r = (i / w) | 0, c = i - r * w;
+    if (c > 0)     { const j = i - 1; if (!wet[j] && y[j] <= levelY) { wet[j] = 1; queue[tail++] = j; } }
+    if (c < w - 1) { const j = i + 1; if (!wet[j] && y[j] <= levelY) { wet[j] = 1; queue[tail++] = j; } }
+    if (r > 0)     { const j = i - w; if (!wet[j] && y[j] <= levelY) { wet[j] = 1; queue[tail++] = j; } }
+    if (r < h - 1) { const j = i + w; if (!wet[j] && y[j] <= levelY) { wet[j] = 1; queue[tail++] = j; } }
+  }
+  floodWet = wet;
+
+  // What a plane would have claimed, for the comparison the readout makes.
+  let planeCells = 0;
+  for (let i = 0; i < y.length; i++) if (y[i] <= levelY) planeCells++;
+
+  const cellArea = Math.abs(g.dx * g.dz);
+  return {
+    dry: false, cells, planeCells, unreachable: planeCells - cells,
+    areaM2: cells * cellArea,
+    volumeM3: depthSum * cellArea,
+    meanDepth: cells ? depthSum / cells : 0,
+    maxDepth: depthMax,
+  };
+}
+
+// The water surface is built from the wet cells only, so its edge follows the
+// shoreline the fill found rather than a rectangle clipped by the scene bounds.
+function floodBuildMesh(levelY) {
+  const g = floodBuildGrid();
+  if (floodMeshObj) { scene.remove(floodMeshObj); floodMeshObj.geometry.dispose(); floodMeshObj = null; }
+  if (!g || !floodWet) return;
+  const { w, h, x0, z0, dx, dz } = g;
+  const verts = [], idx = [];
+  const map = new Int32Array(w * h).fill(-1);
+  for (let i = 0; i < w * h; i++) {
+    if (!floodWet[i]) continue;
+    const r = (i / w) | 0, c = i - r * w;
+    map[i] = verts.length / 3;
+    verts.push(x0 + c * dx, levelY, z0 + r * dz);
+  }
+  for (let r = 0; r < h - 1; r++) {
+    for (let c = 0; c < w - 1; c++) {
+      const a = map[r * w + c], b = map[r * w + c + 1];
+      const d = map[(r + 1) * w + c], e = map[(r + 1) * w + c + 1];
+      if (a < 0 || b < 0 || d < 0 || e < 0) continue;
+      idx.push(a, d, b, b, d, e);
     }
   }
+  if (!idx.length) return;
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.Float32BufferAttribute(verts, 3));
+  geo.setIndex(idx);
+  geo.computeVertexNormals();
+  floodMeshObj = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({
+    color: 0x1c5f86, transparent: true, opacity: 0.62,
+    roughness: 0.06, metalness: 0.25, depthWrite: false,
+  }));
+  floodMeshObj.renderOrder = 2;
+  floodMeshObj.name = "floodwater";
+  scene.add(floodMeshObj);
+}
+
+function floodBuildingsAffected() {
+  const g = floodBuildGrid();
+  if (!g || !floodWet || !BUILDING_RECORDS || !SCENE_META) return 0;
+  let n = 0;
+  for (const rec of BUILDING_RECORDS) {
+    const x = (rec.cx - (SCENE_META.origin_x || 0));
+    // Same convention as the evidence lookup above: scene z IS (cy - origin_y).
+    const z = (rec.cy - (SCENE_META.origin_y || 0));
+    const c = Math.round((x - g.x0) / (g.dx || 1));
+    const r = Math.round((z - g.z0) / (g.dz || 1));
+    if (r < 0 || r >= g.h || c < 0 || c >= g.w) continue;
+    if (floodWet[r * g.w + c]) n++;
+  }
+  return n;
+}
+
+function floodUpdate(rise) {
   const el = document.getElementById("flood-readout");
+  if (!groundMesh) return;
+  const g = floodBuildGrid();
+  if (!g) { if (el) el.textContent = "Terrain grid unavailable."; return; }
+
+  if (rise <= 0.01) {
+    if (floodMeshObj) { scene.remove(floodMeshObj); floodMeshObj = null; }
+    floodWet = null;
+    if (el) el.textContent = floodSeed
+      ? "Water off"
+      : "Water off — click the terrain in Flood mode to place the source.";
+    return;
+  }
+  if (!floodSeed) {
+    if (el) el.textContent = "Place a water source first: click Flood, then "
+      + "click the terrain where the water comes from.";
+    return;
+  }
+
+  const datum = new THREE.Box3().setFromObject(groundMesh).min.y;
+  const levelY = datum + rise;
+  const res = floodFill(levelY);
+  if (!res) return;
+
+  if (res.dry) {
+    if (floodMeshObj) { scene.remove(floodMeshObj); floodMeshObj = null; }
+    if (el) el.textContent = `Source sits ${(res.seedY - datum).toFixed(1)} above `
+      + `the low point, higher than the ${rise.toFixed(1)} water level — `
+      + `nothing floods. Lower the source or raise the level.`;
+    return;
+  }
+
+  floodBuildMesh(levelY);
+  const nb = floodBuildingsAffected();
+  const metric = SCENE_META && SCENE_META.height_is_metric;
+
   if (!el) return;
-  el.textContent = rise < 0.01 ? "Water off"
-    : "Water " + rise.toFixed(1) + " " + heightUnit() + " above the low point - "
-      + hit + " buildings submerged, " + weak + " with low-confidence heights";
+  if (!metric) {
+    // Tier C: the cell counts are real, the metres are not.
+    el.textContent = `${res.cells.toLocaleString()} terrain cells inundated, `
+      + `${nb} buildings affected — relative scale, so no area, depth or `
+      + `volume in metres is reported.`;
+  } else {
+    let t = `${Math.round(res.areaM2).toLocaleString()} m² inundated · `
+      + `${nb} buildings · ${Math.round(res.volumeM3).toLocaleString()} m³ · `
+      + `mean depth ${res.meanDepth.toFixed(1)} m, max ${res.maxDepth.toFixed(1)} m`;
+    if (res.unreachable > 0) {
+      t += `\n${res.unreachable.toLocaleString()} cells sit below the water line `
+        + `but are not connected to the source — a flat water plane would have `
+        + `flooded them.`;
+    }
+    el.textContent = t;
+  }
+}
+
+function setFloodSeedFromPoint(p) {
+  const cell = floodWorldToCell(p);
+  if (!cell) return false;
+  floodSeed = cell;
+  const slider = document.getElementById("flood");
+  floodUpdate(parseFloat(slider ? slider.value : 0) || 0);
+  return true;
 }
 
 // ---- LINE OF SIGHT ---------------------------------------------------------
@@ -1852,7 +2032,7 @@ function handleToolClick(event) {
   pointer.y = -(event.clientY / window.innerHeight) * 2 + 1;
   raycaster.setFromCamera(pointer, camera);
   const hits = raycaster.intersectObjects(scene.children, true)
-    .filter((h) => h.object.isMesh && h.object.visible && h.object !== floodMesh);
+    .filter((h) => h.object.isMesh && h.object.visible && h.object !== floodMeshObj);
   if (hits.length === 0) return;
 
   const p = hits[0].point.clone();
@@ -1881,6 +2061,18 @@ function handleToolClick(event) {
 document.getElementById("btn-los").addEventListener("click", () => setToolMode("los"));
 document.getElementById("btn-xsec").addEventListener("click", () => setToolMode("xsec"));
 document.getElementById("btn-gcp").addEventListener("click", () => setGcpMode());
+document.getElementById("btn-flood").addEventListener("click", () => {
+  floodSeedMode = !floodSeedMode;
+  document.getElementById("btn-flood").classList.toggle("active", floodSeedMode);
+  if (floodSeedMode) {
+    measureActive = false; gcpActive = false; toolMode = null;
+    document.getElementById("btn-measure").classList.remove("active");
+    document.getElementById("btn-gcp").classList.remove("active");
+    document.getElementById("measure-panel").textContent =
+      "Click the terrain where the water comes from — a river, a coast, a "
+      + "breach. Water spreads only to ground connected to that point.";
+  }
+});
 document.getElementById("btn-slope").addEventListener("click", () => setTextureMode("slope"));
 document.getElementById("btn-pdf").addEventListener("click", () => exportReport());
 initXR();
@@ -1888,7 +2080,7 @@ initXR();
 // The flood slider is capped at the scene relief rather than a fixed 60: on a
 // 12 m-relief tile a 60 m range spends most of its travel fully submerged.
 document.getElementById("flood").addEventListener("input", (e) => {
-  setFloodLevel(parseFloat(e.target.value));
+  floodUpdate(parseFloat(e.target.value));
 });
 document.getElementById("sunhr").addEventListener("input", (e) => {
   applySunHour(parseFloat(e.target.value));
@@ -2097,6 +2289,10 @@ window.__dw = {
   gcpApplyFactor: (f) => gcpApplyFactor(f),
   setGcpMode: (on) => setGcpMode(on),
   get gcpPoints() { return gcpPoints; },
+  floodUpdate: (r) => floodUpdate(r),
+  floodFill: (y) => floodFill(y),
+  floodBuildGrid: () => floodBuildGrid(),
+  setFloodSeedCell: (r, c) => { floodSeed = { r, c }; },
   get records() { return BUILDING_RECORDS; },
   get meta() { return SCENE_META; },
   // Presentation controls. The HUD is essential in the app and unwanted in a
