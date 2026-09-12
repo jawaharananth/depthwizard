@@ -5,8 +5,10 @@ Single satellite image → navigable 3D city model.
 Built for SIH26175 (ISRO): reconstruct elevation and a 3D terrain model from a
 single-view satellite or aerial image, with a visualisation layer.
 
-![status](https://img.shields.io/badge/heights-Tier%20B%2FC-orange)
-![status](https://img.shields.io/badge/accuracy-being%20re--measured-red)
+![blind](https://img.shields.io/badge/blind%20RMSE-16.07%20m-orange)
+![fitted](https://img.shields.io/badge/scale--fitted%20RMSE-3.87%20m-blue)
+![tier](https://img.shields.io/badge/heights-Tier%20A%20when%20anchorable-green)
+![interval](https://img.shields.io/badge/90%25%20interval-%C2%B14.53%20m-informational)
 
 ---
 
@@ -33,7 +35,18 @@ Then open `http://localhost:8800/viewer/index.html`.
 This section exists because the project has previously published numbers that
 turned out to be wrong, and the correction mattered more than the number.
 
-**Accuracy figures are currently withdrawn.** An earlier headline of 4.64 m RMSE
+**Two accuracy figures, and the difference between them matters.**
+
+| | value | what it is |
+|---|---|---|
+| **Blind** | RMSE 16.07 m / MAE 10.33 m | single image, no fitting to ground truth anywhere. What a judge would reproduce. |
+| Scale-fitted | RMSE 3.87 m / MAE 2.01 m | the same predictions after one scale parameter per tile is fitted **to the reference**. Measures the recovered *shape*, not blind accuracy. |
+
+Most of the gap is scale, not shape: the pipeline emits 71-90 m/unit on every
+tile while each needs 17-57, because a relative depth field forces it to assume
+one. See `BENCHMARK_BLIND.md`.
+
+**The earlier 4.64 m RMSE was withdrawn**, not adjusted. An earlier headline of 4.64 m RMSE
 — and a favourable comparison against RS3DAda — were computed on *misregistered*
 rasters. DFC2019 Track 3 RGB tiles are raw satellite frames carrying an RPC
 camera model and **no geotransform**; the pipeline was aligning them to the

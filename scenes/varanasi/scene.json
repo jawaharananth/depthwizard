@@ -1,41 +1,62 @@
 {
   "source_image": "C:\\Users\\jawahar\\depthwizard\\india\\varanasi.tif",
   "resolution": [
-    2480,
-    2480
+    2048,
+    2048
   ],
   "tier": "C (horizontal metric from measured GSD; vertical relative/assumed)",
-  "scale_source": "GSD 0.250 m/px measured from the file -- horizontal distances are real; vertical assumes tallest ~40 m",
-  "gsd_m": 0.24998951612903553,
+  "scale_source": "GSD 0.303 m/px measured from the file -- horizontal distances are real; vertical assumes tallest ~40 m",
+  "gsd_m": 0.30272167968750396,
   "sun_azimuth_deg": 170.0,
   "sun_elevation_deg": null,
-  "sun_note": "azimuth estimated from image shadows; elevation not recoverable from a single image without a known height",
+  "sun_note": "elevation not recoverable from a single image without a known height or capture time+location",
   "crs": "EPSG:32644",
   "ground_truth": "NONE -- no LiDAR available for this image; no accuracy figure can be quoted for this scene",
   "nadir_check": {
-    "sky_fraction_top": 0.081,
+    "sky_span": 0.039,
+    "sky_holes": 1,
     "likely_nadir": true
   },
+  "overlays_removed": 3,
+  "overlay_coverage": 7e-05,
   "model": "prism city (flat roofs, vertical walls)",
-  "buildings_extruded": 364,
-  "canopy_volumes": 285,
+  "buildings_extruded": 951,
+  "canopy_volumes": 298,
   "water_bodies": 3,
-  "vehicles": 96,
+  "vehicles": 94,
   "provenance": "INFERRED",
   "height_is_metric": false,
+  "shadow_calibration": {
+    "attempted": false,
+    "refusal_reason": "no sun elevation source available -- need a GeoTIFF with capture time + CRS, or --anchor-height"
+  },
+  "dem_anchor": {
+    "attempted": true,
+    "accepted": false,
+    "reason": "spread too wide"
+  },
+  "conformal": {
+    "applied": false,
+    "variant": "constant",
+    "coverage_nominal": 0.9,
+    "half_width_m": 4.526630519866947,
+    "fitted_on": "JAX_165",
+    "held_out_coverage": 0.8968253968253969,
+    "omitted_reason": "tier C: heights are relative, not metres"
+  },
   "discovery": {
-    "candidates_examined": 1464,
-    "retained": 489,
+    "candidates_examined": 1583,
+    "retained": 522,
     "by_size": {
-      "tiny": 185,
-      "small": 131,
-      "medium": 97,
-      "large": 76
+      "tiny": 207,
+      "small": 144,
+      "medium": 109,
+      "large": 62
     },
     "rejected": {
       "no_evidence": 3,
-      "duplicate": 951,
-      "below_min_area": 21,
+      "duplicate": 995,
+      "below_min_area": 63,
       "degenerate": 0
     },
     "min_area_m2": 6.0,
@@ -45,14 +66,5 @@
       4
     ]
   },
-  "build_seconds": 12.7,
-  "_saved_name": "varanasi",
-  "_saved_description": "IIT-BHU Varanasi 620m, 25cm drone ortho (OpenAerialMap), 364 prisms - Tier C, canopy over-extruded",
-  "_saved_at": "2026-08-27 01:44:09",
-  "_saved_files": [
-    "terrain.glb",
-    "terrain_texture.png",
-    "scene.json"
-  ],
-  "_saved_mb": 48.8
+  "build_seconds": 25.8
 }

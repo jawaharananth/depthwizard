@@ -219,6 +219,64 @@ SKY_MAX_HOLES = 5        # above this the region is a roof mosaic, not sky
 HOLE_MIN_AREA_PX = 40    # ignore speckle when counting holes
 
 
+def _pair_prisms_to_instances(prisms, instances, footprints, max_px=40.0):
+    """Match each built prism to the discovery record describing the same building.
+
+    These two lists come from DIFFERENT extractors -- prisms are built from
+    region_footprints.extract(), the discovery records from
+    building_discovery.discover() -- so they have different lengths and
+    different orderings. zip() over them pairs each height with an unrelated
+    building's evidence and silently drops the tail: measured on Varanasi, 951
+    prisms against 522 records, so 429 prisms vanished from the export and every
+    one that survived carried another structure's confidence, area and
+    provenance.
+
+    This is the same failure that once made a validation script report a 5x
+    regression, and the same answer applies: never pair two independently
+    filtered lists by position.
+
+    Returns a list, parallel to `prisms`, holding the matched record or None.
+    Unmatched prisms are exported with their own geometry and height and no
+    evidence fields, which is the honest result -- the evidence genuinely does
+    not exist for them.
+    """
+    import numpy as _np
+    if not instances:
+        return [None] * len(prisms)
+    cent = []
+    for r in instances:
+        c = r.get("centroid_px") or r.get("centroid")
+        if c is None:
+            cnt = r.get("contour")
+            c = (float(_np.mean(cnt[:, 0, 0])), float(_np.mean(cnt[:, 0, 1])))                 if cnt is not None else (0.0, 0.0)
+        cent.append((float(c[0]), float(c[1])))
+    cent = _np.asarray(cent, dtype=_np.float64)
+
+    out, taken = [], set()
+    for pr in prisms:
+        pi = pr.get("poly_index")
+        if pi is None or pi >= len(footprints):
+            out.append(None)
+            continue
+        fp = _np.asarray(footprints[pi], dtype=_np.float64)
+        cx, cy = fp[:, 0].mean(), fp[:, 1].mean()
+        d2 = (cent[:, 0] - cx) ** 2 + (cent[:, 1] - cy) ** 2
+        order = _np.argsort(d2)
+        pick = None
+        for j in order[:4]:
+            if j in taken:
+                continue
+            if d2[j] <= max_px * max_px:
+                pick = int(j)
+            break
+        if pick is not None:
+            taken.add(pick)
+            out.append(instances[pick])
+        else:
+            out.append(None)
+    return out
+
+
 def check_nadir(image_np: np.ndarray) -> dict:
     """
     Obliqueness screen: is there real sky in this frame?
@@ -861,18 +919,29 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
     # JPEG the ring stays in PIXEL coordinates with crs null and a note
     # saying so, rather than a projection invented to make the file look
     # like the georeferenced one.
+    # Pair prisms to discovery records SPATIALLY, never by position: the two
+    # lists come from different extractors with different lengths.
+    _paired = _pair_prisms_to_instances(
+        binfo["buildings"], disc.get("instances") or [], footprints)
+    _n_paired = sum(1 for r in _paired if r is not None)
+    if len(binfo["buildings"]) != len(disc.get("instances") or []):
+        print(f"      pairing: {_n_paired} of {len(binfo['buildings'])} prisms "
+              f"matched to a discovery record "
+              f"({len(disc.get('instances') or [])} records available)")
+
     from calibration import conformal as _cf
     _cal = _cf.load_fitted()
     _metric_tier = tier[0] in ("A", "B")
     _iv_half, _iv_nominal = {}, (None if _cal is None else 1.0 - _cal["alpha"])
     if _cal is not None and _metric_tier:
-        for rec, prism in zip(disc["instances"], binfo["buildings"]):
+        for _i, prism in enumerate(binfo["buildings"]):
+            rec = _paired[_i]
             _u = None
             if _cal.get("normalised"):
-                _u = 1.0 / max(float(rec.get("confidence") or 0.5), 0.05)
+                _u = 1.0 / max(float((rec or {}).get("confidence") or 0.5), 0.05)
             _lo, _hi, _hw = _cf.interval(prism["height_m"], _cal, uncertainty=_u)
             if _hw is not None:
-                _iv_half[rec["id"]] = round(float(_hw), 2)
+                _iv_half[_i] = round(float(_hw), 2)
     if _cal is None:
         print("      conformal interval: no fitted quantile committed "
               "(run scripts/fit_conformal.py) -- intervals omitted")
@@ -886,8 +955,16 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
     import json as _json
     import csv as _csv
     _feats = []
-    for rec, prism in zip(disc["instances"], binfo["buildings"]):
-        _cnt = rec["contour"].reshape(-1, 2)
+    # Geometry comes from the footprint that was actually EXTRUDED, not from
+    # the discovery contour. Those are different extractors: exporting the
+    # discovery outline described buildings that are not the ones in the model,
+    # so the GeoJSON the viewer and damage.py read did not match the mesh.
+    for _i, prism in enumerate(binfo["buildings"]):
+        rec = _paired[_i] or {}
+        _pi = prism.get("poly_index")
+        if _pi is None or _pi >= len(footprints):
+            continue
+        _cnt = np.asarray(footprints[_pi]).reshape(-1, 2)
         if src_transform is not None:
             _ring = [list(src_transform * (float(_px), float(_py))) for _px, _py in _cnt]
         else:
@@ -898,16 +975,20 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
             "type": "Feature",
             "geometry": {"type": "Polygon", "coordinates": [_ring]},
             "properties": {
-                "id": rec["id"],
+                "id": rec.get("id", _i),
                 "height_m": round(prism["height_m"], 2),
-                "interval_half_width_m": _iv_half.get(rec["id"]),
-                "coverage_nominal": _iv_nominal if rec["id"] in _iv_half else None,
-                "area_m2": rec["area_m2"],
-                "perimeter_m": rec["perimeter_m"],
-                "size_class": rec["size_class"],
-                "confidence": rec["confidence"],
-                "provenance": rec["provenance"],
-                "evidence": rec["evidence"],
+                "interval_half_width_m": _iv_half.get(_i),
+                "coverage_nominal": _iv_nominal if _i in _iv_half else None,
+                # Evidence fields are null on a prism that matched no discovery
+                # record. That is the honest export: the evidence genuinely does
+                # not exist for it, and carrying a neighbour's would be worse
+                # than carrying nothing.
+                "area_m2": rec.get("area_m2"),
+                "perimeter_m": rec.get("perimeter_m"),
+                "size_class": rec.get("size_class"),
+                "confidence": rec.get("confidence"),
+                "provenance": rec.get("provenance"),
+                "evidence": rec.get("evidence"),
                 "height_is_metric": _metric_tier,
             },
         })
@@ -927,14 +1008,17 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
                      "area_m2", "perimeter_m", "size_class", "confidence",
                      "provenance", "height_is_metric",
                      "ev_height", "ev_edge", "ev_texture", "ev_shadow"])
-        for rec, prism in zip(disc["instances"], binfo["buildings"]):
-            _e = rec["evidence"]
-            _w.writerow([rec["id"], round(prism["height_m"], 2),
-                         _iv_half.get(rec["id"], ""),
-                         _iv_nominal if rec["id"] in _iv_half else "",
-                         rec["area_m2"], rec["perimeter_m"], rec["size_class"],
-                         rec["confidence"], rec["provenance"], _metric_tier,
-                         _e["height"], _e["edge"], _e["texture"], _e["shadow"]])
+        for _i, prism in enumerate(binfo["buildings"]):
+            rec = _paired[_i] or {}
+            _e = rec.get("evidence") or {}
+            _w.writerow([rec.get("id", _i), round(prism["height_m"], 2),
+                         _iv_half.get(_i, ""),
+                         _iv_nominal if _i in _iv_half else "",
+                         rec.get("area_m2", ""), rec.get("perimeter_m", ""),
+                         rec.get("size_class", ""), rec.get("confidence", ""),
+                         rec.get("provenance", ""), _metric_tier,
+                         _e.get("height", ""), _e.get("edge", ""),
+                         _e.get("texture", ""), _e.get("shadow", "")])
     print(f"      per-building export: {len(_feats)} buildings to GeoJSON + CSV"
           + ("" if src_transform is not None else "  (pixel coords, no CRS)"))
 
