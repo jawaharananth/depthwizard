@@ -1,3 +1,5 @@
+import os
+
 import numpy as np
 from PIL import Image
 import torch
@@ -35,8 +37,63 @@ class DepthBackbone:
     #
     # Small is not a free further win: it loses 10% of the correlation and 34%
     # of the accuracy, so it is offered but not the default.
+    # A fine-tuned metric checkpoint, when one has been trained and committed.
+    #
+    # The distinction this carries is the whole point of training one. The stock
+    # backbone emits a RELATIVE field, so the pipeline has to invent a scale --
+    # "assume the tallest structure is about 40 m" -- and measured blind that
+    # guess lands 24-353% away from what each tile actually needs, which is
+    # roughly three quarters of the blind error. A model trained on GAMUS AGL
+    # predicts METRES, so there is no scale to guess and that error source is
+    # removed rather than reduced.
+    #
+    # Absent by default: it exists only after scripts/run_gamus.py has trained
+    # one AND that run beat the baseline. `is_metric` is what the pipeline reads
+    # to decide whether to apply its scale assumption at all.
+    METRIC_CKPT = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "checkpoints", "height_best")
+
+    # The marker, not the directory, is what licenses the checkpoint.
+    #
+    # A training run always leaves weights behind, including a run that produced
+    # a model WORSE than the stock backbone -- the first smoke run here scored
+    # MAE 7.16 m against the baseline's 6.68 m with a correlation of -0.121, and
+    # those weights sat on disk looking exactly like a good checkpoint. Gating
+    # on the directory alone means any failed run silently degrades every
+    # subsequent build. train_height.py writes this marker only when the
+    # fine-tuned model beat a baseline that was handed the optimal scale.
+    MARKER = "metric_ok.json"
+
+    @classmethod
+    def metric_available(cls) -> bool:
+        return (os.path.isdir(cls.METRIC_CKPT)
+                and os.path.exists(os.path.join(cls.METRIC_CKPT, "config.json"))
+                and os.path.exists(os.path.join(cls.METRIC_CKPT, cls.MARKER)))
+
+    @classmethod
+    def metric_info(cls) -> dict:
+        """What the licensing run measured, for the build log and scene.json."""
+        import json
+        try:
+            with open(os.path.join(cls.METRIC_CKPT, cls.MARKER), encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+
     def __init__(self, model_name: str = "depth-anything/Depth-Anything-V2-Base-hf",
-                 device: str = None):
+                 device: str = None, metric: bool = None):
+        # metric=None means "use the fine-tuned checkpoint if one is there".
+        # Explicit True demands it and fails loudly if absent, so a benchmark
+        # cannot silently score the stock model and report it as the metric one.
+        if metric is None:
+            metric = self.metric_available()
+        elif metric and not self.metric_available():
+            raise FileNotFoundError(
+                f"metric checkpoint not found at {self.METRIC_CKPT} -- "
+                f"run scripts/run_gamus.py first")
+        self.is_metric = bool(metric)
+        if self.is_metric:
+            model_name = self.METRIC_CKPT
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         # Use every core. torch defaults to a conservative count, and depth
         # inference is the whole build's critical path.

@@ -425,7 +425,8 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
     key = f"plainimg_{name}_{backbone_tag()}"
     height = height_cache.load(key, "tiled", H) if H == W else None
     if height is None:
-        height = DepthBackbone().predict_tiled(pil)
+        _bb = DepthBackbone()
+        height = _bb.predict_tiled(pil)
         if H == W:
             height_cache.save(key, "tiled", H, height)
     print(f"[2/5] height field in {time.time()-t0:.0f}s")
@@ -516,6 +517,46 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
     # was refused above. Never silently promoted -- `tier` is only set to B
     # in the branch above, on an explicit pass of the same n>=10 floor
     # build_city.py uses.
+    # Does the backbone in use predict metres, or a relative field?
+    depth_is_metric = DepthBackbone.metric_available()
+
+    if tier is None and depth_is_metric:
+        # A METRIC BACKBONE SKIPS THE SCALE QUESTION ENTIRELY.
+        #
+        # This is the whole return on fine-tuning. The stock backbone emits a
+        # relative field, so every branch below has to invent a scale, and
+        # measured blind that invention lands 24-353% from what each tile needs
+        # -- roughly three quarters of the blind error. A model trained on GAMUS
+        # AGL predicts metres, so there is nothing to invent: the scale is 1.0
+        # and the "tallest ~ 40 m" assumption never runs.
+        scale = 1.0
+        _mi = DepthBackbone.metric_info()
+        tier = "B (metric depth model -- heights predicted directly in metres)"
+        scale_source = (
+            f"metric depth model: heights predicted in metres directly "
+            f"(GAMUS-tuned; licensed at MAE "
+            f"{_mi.get('finetuned_mae_m_no_affine', '?')} m against a baseline "
+            f"of {_mi.get('baseline_mae_m_with_affine', '?')} m that was given "
+            f"the optimal scale)")
+        print(f"[3/5] scale: {scale_source}")
+
+        # SANITY-CHECK THE METRIC MODEL BEFORE TRUSTING ITS METRES.
+        #
+        # Scale is 1.0 here, so a model that predicts near-zero everywhere
+        # produces a scene with no buildings and no error message -- measured
+        # exactly that way with a deliberately under-trained checkpoint: 0
+        # prisms, heights 0.0. A licensed checkpoint is not a guarantee of a
+        # sane prediction on THIS image, only of having beaten a baseline on
+        # GAMUS, so the field is checked against the scene in front of it.
+        _p99_metric = float(np.percentile(rel, 99))
+        if _p99_metric < 3.0:
+            print(f"      WARNING: the metric model's 99th percentile height is "
+                  f"{_p99_metric:.2f} m across this whole scene. That is not a "
+                  f"plausible city, and every building will fall below the "
+                  f"minimum height. The checkpoint is licensed on GAMUS but is "
+                  f"not transferring to this image -- rerun with --no-metric to "
+                  f"use the stock backbone.")
+
     if tier is None:
         if anchor_height_m is not None:
             scale = anchor_height_m / max(p99, 1e-6)
@@ -715,7 +756,7 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
         if binfo["buildings"] else np.zeros(1)
     print(f"      {len(binfo['buildings'])} prisms; heights median "
           f"{np.median(heights):.1f}  max {heights.max():.1f} "
-          f"({'m' if anchor_height_m else 'relative units'})")
+          f"({'m' if (anchor_height_m or depth_is_metric or not tier.startswith('C')) else 'relative units'})")
 
     cverts, cfaces, n_canopy = city_model.build_canopy(
         seg_labels, dsm, ground, gsd, gsd, min_area_px=120)
