@@ -214,7 +214,10 @@ def assess(before_geojson: str, after_geojson: str,
             continue
         delta = float(ah) - float(bh)
         cls, why = classify(delta, float(bh), band)
+        ring = after[pair["after"]]["ring"]
         rows.append({
+            "cx": round(float(ring[:, 0].mean()), 3),
+            "cy": round(float(ring[:, 1].mean()), 3),
             "before_id": b.get("id", pair["before"]),
             "after_id": a.get("id", pair["after"]),
             "iou": pair["iou"],
@@ -248,6 +251,34 @@ def assess(before_geojson: str, after_geojson: str,
     }
 
 
+def to_viewer_json(res: Dict, path: str, source_note: str = "") -> None:
+    """Write what the viewer needs to colour prisms and rank a panel.
+
+    Keyed by the AFTER footprint's centroid, because that is the building the
+    viewer is drawing. Matching on the before-centroid would colour the
+    pre-event position, which for a collapsed structure is the one place the
+    responder is not looking.
+    """
+    out = {
+        # Where the after-state came from. Surfaced in the viewer, because a
+        # damage overlay that does not say whether it is an observation or a
+        # simulation is the most misleading thing this project could ship.
+        "source_note": source_note,
+        "counts": res["counts"],
+        "difference_band_m": res["difference_band_m"],
+        "half_width_m": res["half_width_m"],
+        "matched": res["matched"],
+        "buildings": [
+            {"cx": r["cx"], "cy": r["cy"], "class": r["class"],
+             "delta_m": r["delta_m"], "before_h_m": r["before_h_m"],
+             "after_h_m": r["after_h_m"], "reason": r["reason"]}
+            for r in res["rows"]
+        ],
+    }
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(out, f, indent=1)
+
+
 def to_csv(res: Dict, path: str) -> None:
     cols = ["before_id", "after_id", "iou", "before_h_m", "after_h_m",
             "delta_m", "class", "area_m2", "reason"]
@@ -277,11 +308,35 @@ def report(res: Dict) -> str:
     return "\n".join(lines)
 
 
+def raster_extent(before_dsm: str, after_dsm: str,
+                  accuracy_m: float) -> Optional[Dict]:
+    """Raster change extent alongside the per-building verdicts.
+
+    change_detection.py answers a different question from this module and both
+    answers are wanted: the per-building table says WHICH structures changed,
+    the raster says how much GROUND did. A collapsed building and its debris
+    field are one row here and an area there, and a responder needs both.
+
+    Kept optional because it needs the DSM GeoTIFFs, which a GeoJSON-only
+    comparison does not have.
+    """
+    try:
+        import change_detection
+    except ImportError:
+        return None
+    res = change_detection.difference(before_dsm, after_dsm, accuracy_m)
+    return res["stats"]
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(
         description="Per-building damage assessment between two builds")
     ap.add_argument("before", help="buildings.geojson from the earlier build")
     ap.add_argument("after", help="buildings.geojson from the later build")
+    ap.add_argument("--before-dsm", default=None,
+                    help="optional DSM GeoTIFF for the earlier build; with "
+                         "--after-dsm, adds the raster change extent")
+    ap.add_argument("--after-dsm", default=None)
     ap.add_argument("--half-width", type=float, default=None,
                     help="conformal half-width in metres per height; taken "
                          "from the records themselves when omitted")
@@ -291,10 +346,25 @@ def main() -> None:
 
     res = assess(a.before, a.after, a.half_width, a.min_iou)
     print(report(res))
+
+    if a.before_dsm and a.after_dsm:
+        # The raster gate uses the SAME accuracy figure as the per-building
+        # gate, so the two answers cannot disagree about what counts as real.
+        acc = a.half_width or res["half_width_m"]
+        if acc:
+            ext = raster_extent(a.before_dsm, a.after_dsm, acc)
+            if ext:
+                res["raster"] = ext
+                print(f"  raster extent: {ext['loss_area_m2']:,.0f} m2 lost, "
+                      f"{ext['gain_area_m2']:,.0f} m2 gained "
+                      f"(threshold {ext['threshold_m']} m)")
+        else:
+            print("  raster extent skipped: no accuracy figure to threshold on")
     to_csv(res, a.out + ".csv")
+    to_viewer_json(res, a.out + ".viewer.json")
     with open(a.out + ".json", "w", encoding="utf-8") as f:
         json.dump({k: v for k, v in res.items() if k != "rows"}, f, indent=2)
-    print(f"wrote {a.out}.csv and {a.out}.json")
+    print(f"wrote {a.out}.csv, {a.out}.json and {a.out}.viewer.json")
 
 
 if __name__ == "__main__":

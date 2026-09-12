@@ -53,6 +53,21 @@
                color:#eaf3ed; font:inherit; font-size:12px; padding:6px;
                border-radius:4px; cursor:pointer; }
   .gcp-apply:hover { background:#3a7f59; }
+  #dmg-panel { display:none; margin-top:8px; font-size:12px; }
+  .dmg-head { font-weight:600; color:#e6edf3; margin-bottom:4px; }
+  .dmg-gate { color:#8b9aa8; line-height:1.4; margin-bottom:7px; }
+  .dmg-sim { color:#e0a05a; border:1px solid #6a4f22; background:#2a2113;
+             padding:5px 7px; border-radius:3px; line-height:1.4;
+             margin-bottom:7px; }
+  .dmg-counts { display:flex; flex-wrap:wrap; gap:4px 12px; margin-bottom:8px; }
+  .dmg-c { display:flex; align-items:center; gap:5px; color:#cde; }
+  .dmg-c b { margin-left:3px; font-variant-numeric:tabular-nums; }
+  .dmg-sw { width:9px; height:9px; border-radius:2px; flex:none; }
+  .dmg-list { border-top:1px solid rgba(255,255,255,0.09); }
+  .dmg-row { display:flex; align-items:center; gap:7px; padding:2px 0;
+             font-variant-numeric:tabular-nums; color:#b8c6d1; }
+  .dmg-h { min-width:78px; }
+  .dmg-d { margin-left:auto; }
 </style>
 </head>
 <body>
@@ -82,7 +97,9 @@
     <button id="btn-gcp">Ground Control</button>
     <button id="btn-flood">Flood Source</button>
     <button id="btn-bands">Uncertainty</button>
+    <button id="btn-damage">Damage</button>
   </div>
+  <div id="dmg-panel"></div>
   <div id="gcp-panel"></div>
   <div class="row">
     <button id="btn-pdf">Export PDF</button>
@@ -1657,6 +1674,149 @@ function setBands(on) {
   }
 }
 
+
+// --- Damage overlay ---------------------------------------------------------
+//
+// A raster change map answers "where did the surface move". A responder needs a
+// list of structures with a verdict against each, and needs to see it on the
+// model rather than in a spreadsheet.
+//
+// Every verdict here was gated on the conformal interval before it was written.
+// INCONCLUSIVE is drawn in its own colour rather than folded into intact,
+// because "undamaged" and "our instrument cannot tell you" send a responder to
+// different places, and collapsing the second into the first is how a survey
+// quietly under-reports a disaster.
+let damageData = null;
+let damageGroup = null;
+let damageOn = false;
+
+const DAMAGE_STYLE = {
+  COLLAPSED:    { color: 0xc4342b, rank: 0, label: "Collapsed" },
+  PARTIAL:      { color: 0xd98a2b, rank: 1, label: "Partial" },
+  INCONCLUSIVE: { color: 0x8f7fb0, rank: 2, label: "Inconclusive" },
+  INTACT:       { color: 0x3f8f5c, rank: 3, label: "Intact" },
+  GREW:         { color: 0x3d7fa8, rank: 4, label: "Grew" },
+};
+
+async function loadDamage() {
+  if (damageData !== null) return damageData;
+  try {
+    const r = await fetch(`${BASE}/damage.viewer.json`, { cache: "no-store" });
+    damageData = r.ok ? await r.json() : false;
+  } catch (e) { damageData = false; }
+  return damageData;
+}
+
+function buildDamage() {
+  if (damageGroup || !damageData || !BUILDING_RECORDS || !SCENE_META) return damageGroup;
+  const ox = SCENE_META.origin_x || 0, oy = SCENE_META.origin_y || 0;
+  const datum = new THREE.Box3().setFromObject(groundMesh).min.y;
+  damageGroup = new THREE.Group();
+  damageGroup.name = "damage";
+
+  // Index the scene's buildings by centroid so each verdict lands on the prism
+  // it describes. The records' rings are needed for the shell, so a verdict
+  // with no matching record is skipped rather than drawn at a guessed place.
+  for (const d of damageData.buildings) {
+    let best = null, bestD = Infinity;
+    for (const rec of BUILDING_RECORDS) {
+      const dx = rec.cx - d.cx, dy = rec.cy - d.cy;
+      const dd = dx * dx + dy * dy;
+      if (dd < bestD) { bestD = dd; best = rec; }
+    }
+    if (!best || bestD > 25 * 25 || !best.ring.length) continue;
+
+    const style = DAMAGE_STYLE[d.class] || DAMAGE_STYLE.INCONCLUSIVE;
+    const pts = [];
+    for (const pt of best.ring) pts.push(new THREE.Vector2(pt[0] - ox, -(pt[1] - oy)));
+    if (pts.length < 3) continue;
+    let shape;
+    try { shape = new THREE.Shape(pts); } catch (e) { continue; }
+
+    // Full height, base to roof: the verdict is about the structure, not its
+    // roofline, so the whole prism carries the colour.
+    const h = Math.max(1.0, best.props.height_m || 1.0);
+    const geo = new THREE.ExtrudeGeometry(shape, { depth: h, bevelEnabled: false });
+    geo.rotateX(-Math.PI / 2);
+    const gy = sampleGroundAt(best.cx - ox, best.cy - oy, datum);
+    const mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
+      color: style.color, transparent: true, opacity: 0.55,
+      depthWrite: false, side: THREE.DoubleSide,
+    }));
+    mesh.position.y = gy;
+    mesh.renderOrder = 3;
+    mesh.userData.damage = d;
+    damageGroup.add(mesh);
+  }
+  damageGroup.visible = false;
+  scene.add(damageGroup);
+  return damageGroup;
+}
+
+function damagePanelHtml() {
+  if (!damageData) return "";
+  const c = damageData.counts || {};
+  let html = '<div class="dmg-head">Damage assessment</div>';
+  if (damageData.source_note) {
+    html += `<div class="dmg-sim">${damageData.source_note}</div>`;
+  }
+  html += `<div class="dmg-gate">Gate: &plusmn;${damageData.half_width_m} m per height, `
+       + `so &plusmn;${damageData.difference_band_m} m on the difference. `
+       + `A change inside that band is not evidence.</div>`;
+  html += '<div class="dmg-counts">';
+  for (const k of ["COLLAPSED", "PARTIAL", "INCONCLUSIVE", "INTACT", "GREW"]) {
+    if (!c[k]) continue;
+    const st = DAMAGE_STYLE[k];
+    html += `<div class="dmg-c"><span class="dmg-sw" style="background:#`
+         + st.color.toString(16).padStart(6, "0") + `"></span>`
+         + `${st.label}<b>${c[k]}</b></div>`;
+  }
+  html += "</div>";
+
+  // Ranked: most damaged first, which is the order a responder reads.
+  const ranked = [...damageData.buildings].sort((a, b) => {
+    const ra = DAMAGE_STYLE[a.class] ? DAMAGE_STYLE[a.class].rank : 9;
+    const rb = DAMAGE_STYLE[b.class] ? DAMAGE_STYLE[b.class].rank : 9;
+    return ra - rb || a.delta_m - b.delta_m;
+  }).slice(0, 12);
+  html += '<div class="dmg-list">';
+  for (const d of ranked) {
+    const st = DAMAGE_STYLE[d.class] || DAMAGE_STYLE.INCONCLUSIVE;
+    html += `<div class="dmg-row"><span class="dmg-sw" style="background:#`
+         + st.color.toString(16).padStart(6, "0") + `"></span>`
+         + `<span class="dmg-h">${d.before_h_m.toFixed(0)}&rarr;${d.after_h_m.toFixed(0)} m</span>`
+         + `<span class="dmg-d">${d.delta_m >= 0 ? "+" : ""}${d.delta_m.toFixed(1)}</span></div>`;
+  }
+  html += "</div>";
+  if (damageData.buildings.length > 12) {
+    html += `<div class="dmg-gate">${damageData.buildings.length - 12} more in the CSV export.</div>`;
+  }
+  return html;
+}
+
+async function setDamage(on) {
+  const d = await loadDamage();
+  const panel = document.getElementById("dmg-panel");
+  const btn = document.getElementById("btn-damage");
+  if (!d) {
+    if (btn) btn.classList.remove("active");
+    if (panel) panel.style.display = "none";
+    document.getElementById("measure-panel").textContent =
+      "No damage assessment for this scene. Run:\n"
+      + "  python damage.py before/buildings.geojson after/buildings.geojson\n"
+      + "and copy damage.viewer.json into the scene folder.";
+    return;
+  }
+  damageOn = on === undefined ? !damageOn : on;
+  const grp = buildDamage();
+  if (grp) grp.visible = damageOn;
+  if (btn) btn.classList.toggle("active", damageOn);
+  if (panel) {
+    panel.style.display = damageOn ? "block" : "none";
+    if (damageOn) panel.innerHTML = damagePanelHtml();
+  }
+}
+
 // --- Cinematic flythrough ---------------------------------------------------
 //
 // Waypoints come from the scene's own tallest buildings rather than a hand-set
@@ -2205,6 +2365,7 @@ document.getElementById("btn-flood").addEventListener("click", () => {
 });
 document.getElementById("btn-slope").addEventListener("click", () => setTextureMode("slope"));
 document.getElementById("btn-bands").addEventListener("click", () => setBands());
+document.getElementById("btn-damage").addEventListener("click", () => setDamage());
 document.getElementById("btn-pdf").addEventListener("click", () => exportReport());
 initXR();
 
@@ -2421,6 +2582,9 @@ window.__dw = {
   setGcpMode: (on) => setGcpMode(on),
   get gcpPoints() { return gcpPoints; },
   setBands: (on) => setBands(on),
+  setDamage: (on) => setDamage(on),
+  get damageGroup() { return damageGroup; },
+  get damageData() { return damageData; },
   get bandGroup() { return bandGroup; },
   floodUpdate: (r) => floodUpdate(r),
   floodFill: (y) => floodFill(y),
