@@ -21,7 +21,7 @@
   "coverage": 0.986,
   "median_height_m": 15.1,
   "max_height_m": 83.2,
-  "build_seconds": 50.3,
+  "build_seconds": 69.5,
   "discovery": {
     "candidates_examined": 4449,
     "retained": 1706,
@@ -50,6 +50,15 @@
     "frac_low": 0.149,
     "frac_high": 0.359
   },
+  "conformal": {
+    "applied": true,
+    "variant": "constant",
+    "coverage_nominal": 0.9,
+    "half_width_m": 4.526630519866947,
+    "fitted_on": "JAX_165",
+    "held_out_coverage": 0.8968253968253969,
+    "omitted_reason": null
+  },
   "validation": {
     "rmse_m": 13.54,
     "mae_m": 7.4,
@@ -71,10 +80,10 @@
     ]
   },
   "reliability_counts": {
-    "HIGH": 602,
     "LOW": 102,
+    "WEAK": 44,
     "MEDIUM": 486,
-    "WEAK": 44
+    "HIGH": 602
   },
   "provenance": "MEASURED",
   "height_is_metric": true,
