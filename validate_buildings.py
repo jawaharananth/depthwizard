@@ -35,7 +35,14 @@ RGB = "dfc2019_data/rgb/Track3-RGB-1"
 METADATA = "dfc2019_data/metadata/Track3-Metadata"
 
 
-def validate(tile="JAX_165", extent_m=640.0, out_px=2560):
+def collect_rows(tile="JAX_165", extent_m=640.0, out_px=2560) -> np.ndarray:
+    """
+    Per-building (predicted_h, true_h, area_m2, confidence) inside the truth
+    extent. Split out from validate() so the conformal fitter
+    (scripts/fit_conformal.py) measures with exactly the same pairing and
+    masking rules this file's reported accuracy uses -- a fitter with its own
+    copy of this loop would drift from it silently.
+    """
     o = ortho.orthorectify(tile, TRUTH, RGB, METADATA, out_px=out_px, extent_m=extent_m)
     img = o["image"]
     W = img.shape[0]
@@ -117,13 +124,17 @@ def validate(tile="JAX_165", extent_m=640.0, out_px=2560):
 
     if not rows:
         raise SystemExit("no buildings fell inside the truth extent")
+    return np.array(rows), o["truth_extent_m"]
 
-    a = np.array(rows)
+
+def validate(tile="JAX_165", extent_m=640.0, out_px=2560):
+    a, truth_extent_m = collect_rows(tile, extent_m, out_px)
     ours, true, area, bconf = a[:, 0], a[:, 1], a[:, 2], a[:, 3]
     err = ours - true
+    rows = a
 
     print(f"\nPER-BUILDING HEIGHT vs LiDAR -- {tile}, {len(rows)} buildings "
-          f"inside the {o['truth_extent_m']:.0f} m truth extent\n")
+          f"inside the {truth_extent_m:.0f} m truth extent\n")
     print(f"  MAE            {np.abs(err).mean():7.2f} m")
     print(f"  RMSE           {np.sqrt((err**2).mean()):7.2f} m")
     print(f"  bias           {err.mean():+7.2f} m   (positive = we build too tall)")
@@ -149,7 +160,7 @@ def validate(tile="JAX_165", extent_m=640.0, out_px=2560):
     # Calibrating and reporting coverage on the SAME buildings would be
     # circular: the quantile is fitted to make coverage come out right, so it
     # always would.
-    import conformal as cf
+    from calibration import conformal as cf
     idx = np.arange(len(err))
     rs = np.random.default_rng(0)
     rs.shuffle(idx)

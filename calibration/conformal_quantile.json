@@ -1,0 +1,51 @@
+{
+  "q": 4.526630519866947,
+  "n": 125,
+  "alpha": 0.1,
+  "level": 0.912,
+  "normalised": false,
+  "median_abs_error": 1.7564105987548828,
+  "held_out_coverage": 0.8968253968253969,
+  "mean_half_width_m": 4.526630519866946,
+  "held_out_n": 126,
+  "variant": "constant",
+  "selection_reason": "adaptive under-covered on the held-out half (or was unavailable); constant width selected because an interval that does not hold its rate is worse than a wider one that does",
+  "fitted_on": {
+    "tile": "JAX_165",
+    "extent_m": 640.0,
+    "out_px": 2560,
+    "n_buildings_total": 251,
+    "n_calibration": 125,
+    "n_held_out": 126,
+    "split_seed": 0,
+    "height_source": "RPC plane-sweep MVS (validate_buildings.collect_rows)",
+    "truth": "DFC2019 Track 3 airborne LiDAR"
+  },
+  "fitted_utc": "2026-09-12T09:39:18+00:00",
+  "fitted_by": "scripts/fit_conformal.py",
+  "all_variants": {
+    "constant": {
+      "q": 4.526630519866947,
+      "n": 125,
+      "alpha": 0.1,
+      "level": 0.912,
+      "normalised": false,
+      "median_abs_error": 1.7564105987548828,
+      "held_out_coverage": 0.8968253968253969,
+      "mean_half_width_m": 4.526630519866946,
+      "held_out_n": 126
+    },
+    "confidence_adaptive": {
+      "q": 2.849117169863703,
+      "n": 125,
+      "alpha": 0.1,
+      "level": 0.912,
+      "normalised": true,
+      "median_abs_error": 1.7564105987548828,
+      "held_out_coverage": 0.8809523809523809,
+      "mean_half_width_m": 4.4254708904104865,
+      "held_out_n": 126
+    }
+  },
+  "usage_note": "Loaded by calibration.conformal.load_fitted(). Applies ONLY to heights in real metres (Tier A/B). A Tier C scene's heights are in an assumed relative scale, so a metre band on them would be arithmetic on units that do not exist."
+}

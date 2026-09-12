@@ -707,6 +707,38 @@ def build(tile: str, out_px: int = 2048, stage: bool = True,
             _btier[rec["id"]] = conf_mod.reliability_tier(
                 c["confidence"], rec.get("evidence"), tier[0] in ("A", "B"))
 
+    # CONFORMAL INTERVAL: the committed quantile, loaded and applied. Never
+    # fitted here -- see calibration/conformal.py. The band is in metres, so
+    # it is attached ONLY on a metric tier; on Tier C the height carries an
+    # assumed relative scale and a metre band on it would be arithmetic on
+    # units that do not exist.
+    from calibration import conformal as _cf
+    _cal = _cf.load_fitted()
+    _metric_tier = tier[0] in ("A", "B")
+    _iv_half, _iv_nominal = {}, (None if _cal is None else 1.0 - _cal["alpha"])
+    if _cal is not None and _metric_tier:
+        for rec, prism in zip(disc["instances"], binfo["buildings"]):
+            _u = None
+            if _cal.get("normalised"):
+                _c = _bconf.get(rec["id"], {}).get("confidence")
+                if _c is None:
+                    continue        # adaptive width needs a confidence to scale by
+                _u = 1.0 / max(float(_c), 0.05)
+            _lo, _hi, _hw = _cf.interval(prism["height_m"], _cal, uncertainty=_u)
+            if _hw is not None:
+                _iv_half[rec["id"]] = round(float(_hw), 2)
+    if _cal is None:
+        print("      conformal interval: no fitted quantile committed "
+              "(run scripts/fit_conformal.py) -- intervals omitted")
+    elif not _metric_tier:
+        print(f"      conformal interval: omitted on tier {tier[0]} -- "
+              "heights are relative, a metre band would be meaningless")
+    else:
+        print(f"      conformal interval: {_cal['variant']}, "
+              f"{_iv_nominal*100:.0f}% nominal, {len(_iv_half)} buildings banded "
+              f"(fitted on {_cal['fitted_on']['tile']}, held-out coverage "
+              f"{_cal['held_out_coverage']*100:.1f}%)")
+
     import json as _json
     tr = o["transform"]
     feats = []
@@ -724,6 +756,8 @@ def build(tile: str, out_px: int = 2048, stage: bool = True,
                 "reliability": _btier.get(rec["id"], "UNVERIFIED"),
                 "reference_height_m": _bref.get(rec["id"]),
                 "height_m": round(prism["height_m"], 2),
+                "interval_half_width_m": _iv_half.get(rec["id"]),
+                "coverage_nominal": _iv_nominal if rec["id"] in _iv_half else None,
                 "area_m2": rec["area_m2"],
                 "perimeter_m": rec["perimeter_m"],
                 "size_class": rec["size_class"],
@@ -740,14 +774,25 @@ def build(tile: str, out_px: int = 2048, stage: bool = True,
     import csv as _csv
     with open(stem + "_buildings.csv", "w", newline="") as f:
         w = _csv.writer(f)
-        w.writerow(["id", "height_m", "area_m2", "perimeter_m", "size_class",
+        w.writerow(["id", "height_m", "interval_half_width_m", "coverage_nominal",
+                    "area_m2", "perimeter_m", "size_class",
                     "confidence", "provenance", "height_is_metric",
                     "ev_height", "ev_edge", "ev_texture", "ev_shadow"])
         for rec, prism in zip(disc["instances"], binfo["buildings"]):
             e = rec["evidence"]
-            w.writerow([rec["id"], round(prism["height_m"], 2), rec["area_m2"],
+            w.writerow([rec["id"], round(prism["height_m"], 2),
+                        _iv_half.get(rec["id"], ""),
+                        _iv_nominal if rec["id"] in _iv_half else "",
+                        rec["area_m2"],
                         rec["perimeter_m"], rec["size_class"], rec["confidence"],
-                        rec["provenance"], tier.startswith("B"),
+                        # `tier[0] in ("A", "B")`, matching the GeoJSON beside
+                        # it and every other metricity test in this file. This
+                        # was `tier.startswith("B")`, which reported False on a
+                        # Tier A scene -- so a CSV of MVS-triangulated heights
+                        # in absolute metres declared itself non-metric, while
+                        # the GeoJSON written from the same records declared
+                        # itself metric. Two files, one build, opposite claims.
+                        rec["provenance"], tier[0] in ("A", "B"),
                         e["height"], e["edge"], e["texture"], e["shadow"]])
 
     meta = {
@@ -775,6 +820,16 @@ def build(tile: str, out_px: int = 2048, stage: bool = True,
         "build_seconds": round(time.time() - t_start, 1),
         "discovery": disc["report"],
         "confidence": conf_stats,
+        "conformal": (None if _cal is None else {
+            "applied": bool(_iv_half),
+            "variant": _cal["variant"],
+            "coverage_nominal": _iv_nominal,
+            "half_width_m": _cal["q"] if _cal["variant"] == "constant" else None,
+            "fitted_on": _cal["fitted_on"]["tile"],
+            "held_out_coverage": _cal.get("held_out_coverage"),
+            "omitted_reason": (None if _metric_tier else
+                               f"tier {tier[0]}: heights are relative, not metres"),
+        }),
         "validation": err_stats,
         "slope": slope_stats,
         "reliability_counts": {t: sum(1 for v in _btier.values() if v == t)
