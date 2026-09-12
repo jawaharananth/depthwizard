@@ -9,11 +9,32 @@ This is the counterpart to `BENCHMARK.md`. That document's 3.87 m / 2.01 m figur
 
 ## Result
 
-**No tile reached a metric tier blind.** Every tile that was not rejected for poor registration produced a Tier C, shape-only result -- see the table below. There is currently no blind RMSE figure for this pipeline, which is the correct thing to report rather than one produced by fitting to the truth this file exists to not touch.
+**RMSE 16.07 m   MAE 10.33 m** -- 5 of 10 tiles reached a metric tier (A/B) blind and were scored.
 
-- Scored (metric tier, in RMSE aggregate): 0
-- Shape-only (Tier C, correlation reported, excluded from RMSE): 17
-- Rejected/failed: 3
+- Scored (metric tier, in RMSE aggregate): 5
+- Shape-only (Tier C, correlation reported, excluded from RMSE): 3
+- Rejected/failed: 2
+
+## Per-tile (scored)
+
+scale_error_pct is the key column: |calibrated m/unit - what a truth-fit affine would have chosen| / that fitted value, computed for the report only and never applied to any prediction above. It says whether this tile's Tier B metres are correct metres or merely confident ones.
+
+| tile | tier | RMSE | MAE | corr | scale_source | m_per_unit | n_shadow | fitted_scale | scale_error_pct |
+|---|---|---|---|---|---|---|---|---|---|
+| JAX_017 | A (DEM-anchored absolute elevation) | 15.65 | 11.29 | 0.533 | dem | 78.97 | 1 | 35.48 | 122.5 |
+| JAX_018 | A (DEM-anchored absolute elevation) | 17.50 | 12.75 | 0.438 | dem | 74.04 | 0 | 26.1 | 183.6 |
+| JAX_020 | A (DEM-anchored absolute elevation) | 16.66 | 9.86 | 0.429 | dem | 90.33 | 0 | 40.62 | 122.4 |
+| JAX_033 | A (DEM-anchored absolute elevation) | 12.53 | 6.74 | 0.361 | dem | 77.86 | 1 | 17.2 | 352.6 |
+| JAX_068 | A (DEM-anchored absolute elevation) | 17.54 | 11.05 | 0.406 | dem | 71.29 | 2 | 57.1 | 24.8 |
+
+## By terrain class
+
+| class | RMSE | MAE | pixels |
+|---|---|---|---|
+| urban | 21.31 | 18.00 | 195500 |
+| hilly | 15.27 | 8.21 | 280281 |
+| forest | 18.23 | 15.96 | 198534 |
+| sparse | 13.50 | 6.99 | 606055 |
 
 ## Tier C -- shape correlation only, no scale, excluded from RMSE
 
@@ -22,22 +43,8 @@ m_per_unit is null throughout this table by construction -- no calibrated scale 
 | tile | corr | scale_source | n_shadow | refusal_reason | fitted_scale |
 |---|---|---|---|---|---|
 | JAX_004 | 0.576 | none | 1 | only 1 buildings with a usable shadow | 35.19 |
-| JAX_017 | 0.533 | none | 1 | only 1 buildings with a usable shadow | 35.48 |
-| JAX_018 | 0.438 | none | 0 | only 0 buildings with a usable shadow | 26.1 |
-| JAX_020 | 0.429 | none | 0 | only 0 buildings with a usable shadow | 40.62 |
 | JAX_022 | 0.415 | none | 1 | only 1 buildings with a usable shadow | 38.72 |
 | JAX_028 | 0.465 | none | 0 | only 0 buildings with a usable shadow | 29.03 |
-| JAX_033 | 0.361 | none | 1 | only 1 buildings with a usable shadow | 17.2 |
-| JAX_068 | 0.406 | none | 2 | only 2 buildings with a usable shadow | 57.1 |
-| JAX_072 | 0.411 | none | 0 | only 0 buildings with a usable shadow | 20.48 |
-| JAX_079 | 0.511 | none | 3 | only 3 buildings with a usable shadow | 23.66 |
-| JAX_105 | 0.291 | none | 0 | only 0 buildings with a usable shadow | 22.94 |
-| JAX_113 | 0.422 | none | 3 | only 3 buildings with a usable shadow | 18.5 |
-| JAX_117 | 0.425 | none | 0 | only 0 buildings with a usable shadow | 27.57 |
-| JAX_118 | 0.358 | none | 0 | only 0 buildings with a usable shadow | 19.99 |
-| JAX_122 | 0.366 | none | 0 | only 0 buildings with a usable shadow | 20.36 |
-| JAX_144 | 0.399 | none | 6 | only 6 buildings with a usable shadow | 41.61 |
-| JAX_156 | 0.267 | none | 2 | only 2 buildings with a usable shadow | 22.81 |
 
 ## Rejected / failed
 
@@ -45,10 +52,9 @@ m_per_unit is null throughout this table by construction -- no calibrated scale 
 |---|---|---|
 | JAX_031 | REJECTED | unregistered (corr=0.219 < 0.25) |
 | JAX_070 | REJECTED | unregistered (corr=0.239 < 0.25) |
-| JAX_149 | REJECTED | unregistered (corr=0.148 < 0.25) |
 
 ## Reproducing
 
 ```bash
-python scripts/benchmark_blind.py 20
+python scripts/benchmark_blind.py 10
 ```
