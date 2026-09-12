@@ -289,7 +289,18 @@ def main() -> None:
 
         if m and m["mae_m"] < best:
             best = m["mae_m"]
-            model.save_pretrained(os.path.join(a.out, "height_best"))
+            ckpt = os.path.join(a.out, "height_best")
+            model.save_pretrained(ckpt)
+            # The image processor travels with the weights. Without it the
+            # checkpoint cannot be loaded through transformers' pipeline at all
+            # -- save_pretrained on the model alone writes no
+            # preprocessor_config.json, and the load fails at inference time
+            # rather than at save time.
+            try:
+                from transformers import AutoImageProcessor
+                AutoImageProcessor.from_pretrained(MODEL).save_pretrained(ckpt)
+            except Exception as e:
+                print(f"    WARNING: could not save the image processor ({e})")
             print(f"    saved (best MAE {best:.2f} m)")
 
     report = {"model": MODEL, "device": device, "epochs": a.epochs,
@@ -298,6 +309,43 @@ def main() -> None:
     with open(os.path.join(a.out, "training_report.json"), "w",
               encoding="utf-8") as f:
         json.dump(report, f, indent=2)
+
+    # LICENSE THE CHECKPOINT, OR DO NOT.
+    #
+    # The marker is what the pipeline reads before it will use these weights,
+    # and it is written only when the fine-tuned model beat a baseline that was
+    # handed the optimal affine. Weights from a losing run stay on disk for
+    # inspection and are never picked up, because a run that failed should not
+    # quietly change every build that follows it.
+    ckpt = os.path.join(a.out, "height_best")
+    marker = os.path.join(ckpt, "metric_ok.json")
+    if os.path.exists(marker):
+        os.remove(marker)
+    won = bool(history and base and history[-1].get("mae_m") is not None
+               and history[-1]["mae_m"] < base["mae_m"])
+    if won and os.path.isdir(ckpt):
+        with open(marker, "w", encoding="utf-8") as f:
+            json.dump({
+                "licensed": True,
+                "units": "metres (AGL) predicted directly",
+                "baseline_mae_m_with_affine": round(base["mae_m"], 3),
+                "finetuned_mae_m_no_affine": round(history[-1]["mae_m"], 3),
+                "baseline_corr": round(base["corr"], 4),
+                "finetuned_corr": round(history[-1]["corr"], 4),
+                "epochs": a.epochs, "device": device,
+                "trained_tiles": len(train.stems),
+                "note": "The pipeline reads this file to decide whether to skip "
+                        "its Tier C scale assumption. Written only because the "
+                        "fine-tuned model beat a baseline given the optimal scale.",
+            }, f, indent=2)
+        print("")
+        print(f"  CHECKPOINT LICENSED -> {marker}")
+        print("  Builds will now predict metres directly and skip the "
+              "'tallest ~ 40 m' assumption.")
+    elif os.path.isdir(ckpt):
+        print("")
+        print("  Checkpoint NOT licensed: no metric_ok.json written, so the "
+              "pipeline will keep using the stock backbone.")
 
     print("\n" + "=" * 66)
     print("  " + _fmt("baseline (affine granted)", base))
