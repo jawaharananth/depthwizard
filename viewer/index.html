@@ -34,6 +34,25 @@
   .slider-row input[type=range] { flex:1; accent-color:#6ab6cd; }
   .readout { font-size:11px; color:#9cb3c2; margin-top:3px;
              font-variant-numeric:tabular-nums; }
+  #gcp-panel { display:none; margin-top:8px; font-size:12px; }
+  .gcp-hint { color:#9ab; line-height:1.45; }
+  .gcp-row { display:flex; align-items:center; gap:6px; padding:3px 0;
+             border-bottom:1px solid rgba(255,255,255,0.07);
+             font-variant-numeric:tabular-nums; }
+  .gcp-row.suspect { color:#e0a05a; }
+  .gcp-m { color:#9ab; min-width:38px; }
+  .gcp-arrow { color:#6b7883; }
+  .gcp-k { min-width:54px; }
+  .gcp-r { margin-left:auto; color:#9ab; min-width:54px; text-align:right; }
+  .gcp-drop { background:none; border:0; color:#7a8891; cursor:pointer;
+              font-size:15px; line-height:1; padding:0 2px; }
+  .gcp-drop:hover { color:#e2807a; }
+  .gcp-sum { margin-top:7px; color:#cde; font-variant-numeric:tabular-nums; }
+  .gcp-warn { margin-top:6px; color:#e0a05a; line-height:1.4; }
+  .gcp-apply { margin-top:8px; width:100%; background:#2f6b4a; border:0;
+               color:#eaf3ed; font:inherit; font-size:12px; padding:6px;
+               border-radius:4px; cursor:pointer; }
+  .gcp-apply:hover { background:#3a7f59; }
 </style>
 </head>
 <body>
@@ -60,7 +79,9 @@
     <button id="btn-slope">SLOPE</button>
     <button id="btn-los">Line of Sight</button>
     <button id="btn-xsec">Cross-Section</button>
+    <button id="btn-gcp">Ground Control</button>
   </div>
+  <div id="gcp-panel"></div>
   <div class="row">
     <button id="btn-pdf">Export PDF</button>
     <button id="btn-xr" style="display:none;">Enter VR</button>
@@ -1116,7 +1137,7 @@ function clearMeasure() {
 
 renderer.domElement.addEventListener("click", (event) => {
   if (toolMode) { handleToolClick(event); return; }
-  if (!measureActive) return;
+  if (!measureActive && !gcpActive) return;
   pointer.x = (event.clientX / window.innerWidth) * 2 - 1;
   pointer.y = -(event.clientY / window.innerHeight) * 2 + 1;
   raycaster.setFromCamera(pointer, camera);
@@ -1172,6 +1193,23 @@ renderer.domElement.addEventListener("click", (event) => {
   }
 
   const h = Math.max(0, p.y - groundY);
+
+  // Ground control reuses THIS height, not a second measurement of its own.
+  // The operator is asserting a real height for the thing the readout just
+  // reported, so the pair must be (what we say, what it is) -- computing the
+  // control point any other way would solve a scale between two quantities
+  // that were never the same measurement.
+  if (gcpActive) {
+    if (h < 0.5 || !onBuilding) {
+      document.getElementById("measure-panel").textContent =
+        "Ground control needs a building, not ground level. Click a structure "
+        + "whose real height you know.";
+      return;
+    }
+    gcpAddPoint(p, h);
+    return;
+  }
+
   const isFlat = h < 0.5;   // at terrain level: ground, road, plaza, water
   let label;
   if (isFlat) {
@@ -1225,6 +1263,25 @@ renderer.domElement.addEventListener("click", (event) => {
       label += "\nshadow        " + bar(ev.shadow) + "  " + (ev.shadow ?? "-");
       label += "\nfootprint     " + (q.area_m2 ?? "-") + " m2, "
              + (q.size_class || "-");
+      // Conformal interval, when the scene earned one. Shown as the claim it
+      // actually is -- a value, a band, and the rate that band holds at --
+      // rather than a bare +- number whose meaning the reader has to guess.
+      // Absent on a relative-scale scene by construction: the pipeline does
+      // not attach metre bands to heights that are not in metres.
+      if (q.interval_half_width_m !== undefined && q.interval_half_width_m !== null) {
+        const hw = q.interval_half_width_m;
+        const pct = Math.round((q.coverage_nominal ?? 0.9) * 100);
+        // The RECORD's height, not the clicked point's `h`. Clicking a roof
+        // edge and clicking its centre give different `h`, but the interval
+        // was fitted against the building's recorded height -- pairing the
+        // band with whatever the cursor happened to hit would misstate it.
+        const bh = q.height_m;
+        label += "\ninterval      " + (bh === undefined || bh === null ? "?" : bh.toFixed(1))
+               + " m  +/-" + hw.toFixed(1) + " m   (true value inside "
+               + pct + "% of the time)";
+      } else if (q.height_is_metric) {
+        label += "\ninterval      none (no fitted quantile committed)";
+      }
       label += q.height_is_metric
              ? "\nheight is MEASURED (metric scale established)"
              : "\nheight is INFERRED (relative scale, not measured)";
@@ -1232,6 +1289,219 @@ renderer.domElement.addEventListener("click", (event) => {
   }
   panel.textContent = label;
 });
+
+
+// --- Ground control: scale the scene from known building heights ------------
+//
+// The fourth scale route named by the problem statement, and the only one an
+// operator can use on a scene that has no DEM, no archive views and no usable
+// shadows. Click a building, type what it really is, repeat, solve.
+//
+// This is a PORT of calibration/gcp.py and must stay in step with it. The
+// viewer is a static page with no backend, so the solve happens here; the
+// Python module is the reference implementation and carries the reasoning.
+//
+// Ratio of medians, not median of ratios. Each point gives a ratio
+// known/measured, and taking the median of those weights a 4 m shed exactly as
+// heavily as a 120 m tower -- but the shed's ratio is dominated by a metre of
+// pipeline noise. Measured on the two-point case in the Python tests: the same
+// pair gives 120.9 m for the tower under ratio-of-medians and 138.7 m under
+// median-of-ratios.
+const GCP_MIN_MEASURED = 1.0;
+const GCP_SUSPECT_FRAC = 0.25;
+
+let gcpActive = false;
+let gcpPoints = [];          // {id, measured, known, x, z, marker}
+let gcpApplied = null;       // the factor currently applied, if any
+
+function gcpSolve(points) {
+  const usable = points.filter((p) => p.measured >= GCP_MIN_MEASURED && p.known > 0);
+  if (usable.length < 2) {
+    return { ok: false, reason: `need 2 usable points, have ${usable.length}` };
+  }
+  const med = (a) => {
+    const s = [...a].sort((x, y) => x - y);
+    const m = s.length >> 1;
+    return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+  };
+  const factor = med(usable.map((p) => p.known)) / med(usable.map((p) => p.measured));
+  const alt = med(usable.map((p) => p.known / p.measured));
+  const out = usable.map((p) => {
+    const predicted = p.measured * factor;
+    const residual = predicted - p.known;
+    const frac = Math.abs(residual) / Math.max(p.known, 1e-9);
+    return { ...p, predicted, residual, frac, suspect: frac > GCP_SUSPECT_FRAC };
+  });
+  const disagreement = Math.abs(factor - alt) / Math.max(Math.abs(factor), 1e-9);
+  return {
+    ok: true, factor, alt, disagreement,
+    disagree: disagreement > 0.10,
+    points: out,
+    mae: out.reduce((s, p) => s + Math.abs(p.residual), 0) / out.length,
+    nSuspect: out.filter((p) => p.suspect).length,
+  };
+}
+
+// Rescale the scene about the terrain datum.
+//
+// About the GROUND MINIMUM, not the origin: scaling about y=0 would move the
+// terrain itself, so a scene whose datum sits at 30 m would see its ground rise
+// to 45 m at x1.5 and every building would float. Scaling about the datum keeps
+// the ground where it is and stretches only what stands on it, which is what a
+// height scale means.
+function gcpApplyFactor(factor) {
+  if (!groundMesh || !isFinite(factor) || factor <= 0) return false;
+  const datum = new THREE.Box3().setFromObject(groundMesh).min.y;
+  const rel = gcpApplied ? factor / gcpApplied : factor;
+
+  scene.traverse((o) => {
+    if (!o.isMesh || o === floodMesh) return;
+    const pos = o.geometry && o.geometry.attributes && o.geometry.attributes.position;
+    if (!pos) return;
+    const arr = pos.array;
+    for (let i = 1; i < arr.length; i += 3) {
+      arr[i] = datum + (arr[i] - datum) * rel;
+    }
+    pos.needsUpdate = true;
+    o.geometry.computeVertexNormals();
+    o.geometry.computeBoundingSphere();
+    o.geometry.computeBoundingBox();
+  });
+
+  // The records must move with the geometry, or the readout would report the
+  // old height for a building that is now drawn at a new one.
+  if (BUILDING_RECORDS) {
+    for (const r of BUILDING_RECORDS) {
+      const q = r.props;
+      for (const k of ["height_m", "base_h", "roof_h"]) {
+        if (typeof q[k] === "number") q[k] = q[k] * rel;
+      }
+      // The conformal band is a width in the scene's units. Rescaling the
+      // heights without it would leave a band fitted at one size attached to
+      // heights at another.
+      if (typeof q.interval_half_width_m === "number") {
+        q.interval_half_width_m = q.interval_half_width_m * rel;
+      }
+      q.height_is_metric = true;
+    }
+  }
+  gcpApplied = factor;
+  if (SCENE_META) {
+    SCENE_META.height_is_metric = true;
+    SCENE_META.tier = "A* (operator ground control -- asserted, not instrument-measured)";
+    SCENE_META.gcp_factor = factor;
+  }
+  return true;
+}
+
+function gcpRender() {
+  const el = document.getElementById("gcp-panel");
+  if (!el) return;
+  if (!gcpActive) { el.style.display = "none"; return; }
+  el.style.display = "block";
+
+  if (!gcpPoints.length) {
+    el.innerHTML = '<div class="gcp-hint">Click a building, then type its real '
+      + 'height in metres. Two or more points are needed.</div>';
+    return;
+  }
+
+  const res = gcpSolve(gcpPoints);
+  let html = "";
+  for (let i = 0; i < gcpPoints.length; i++) {
+    const p = gcpPoints[i];
+    const r = res.ok ? res.points.find((q) => q.id === p.id) : null;
+    const suspect = r && r.suspect;
+    html += `<div class="gcp-row${suspect ? " suspect" : ""}">`
+      + `<span class="gcp-m">${p.measured.toFixed(1)}</span>`
+      + `<span class="gcp-arrow">&rarr;</span>`
+      + `<span class="gcp-k">${p.known.toFixed(1)} m</span>`
+      + (r ? `<span class="gcp-r">${r.residual >= 0 ? "+" : ""}${r.residual.toFixed(1)} m</span>` : "<span class='gcp-r'>-</span>")
+      + `<button class="gcp-drop" data-i="${i}" title="Drop this point">&times;</button>`
+      + "</div>";
+  }
+  if (res.ok) {
+    html += `<div class="gcp-sum">scale &times;${res.factor.toFixed(4)} `
+         + `&middot; residual MAE ${res.mae.toFixed(2)} m</div>`;
+    if (res.disagree) {
+      html += `<div class="gcp-warn">Control points disagree on one scale: `
+           + `median-of-ratios would give &times;${res.alt.toFixed(4)} `
+           + `(${Math.round(res.disagreement * 100)}% apart). Check the points `
+           + `before applying.</div>`;
+    }
+    if (res.nSuspect) {
+      html += `<div class="gcp-warn">${res.nSuspect} point(s) marked suspect — `
+           + `a residual over ${Math.round(GCP_SUSPECT_FRAC * 100)}% is as likely `
+           + `a mistyped height as a bad reconstruction.</div>`;
+    }
+    html += `<button class="gcp-apply" id="gcp-apply">Apply scale &rarr; metric</button>`;
+  } else {
+    html += `<div class="gcp-hint">${res.reason}</div>`;
+  }
+  el.innerHTML = html;
+
+  el.querySelectorAll(".gcp-drop").forEach((b) => {
+    b.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const i = parseInt(b.dataset.i, 10);
+      if (gcpPoints[i] && gcpPoints[i].marker) scene.remove(gcpPoints[i].marker);
+      gcpPoints.splice(i, 1);
+      gcpRender();
+    });
+  });
+  const ap = document.getElementById("gcp-apply");
+  if (ap) {
+    ap.addEventListener("click", () => {
+      const r = gcpSolve(gcpPoints);
+      if (!r.ok) return;
+      if (gcpApplyFactor(r.factor)) {
+        document.getElementById("measure-panel").textContent =
+          `Scene scaled from ${r.points.length} ground control points `
+          + `(x${r.factor.toFixed(4)}, residual MAE ${r.mae.toFixed(2)} m).\n`
+          + `Tier A* — heights are now metric, on the operator's authority `
+          + `rather than an instrument's.`;
+        gcpRender();
+      }
+    });
+  }
+}
+
+function gcpAddPoint(worldPoint, measuredHeight) {
+  const raw = window.prompt(
+    `This building measures ${measuredHeight.toFixed(1)} `
+    + `${(SCENE_META && SCENE_META.height_is_metric) ? "m" : "units"}.\n`
+    + "What is its real height in metres?");
+  if (raw === null) return;
+  const known = parseFloat(raw);
+  if (!isFinite(known) || known <= 0) return;
+
+  const marker = new THREE.Mesh(
+    new THREE.SphereGeometry(Math.max(1.0, camera.position.distanceTo(worldPoint) * 0.004), 12, 12),
+    new THREE.MeshBasicMaterial({ color: 0xffc94d }));
+  marker.position.copy(worldPoint);
+  marker.renderOrder = 4;
+  scene.add(marker);
+
+  gcpPoints.push({
+    id: gcpPoints.length + 1, measured: measuredHeight, known: known,
+    x: worldPoint.x, z: worldPoint.z, marker,
+  });
+  gcpRender();
+}
+
+function setGcpMode(on) {
+  gcpActive = on === undefined ? !gcpActive : on;
+  const b = document.getElementById("btn-gcp");
+  if (b) b.classList.toggle("active", gcpActive);
+  if (gcpActive) {
+    measureActive = false;
+    document.getElementById("btn-measure").classList.remove("active");
+    if (typeof setToolMode === "function") { toolMode = null; }
+    document.getElementById("measure-panel").textContent =
+      "Ground control: click a building whose real height you know.";
+  }
+  gcpRender();
+}
 
 // --- Cinematic flythrough ---------------------------------------------------
 //
@@ -1610,6 +1880,7 @@ function handleToolClick(event) {
 
 document.getElementById("btn-los").addEventListener("click", () => setToolMode("los"));
 document.getElementById("btn-xsec").addEventListener("click", () => setToolMode("xsec"));
+document.getElementById("btn-gcp").addEventListener("click", () => setGcpMode());
 document.getElementById("btn-slope").addEventListener("click", () => setTextureMode("slope"));
 document.getElementById("btn-pdf").addEventListener("click", () => exportReport());
 initXR();
@@ -1818,6 +2089,16 @@ window.__dw = {
   get ready() { return groundMesh !== null; },
   scene, camera, controls, renderer,
   setTextureMode: (m) => setTextureMode(m),
+  // Ground control, exposed for the parity test that checks this port still
+  // agrees with calibration/gcp.py. Two implementations of one estimator will
+  // drift apart silently otherwise, and the whole point of choosing
+  // ratio-of-medians is lost if only one of them uses it.
+  gcpSolve: (pts) => gcpSolve(pts),
+  gcpApplyFactor: (f) => gcpApplyFactor(f),
+  setGcpMode: (on) => setGcpMode(on),
+  get gcpPoints() { return gcpPoints; },
+  get records() { return BUILDING_RECORDS; },
+  get meta() { return SCENE_META; },
   // Presentation controls. The HUD is essential in the app and unwanted in a
   // still, and the fog that gives the live scene depth reads as a wash in a
   // single frame where the viewer cannot orbit to resolve it.

@@ -43,8 +43,55 @@ Coverage is MARGINAL, averaged over the population. It does not promise 90%
 coverage within every subgroup: if low buildings are systematically worse, the
 interval can under-cover there while the overall guarantee still holds. Subgroup
 coverage is therefore measured and reported separately rather than assumed.
+
+FITTED ONCE, COMMITTED, NEVER REFIT PER SCENE
+
+The quantile lives in `calibration/conformal_quantile.json`, fitted by
+`scripts/fit_conformal.py` on a named calibration tile where LiDAR truth
+exists, and committed. The pipeline LOADS it; it does not fit.
+
+That is not a convenience -- it is what makes the guarantee mean anything. A
+quantile refitted per scene would be fitted on that scene's own errors, which
+requires that scene's ground truth. At real evaluation there is none, so a
+per-scene fit is either impossible or silently fitted against something that is
+not truth. Worse, a quantile fitted and then evaluated on the same buildings is
+circular: the quantile is chosen to make coverage come out right, so it always
+does. `load_fitted()` therefore returns the committed artifact or None, and
+every caller must treat None as "no interval", never as "fit one now".
 """
+import json
+import os
+
 import numpy as np
+
+ARTIFACT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "conformal_quantile.json")
+
+
+def load_fitted(path: str = None) -> dict:
+    """
+    The committed quantile, or None when it has not been fitted yet.
+
+    Returns the same dict shape calibrate() produces, plus the provenance
+    fields fit_conformal.py records (which tile, when, held-out coverage), so a
+    caller can say WHERE a published interval came from rather than presenting
+    a bare number.
+
+    Never fits. A missing or malformed artifact returns None, and the caller
+    must then omit the interval -- see the module docstring for why refitting
+    on the scene in hand would destroy the guarantee rather than restore it.
+    """
+    p = path or ARTIFACT_PATH
+    if not os.path.isfile(p):
+        return None
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            cal = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return None
+    if cal.get("q") is None:
+        return None
+    return cal
 
 
 def calibrate(errors: np.ndarray, alpha: float = 0.10,

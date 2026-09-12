@@ -82,6 +82,16 @@ class Building:
     height_method: HeightMethod = HeightMethod.NONE
     provenance: Provenance = Provenance.OBSERVED
 
+    # Conformal prediction interval, from the quantile committed in
+    # calibration/conformal_quantile.json and loaded (never refitted) by the
+    # pipeline. half-width is in METRES and is therefore populated only when
+    # the height itself is metric -- a Tier C height is in an assumed relative
+    # scale, and a metre band on it would be arithmetic on units that do not
+    # exist. coverage_nominal records what the band claims (0.90 for a 90%
+    # interval) so a reader never has to guess which rate a width refers to.
+    interval_half_width_m: Optional[float] = None
+    coverage_nominal: Optional[float] = None
+
     # populated by shadow analysis when available
     shadow_length_px: Optional[float] = None
     sun_elevation_deg: Optional[float] = None
@@ -115,6 +125,9 @@ class Building:
             "height_method": self.height_method.value,
             "provenance": self.provenance.value,
             "is_metric": self.is_metric,
+            "interval_half_width_m": (None if self.interval_half_width_m is None
+                                      else round(float(self.interval_half_width_m), 2)),
+            "coverage_nominal": self.coverage_nominal,
             "roof_type": self.roof_type,
             "roof_confidence": round(float(self.roof_confidence), 3),
             "notes": self.notes,
