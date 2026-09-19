@@ -40,17 +40,44 @@ RGB_DIR = "dfc2019_data/rgb/Track3-RGB-1"
 KNOWN_BAD_TILES: Tuple[str, ...] = ()
 
 
+def benchmark_tiles(truth_dir: str = TRUTH_DIR, n: int = 18) -> List[str]:
+    """The exact tile set rescore_baseline.py scores as this project's
+    independent DFC2019 check -- same selection, same order (sorted stems,
+    first `n`), so this always matches whatever that script is actually
+    scoring, rather than a copy of a list that can drift out of sync with it.
+    """
+    import glob, os
+    stems = sorted({os.path.basename(p)[:7]
+                    for p in glob.glob(os.path.join(truth_dir, "*_DSM.tif"))})
+    return stems[:n]
+
+
 def available_tiles(truth_dir: str = TRUTH_DIR) -> List[str]:
     return L.list_available_tiles(truth_dir)
 
 
-def split_tiles(tiles: List[str], val_every: int = 5) -> Tuple[List[str], List[str]]:
+def split_tiles(tiles: List[str], val_every: int = 5,
+                exclude_benchmark: bool = True,
+                truth_dir: str = TRUTH_DIR) -> Tuple[List[str], List[str]]:
     """Deterministic tile-level split: every `val_every`-th tile (sorted) is
     held out. Splitting by whole tile, not by pixel, is what makes this a
     real generalisation test -- a random pixel-level split would let crops
     from the same tile leak between train and val.
+
+    exclude_benchmark=True (the default, and the only safe choice for
+    anything that might get licensed into production) removes
+    rescore_baseline.py's 18 benchmark tiles from BOTH splits entirely.
+    Measured on the full available set: 14 of those 18 tiles land in what
+    would otherwise be the train split and 4 in val -- so without this
+    exclusion, training on DFC2019 trains directly on the tiles this
+    project's headline RMSE/MAE numbers are scored against. See
+    train_height.py's module docstring for why that number would then be
+    meaningless.
     """
     tiles = sorted(tiles)
+    if exclude_benchmark:
+        bench = set(benchmark_tiles(truth_dir))
+        tiles = [t for t in tiles if t not in bench]
     val = tiles[::val_every]
     train = [t for t in tiles if t not in set(val)]
     return train, val

@@ -34,6 +34,26 @@ is handed the optimal scale, it has not earned the swap.
 
     python train_height.py --smoke                 # 2 tiles, CPU, ~2 min
     python train_height.py --epochs 12 --batch 4   # the real run, on CUDA
+
+--USE-DFC2019 AND THE DFC2019 BENCHMARK
+
+rescore_baseline.py's 18 DFC2019 tiles are this whole module's yardstick --
+"HOW SUCCESS IS JUDGED" above is scored against them, and every RMSE/MAE this
+project has quoted from that script assumes DFC2019 is a dataset the backbone
+has never seen. --use-dfc2019 (dfc2019_height.py) trains on DFC2019 tiles
+directly, which is a real, useful cross-dataset signal for training (GAMUS
+and DFC2019 are different sensors and different ground-truth pipelines, so
+learning from both should generalise better than either alone).
+
+dfc2019_height.split_tiles() excludes rescore_baseline.py's 18 benchmark
+tiles from both its train and val splits by default (exclude_benchmark=True)
+-- measured once, 14 of those 18 landed in what would otherwise be the train
+split and 4 in val, which would have meant training directly on the tiles
+this project's headline accuracy numbers are scored against. Do not call
+split_tiles(exclude_benchmark=False) for anything that might become a
+licensing candidate; it exists only for deliberately measuring how much of
+an HTC run's apparent gain was real generalisation versus memorising tiles
+rescore_baseline.py also uses.
 """
 
 from __future__ import annotations
