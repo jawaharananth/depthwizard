@@ -64,6 +64,15 @@ class DepthBackbone:
     # fine-tuned model beat a baseline that was handed the optimal scale.
     MARKER = "metric_ok.json"
 
+    # HTC-AdaBins checkpoint (train_height.py --htc), a separate lineage from
+    # the plain-regression METRIC_CKPT above -- different architecture
+    # (adaptive bins + head-tail cut, htc_bins.py), different file format (a
+    # plain state_dict, not a transformers checkpoint), and its own licensing
+    # marker so a losing --htc run can never get picked up here either.
+    HTC_CKPT = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "checkpoints", "height_htc_best")
+    HTC_MARKER = "htc_ok.json"
+
     @classmethod
     def metric_available(cls) -> bool:
         return (os.path.isdir(cls.METRIC_CKPT)
@@ -80,18 +89,50 @@ class DepthBackbone:
         except Exception:
             return {}
 
+    @classmethod
+    def htc_available(cls) -> bool:
+        return (os.path.isdir(cls.HTC_CKPT)
+                and os.path.exists(os.path.join(cls.HTC_CKPT, "htc_model.pt"))
+                and os.path.exists(os.path.join(cls.HTC_CKPT, cls.HTC_MARKER)))
+
+    @classmethod
+    def htc_info(cls) -> dict:
+        import json
+        try:
+            with open(os.path.join(cls.HTC_CKPT, cls.HTC_MARKER), encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+
     def __init__(self, model_name: str = "depth-anything/Depth-Anything-V2-Base-hf",
-                 device: str = None, metric: bool = None):
+                 device: str = None, metric: bool = None, htc: bool = None):
         # metric=None means "use the fine-tuned checkpoint if one is there".
         # Explicit True demands it and fails loudly if absent, so a benchmark
         # cannot silently score the stock model and report it as the metric one.
+        #
+        # htc=None means "prefer the HTC-AdaBins checkpoint over the plain
+        # metric one, if BOTH are licensed" -- htc_bins.py's adaptive-bin,
+        # long-tail-aware head is only ever licensed after beating the same
+        # baseline-with-affine the plain regression head has to beat, so a
+        # licensed HTC checkpoint is never a weaker choice than the plain one.
+        # Explicit True/False overrides that preference and fails loudly if
+        # the requested checkpoint is not actually licensed, for the same
+        # benchmark-integrity reason `metric` does.
+        if htc is None:
+            htc = self.htc_available()
+        elif htc and not self.htc_available():
+            raise FileNotFoundError(
+                f"HTC checkpoint not licensed at {self.HTC_CKPT} -- "
+                f"run train_height.py --htc first, and it must beat baseline")
+        self.is_htc = bool(htc)
+
         if metric is None:
-            metric = self.metric_available()
+            metric = (not self.is_htc) and self.metric_available()
         elif metric and not self.metric_available():
             raise FileNotFoundError(
                 f"metric checkpoint not found at {self.METRIC_CKPT} -- "
                 f"run scripts/run_gamus.py first")
-        self.is_metric = bool(metric)
+        self.is_metric = bool(metric) and not self.is_htc
         if self.is_metric:
             model_name = self.METRIC_CKPT
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
@@ -103,16 +144,33 @@ class DepthBackbone:
         except Exception:
             pass
         # Optional iGPU acceleration. Verified against PyTorch on first use and
-        # abandoned if it does not reproduce it; see ov_backend.py.
+        # abandoned if it does not reproduce it; see ov_backend.py. Not
+        # attempted for --htc: HTCDepthModel is our own module, not an
+        # OpenVINO-exportable transformers pipeline.
         self._ov = None
-        self._ov_checked = False
+        self._ov_checked = self.is_htc
         self.model_name = model_name
 
-        self.pipe = pipeline(
-            task="depth-estimation",
-            model=model_name,
-            device=0 if self.device == "cuda" else -1,
-        )
+        if self.is_htc:
+            import htc_bins
+            ck = torch.load(os.path.join(self.HTC_CKPT, "htc_model.pt"),
+                            map_location=self.device, weights_only=False)
+            self._htc_model = htc_bins.HTCDepthModel(
+                model_id=ck["model_id"], n_bins=ck["n_bins"],
+                h_min=ck["h_min"], h_max=ck["h_max"]).to(self.device)
+            self._htc_model.load_state_dict(ck["state_dict"])
+            self._htc_model.eval()
+            # Still needed for image preprocessing (resize/normalise) even
+            # though inference bypasses the HF pipeline entirely.
+            from transformers import AutoImageProcessor
+            self._htc_processor = AutoImageProcessor.from_pretrained(ck["model_id"])
+            self.pipe = None
+        else:
+            self.pipe = pipeline(
+                task="depth-estimation",
+                model=model_name,
+                device=0 if self.device == "cuda" else -1,
+            )
 
     def _try_openvino(self, pixel_values, reference):
         """Bring up the iGPU path once, verifying it against the CPU result."""
@@ -149,6 +207,31 @@ class DepthBackbone:
         The flip is therefore removed. `_orientation_check` asserts the
         invariant per-image so a regression here can't pass silently again.
         """
+        if self.is_htc:
+            # HTCDepthModel is our own module, not a transformers pipeline, so
+            # it is called directly rather than through self.pipe. Its raw
+            # output is already metres (see htc_bins.HTCAdaBinsHead, Eqn. 11),
+            # but predict()'s documented contract -- and every caller's -- is
+            # a relative field in [0,1], so it is normalised the same way the
+            # stock and plain-metric paths already are just below. This keeps
+            # the HTC checkpoint a drop-in alternative under that contract
+            # rather than a third, differently-shaped return type; it does
+            # NOT by itself make build_city_image.py's Tier B "scale = 1.0"
+            # fast path correct for HTC without separately confirming that
+            # path consumes predict()'s existing metric output correctly.
+            px = self._htc_processor(images=image, return_tensors="pt")["pixel_values"]
+            px = px.to(self.device)
+            with torch.inference_mode():
+                out = self._htc_model(px)
+            h, w = image.size[1], image.size[0]
+            height_t = out["height"]
+            if height_t.shape[-2:] != (h, w):
+                height_t = torch.nn.functional.interpolate(
+                    height_t, size=(h, w), mode="bilinear", align_corners=False)
+            height = height_t.squeeze().cpu().numpy().astype(np.float32)
+            rng = height.max() - height.min()
+            return (height - height.min()) / (rng + 1e-8)
+
         # The first call always runs the PyTorch pipeline. That result is both
         # the answer and the reference the accelerated path must reproduce
         # before it is allowed to serve any later call.

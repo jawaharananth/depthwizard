@@ -50,6 +50,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 import gamus
+import htc_bins
 
 MODEL = "depth-anything/Depth-Anything-V2-Base-hf"
 CKPT_DIR = "checkpoints"
@@ -109,8 +110,15 @@ def height_loss(pred: torch.Tensor, target: torch.Tensor,
 # Evaluation
 # ---------------------------------------------------------------------------
 
+def _predict_height(model, rgb: torch.Tensor, htc: bool) -> torch.Tensor:
+    """Height prediction in metres, (B, H, W), regardless of which head is active."""
+    if htc:
+        return model(rgb)["height"].squeeze(1)
+    return model(pixel_values=rgb).predicted_depth
+
+
 @torch.no_grad()
-def evaluate(model, loader, device, allow_affine: bool) -> Dict[str, float]:
+def evaluate(model, loader, device, allow_affine: bool, htc: bool = False) -> Dict[str, float]:
     """Metrics in metres on held-out tiles.
 
     ``allow_affine`` fits the best possible scale+shift before scoring. It is
@@ -126,7 +134,7 @@ def evaluate(model, loader, device, allow_affine: bool) -> Dict[str, float]:
 
     for rgb, agl, valid in loader:
         rgb, agl, valid = rgb.to(device), agl.to(device), valid.to(device)
-        pred = model(pixel_values=rgb).predicted_depth
+        pred = _predict_height(model, rgb, htc)
         if pred.shape[-2:] != agl.shape[-2:]:
             pred = F.interpolate(pred.unsqueeze(1), size=agl.shape[-2:],
                                  mode="bilinear", align_corners=False).squeeze(1)
@@ -190,6 +198,16 @@ def main() -> None:
     ap.add_argument("--out", default=CKPT_DIR)
     ap.add_argument("--smoke", action="store_true",
                     help="tiny run to prove the loop works before committing a GPU")
+    ap.add_argument("--htc", action="store_true",
+                    help="use the HTC-AdaBins head (htc_bins.py) instead of plain "
+                         "scalar regression -- see htc_bins.py for why")
+    ap.add_argument("--n-bins", type=int, default=64,
+                    help="adaptive bin count for --htc (ignored otherwise)")
+    ap.add_argument("--use-dfc2019", action="store_true",
+                    help="also train on DFC2019 (dfc2019_height.py) -- a second, "
+                         "independently-collected dataset (different sensor, "
+                         "different ground-truth pipeline), not a bigger sample "
+                         "of GAMUS's own distribution")
     a = ap.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -199,34 +217,66 @@ def main() -> None:
     print(f"device: {device}"
           + (f"  ({torch.cuda.get_device_name(0)})" if device == "cuda" else ""))
 
-    train = gamus.GamusHeight(split="train", crop=a.crop, augment=True,
-                              crops_per_tile=a.crops_per_tile)
+    gamus_train = gamus.GamusHeight(split="train", crop=a.crop, augment=True,
+                                    crops_per_tile=a.crops_per_tile)
     try:
-        val = gamus.GamusHeight(split="val", crop=a.crop, augment=False,
-                                crops_per_tile=1)
+        gamus_val = gamus.GamusHeight(split="val", crop=a.crop, augment=False,
+                                      crops_per_tile=1)
     except FileNotFoundError:
         print("no val split downloaded -- run: python gamus.py download --split val --limit 40")
         raise SystemExit(1)
 
     if a.smoke:
-        train.stems = train.stems[:2]
-        val.stems = val.stems[:2]
-    print(f"train {len(train.stems)} tiles ({len(train)} crops)   "
-          f"val {len(val.stems)} tiles")
+        gamus_train.stems = gamus_train.stems[:2]
+        gamus_val.stems = gamus_val.stems[:2]
+
+    train_sets, val_sets = [gamus_train], [gamus_val]
+    n_gamus_train, n_gamus_val = len(gamus_train.stems), len(gamus_val.stems)
+    n_dfc_train, n_dfc_val = 0, 0
+
+    if a.use_dfc2019:
+        import dfc2019_height as dfc
+        dfc_train_stems, dfc_val_stems = dfc.split_tiles(dfc.available_tiles())
+        if a.smoke:
+            dfc_train_stems, dfc_val_stems = dfc_train_stems[:2], dfc_val_stems[:2]
+        dfc_train = dfc.DFC2019Height(dfc_train_stems, crop=a.crop, augment=True,
+                                      crops_per_tile=a.crops_per_tile)
+        dfc_val = dfc.DFC2019Height(dfc_val_stems, crop=a.crop, augment=False,
+                                    crops_per_tile=1)
+        train_sets.append(dfc_train)
+        val_sets.append(dfc_val)
+        n_dfc_train, n_dfc_val = len(dfc_train_stems), len(dfc_val_stems)
+
+    from torch.utils.data import ConcatDataset
+    train = train_sets[0] if len(train_sets) == 1 else ConcatDataset(train_sets)
+    val = val_sets[0] if len(val_sets) == 1 else ConcatDataset(val_sets)
+
+    print(f"train: {n_gamus_train} GAMUS tiles"
+          + (f" + {n_dfc_train} DFC2019 tiles" if a.use_dfc2019 else "")
+          + f"  ({len(train)} crops)")
+    print(f"val:   {n_gamus_val} GAMUS tiles"
+          + (f" + {n_dfc_val} DFC2019 tiles" if a.use_dfc2019 else ""))
 
     dl_train = DataLoader(train, batch_size=a.batch, shuffle=True,
                           num_workers=a.workers, pin_memory=(device == "cuda"),
                           drop_last=True)
     dl_val = DataLoader(val, batch_size=1, shuffle=False, num_workers=0)
 
-    from transformers import AutoModelForDepthEstimation
-    model = AutoModelForDepthEstimation.from_pretrained(MODEL).to(device)
+    if a.htc:
+        model = htc_bins.HTCDepthModel(model_id=MODEL, n_bins=a.n_bins).to(device)
+    else:
+        from transformers import AutoModelForDepthEstimation
+        model = AutoModelForDepthEstimation.from_pretrained(MODEL).to(device)
 
     # Baseline first, on the same held-out tiles, WITH its best-fit affine.
     # Establishing the bar before training means the comparison cannot be
-    # rationalised afterwards.
+    # rationalised afterwards. For --htc the "baseline" is the same untrained
+    # HTC head (random bins), which is not a meaningful number on its own --
+    # it exists so the printed comparison at the end has the same shape as
+    # the plain-regression run, not because an untrained bin head deserves
+    # an affine fit.
     print("\nbaseline (pretrained, best-fit affine granted):")
-    base = evaluate(model, dl_val, device, allow_affine=True)
+    base = evaluate(model, dl_val, device, allow_affine=True, htc=a.htc)
     print("  " + _fmt("baseline", base))
 
     # Two learning rates: the DPT head is being repurposed from relative depth
@@ -239,8 +289,19 @@ def main() -> None:
         [{"params": head, "lr": a.lr_head},
          {"params": backbone, "lr": a.lr_backbone}], weight_decay=1e-4)
     steps = max(1, (len(dl_train) // a.accum) * a.epochs)
-    sched = torch.optim.lr_scheduler.OneCycleLR(
-        opt, max_lr=[a.lr_head, a.lr_backbone], total_steps=steps, pct_start=0.25)
+    # OneCycleLR divides the schedule into an up-phase of
+    # round(pct_start * total_steps) steps and a down-phase of the rest; at
+    # total_steps=4, pct_start=0.25 that up-phase rounds to exactly 0 steps,
+    # and OneCycleLR's own get_lr() divides by that phase's (zero) width on
+    # the very first step. Only reachable with very few steps -- a smoke run
+    # or a tiny --use-dfc2019 subset -- so a real training run never hits it,
+    # but --smoke exists specifically to be run before every real one and
+    # must not crash. Below that floor, skip the schedule; a few dozen steps
+    # of a fixed head/backbone LR does not need annealing anyway.
+    sched = None
+    if steps >= 8:
+        sched = torch.optim.lr_scheduler.OneCycleLR(
+            opt, max_lr=[a.lr_head, a.lr_backbone], total_steps=steps, pct_start=0.25)
     scaler = torch.amp.GradScaler(device, enabled=(device == "cuda"))
 
     os.makedirs(a.out, exist_ok=True)
@@ -257,12 +318,22 @@ def main() -> None:
                                agl.to(device, non_blocking=True),
                                valid.to(device, non_blocking=True))
             with torch.amp.autocast(device, enabled=(device == "cuda")):
-                pred = model(pixel_values=rgb).predicted_depth
-                if pred.shape[-2:] != agl.shape[-2:]:
-                    pred = F.interpolate(pred.unsqueeze(1), size=agl.shape[-2:],
-                                         mode="bilinear",
-                                         align_corners=False).squeeze(1)
-                parts = height_loss(pred.float(), agl, valid)
+                if a.htc:
+                    out = model(rgb)
+                    if out["height"].shape[-2:] != agl.shape[-2:]:
+                        for k in ("height", "probs", "gate_logit"):
+                            out[k] = F.interpolate(
+                                out[k].float(), size=agl.shape[-2:],
+                                mode="bilinear", align_corners=False)
+                    parts_loss, parts = htc_bins.htc_dc_loss(out, agl, valid)
+                    parts["loss"] = parts_loss
+                else:
+                    pred = model(pixel_values=rgb).predicted_depth
+                    if pred.shape[-2:] != agl.shape[-2:]:
+                        pred = F.interpolate(pred.unsqueeze(1), size=agl.shape[-2:],
+                                             mode="bilinear",
+                                             align_corners=False).squeeze(1)
+                    parts = height_loss(pred.float(), agl, valid)
             scaler.scale(parts["loss"] / a.accum).backward()
 
             if (i + 1) % a.accum == 0:
@@ -271,36 +342,56 @@ def main() -> None:
                 scaler.step(opt)
                 scaler.update()
                 opt.zero_grad(set_to_none=True)
-                if sched.last_epoch < steps - 1:
+                if sched is not None and sched.last_epoch < steps - 1:
                     sched.step()
 
             run += parts["loss"].item() * rgb.size(0)
             seen += rgb.size(0)
             if i % 20 == 0:
-                print(f"  ep{ep} {i}/{len(dl_train)}  loss {run/max(seen,1):.3f}"
-                      f"  (l1 {parts['l1'].item():.2f}  grad {parts['grad'].item():.2f})",
-                      flush=True)
+                if a.htc:
+                    print(f"  ep{ep} {i}/{len(dl_train)}  loss {run/max(seen,1):.3f}"
+                          f"  (l1 {parts['l1']:.2f}  chamfer {parts['chamfer']:.2f}"
+                          f"  htc {parts['htc']:.2f}  dist {parts['dist']:.2f})",
+                          flush=True)
+                else:
+                    print(f"  ep{ep} {i}/{len(dl_train)}  loss {run/max(seen,1):.3f}"
+                          f"  (l1 {parts['l1'].item():.2f}  grad {parts['grad'].item():.2f})",
+                          flush=True)
 
         # No affine for the fine-tuned model: it must produce metres unaided.
-        m = evaluate(model, dl_val, device, allow_affine=False)
+        m = evaluate(model, dl_val, device, allow_affine=False, htc=a.htc)
         history.append({"epoch": ep, "train_loss": run / max(seen, 1), **m})
         print(f"ep{ep} [{time.time()-t0:.0f}s] train {run/max(seen,1):.3f}   "
               + _fmt("val", m))
 
         if m and m["mae_m"] < best:
             best = m["mae_m"]
-            ckpt = os.path.join(a.out, "height_best")
-            model.save_pretrained(ckpt)
-            # The image processor travels with the weights. Without it the
-            # checkpoint cannot be loaded through transformers' pipeline at all
-            # -- save_pretrained on the model alone writes no
-            # preprocessor_config.json, and the load fails at inference time
-            # rather than at save time.
-            try:
-                from transformers import AutoImageProcessor
-                AutoImageProcessor.from_pretrained(MODEL).save_pretrained(ckpt)
-            except Exception as e:
-                print(f"    WARNING: could not save the image processor ({e})")
+            if a.htc:
+                # Not a transformers.PreTrainedModel -- it's our own wrapper
+                # (backbone/neck/conv1/conv2 borrowed from one, HTCAdaBinsHead
+                # bolted on), so it has no save_pretrained. A plain state_dict
+                # plus the constructor args are enough to reload it exactly
+                # (see htc_bins.HTCDepthModel.__init__).
+                ckpt = os.path.join(a.out, "height_htc_best")
+                os.makedirs(ckpt, exist_ok=True)
+                torch.save({"state_dict": model.state_dict(),
+                           "model_id": MODEL, "n_bins": a.n_bins,
+                           "h_min": model.htc_head.h_min,
+                           "h_max": model.htc_head.h_max},
+                          os.path.join(ckpt, "htc_model.pt"))
+            else:
+                ckpt = os.path.join(a.out, "height_best")
+                model.save_pretrained(ckpt)
+                # The image processor travels with the weights. Without it the
+                # checkpoint cannot be loaded through transformers' pipeline at
+                # all -- save_pretrained on the model alone writes no
+                # preprocessor_config.json, and the load fails at inference
+                # time rather than at save time.
+                try:
+                    from transformers import AutoImageProcessor
+                    AutoImageProcessor.from_pretrained(MODEL).save_pretrained(ckpt)
+                except Exception as e:
+                    print(f"    WARNING: could not save the image processor ({e})")
             print(f"    saved (best MAE {best:.2f} m)")
 
     report = {"model": MODEL, "device": device, "epochs": a.epochs,
@@ -312,18 +403,56 @@ def main() -> None:
 
     # LICENSE THE CHECKPOINT, OR DO NOT.
     #
-    # The marker is what the pipeline reads before it will use these weights,
+    # The marker is what depth_model.py reads before it will use a checkpoint,
     # and it is written only when the fine-tuned model beat a baseline that was
     # handed the optimal affine. Weights from a losing run stay on disk for
     # inspection and are never picked up, because a run that failed should not
     # quietly change every build that follows it.
-    ckpt = os.path.join(a.out, "height_best")
-    marker = os.path.join(ckpt, "metric_ok.json")
-    if os.path.exists(marker):
-        os.remove(marker)
     won = bool(history and base and history[-1].get("mae_m") is not None
                and history[-1]["mae_m"] < base["mae_m"])
-    if won and os.path.isdir(ckpt):
+
+    if a.htc:
+        # A different marker name and directory from the plain-regression
+        # path (metric_ok.json / height_best) -- the two checkpoints are
+        # loaded through completely different code (HTCDepthModel's own
+        # state_dict vs. AutoModelForDepthEstimation.from_pretrained) and
+        # depth_model.py must not confuse a plain-regression run for an HTC
+        # one or vice versa.
+        htc_ckpt = os.path.join(a.out, "height_htc_best")
+        htc_marker = os.path.join(htc_ckpt, "htc_ok.json")
+        if os.path.exists(htc_marker):
+            os.remove(htc_marker)
+        if won and os.path.isdir(htc_ckpt):
+            with open(htc_marker, "w", encoding="utf-8") as f:
+                json.dump({
+                    "licensed": True,
+                    "units": "metres (AGL) predicted directly",
+                    "baseline_mae_m_with_affine": round(base["mae_m"], 3),
+                    "finetuned_mae_m_no_affine": round(history[-1]["mae_m"], 3),
+                    "baseline_corr": round(base["corr"], 4),
+                    "finetuned_corr": round(history[-1]["corr"], 4),
+                    "epochs": a.epochs, "device": device, "n_bins": a.n_bins,
+                    "trained_tiles": n_gamus_train + n_dfc_train,
+                    "used_dfc2019": a.use_dfc2019,
+                    "note": "depth_model.py reads this file to decide whether "
+                            "to load the HTC-AdaBins checkpoint instead of the "
+                            "stock or plain-regression backbone. Written only "
+                            "because this run beat a baseline given the "
+                            "optimal affine scale.",
+                }, f, indent=2)
+            print("")
+            print(f"  HTC CHECKPOINT LICENSED -> {htc_marker}")
+        else:
+            print("")
+            print(f"  --htc run finished (did not beat baseline on MAE). Weights "
+                  f"are in {htc_ckpt}/htc_model.pt but NOT licensed -- "
+                  "no htc_ok.json written.")
+
+    ckpt = os.path.join(a.out, "height_best")
+    marker = os.path.join(ckpt, "metric_ok.json")
+    if not a.htc and os.path.exists(marker):
+        os.remove(marker)
+    if not a.htc and won and os.path.isdir(ckpt):
         with open(marker, "w", encoding="utf-8") as f:
             json.dump({
                 "licensed": True,
@@ -333,7 +462,7 @@ def main() -> None:
                 "baseline_corr": round(base["corr"], 4),
                 "finetuned_corr": round(history[-1]["corr"], 4),
                 "epochs": a.epochs, "device": device,
-                "trained_tiles": len(train.stems),
+                "trained_tiles": n_gamus_train + n_dfc_train,
                 "note": "The pipeline reads this file to decide whether to skip "
                         "its Tier C scale assumption. Written only because the "
                         "fine-tuned model beat a baseline given the optimal scale.",
@@ -342,7 +471,7 @@ def main() -> None:
         print(f"  CHECKPOINT LICENSED -> {marker}")
         print("  Builds will now predict metres directly and skip the "
               "'tallest ~ 40 m' assumption.")
-    elif os.path.isdir(ckpt):
+    elif not a.htc and os.path.isdir(ckpt):
         print("")
         print("  Checkpoint NOT licensed: no metric_ok.json written, so the "
               "pipeline will keep using the stock backbone.")
