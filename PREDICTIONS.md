@@ -99,7 +99,7 @@ dataset the model never trained on):
 
 | | RMSE | n buildings |
 |---|---|---|
-| this project (GAMUS -> DFC2019) | **3.063 m** | 461 |
+| this project (GAMUS -> DFC2019), 18 tiles | 3.063 m | 461 |
 | zaidnansari2011 (DFC2019+GAMUS -> held-out DC) | 3.464 m | 3,090 |
 
 Ahead on the number itself, but honestly: 461 buildings is a much smaller
@@ -110,3 +110,25 @@ worth investigating what is specifically wrong with those two scenes rather
 than averaging past them. The +0.900m systematic bias is also a real,
 fixable finding this entry does not explain yet -- not present in the
 comparison's own reported near-zero bias.
+
+**UPDATE (2026-09-19, same day, expanded sample)**: the 461-building result
+did NOT hold up. Expanded to 50 of the 54 available JAX tiles (1,063
+buildings, more than double the earlier sample):
+
+| | RMSE | MAE | bias | n buildings |
+|---|---|---|---|---|
+| 18 tiles (first result) | 3.063 m | 2.306 m | +0.900 m | 461 |
+| 50 tiles (expanded) | **4.219 m** | **2.998 m** | **+1.465 m** | 1,063 |
+| zaidnansari2011 | 3.464 m | -- | -- | 3,090 |
+
+**We are now behind the comparison number, not ahead of it.** The original
+18-tile benchmark set turns out to have been an easier subset than the
+broader tile population -- exactly the outcome the "smaller sample, wider
+confidence interval" caveat above warned about, now confirmed rather than
+hypothetical. The over-prediction bias also got worse with more data
+(+0.900m -> +1.465m), meaning the tendency to guess buildings taller than
+they are is not a small-sample artifact -- it gets more pronounced as more
+varied buildings are included, which points at a real, general calibration
+problem rather than noise. Any earlier claim in this project's materials
+that cited the 3.063m / "ahead of 3.464m" number is now superseded and
+should not be repeated without this correction attached.
