@@ -63,3 +63,30 @@ calibration reads) -- consistent with urban's improvement -- but did not
 account for whatever is making hilly and sparse worse, which this entry does
 not have an explanation for yet. Recorded honestly rather than only
 reporting the part that matched.
+
+---
+
+## 2026-09-19 — finding, not a prediction: the DFC2019 rescore was already a cross-domain result
+
+Not pre-registered because it was not a test being designed -- it was
+recognizing what an existing measurement already was. Recorded here anyway
+because it directly reframes the numbers two entries above.
+
+`checkpoints/height_best/metric_ok.json` shows the depth backbone currently
+in production (`DepthBackbone.metric_available() == True`) was fine-tuned on
+**400 GAMUS tiles**, 12 epochs, and licensed because it beat a baseline given
+the optimal affine scale (MAE 2.439m -> 1.444m, correlation 0.784 -> 0.912,
+measured on GAMUS's own held-out validation split).
+
+Every rescore_baseline.py / per_building_metric.py number in this file and
+in `dashboard/` is that same GAMUS-trained checkpoint scored against
+DFC2019 -- a different sensor (WorldView-3, not GAMUS's source), different
+cities (Jacksonville/Omaha vs. GAMUS's PHL/NYC/DC), different ground-truth
+pipeline (airborne LiDAR vs. GAMUS's own AGL), never seen during training.
+That is a real cross-domain generalisation test, structurally the same claim
+zaidnansari2011/sih2026-depthwizard makes with their DFC2019-trained,
+held-out-DC-block result (1.788m per-building) -- this project already had
+the equivalent, just never stated it as one. The whole-tile RMSE (3.74m,
+entry above) and the per-building RMSE (see per_building_metric.py, run
+2026-09-19) should both be reported with this framing explicitly: trained on
+GAMUS, tested cross-domain on DFC2019, never touched in training.
