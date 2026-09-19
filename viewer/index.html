@@ -123,13 +123,17 @@
 <script type="importmap">
 {
   "imports": {
-    "three": "https://unpkg.com/three@0.180.0/build/three.webgpu.js",
-    "three/webgpu": "https://unpkg.com/three@0.180.0/build/three.webgpu.js",
-    "three/tsl": "https://unpkg.com/three@0.180.0/build/three.tsl.js",
-    "three/addons/": "https://unpkg.com/three@0.180.0/examples/jsm/"
+    "three": "./vendor/three@0.180.0/build/three.webgpu.js",
+    "three/webgpu": "./vendor/three@0.180.0/build/three.webgpu.js",
+    "three/tsl": "./vendor/three@0.180.0/build/three.tsl.js",
+    "three/addons/": "./vendor/three@0.180.0/examples/jsm/"
   }
 }
 </script>
+<!-- Vendored locally under viewer/vendor/ so this page opens and renders with
+     zero internet access -- the CDN version this replaced (unpkg.com) meant
+     the viewer could not render at all offline or on a network that blocks
+     that host, silently, with no error message a viewer would see. -->
 
 <script type="module">
 import * as THREE from "three";
@@ -1008,8 +1012,14 @@ Promise.all([
       camera.updateProjectionMatrix();
       controls.update();
 
-      scene.fog.near = maxDim * 0.35;
-      scene.fog.far = maxDim * 2.2;
+      // Near/far pushed well past the scene's own extent: at the old 0.35/2.2
+      // factors, the default camera (~1.0x maxDim out) had most of the city
+      // itself sitting inside the fogged band, not just the horizon beyond
+      // it -- confirmed on a real build, where the ground texture and most
+      // buildings were washed out grey even at the default view. Fog should
+      // hide the ground plane's far edge, not the model.
+      scene.fog.near = maxDim * 1.3;
+      scene.fog.far = maxDim * 4.5;
 
       // Shadow camera: centered on the mesh (not the world origin), frustum
       // sized to the actual scene extent with margin, near/far spanning the
@@ -1035,10 +1045,29 @@ Promise.all([
         `bbox: ${size.x.toFixed(0)} x ${size.y.toFixed(0)} x ${size.z.toFixed(0)} m`,
       ];
       if (SCENE_META) {
+        // Single-image builds (build_city_image.py) carry no tile/view/
+        // off-nadir metadata -- those only exist on the multi-view archive
+        // path. Printing them anyway renders literal "undefined"/"null" in
+        // the HUD, which is worse than omitting a line the scene never had.
+        if (SCENE_META.tile !== undefined && SCENE_META.view !== undefined) {
+          lines.push(`tile ${SCENE_META.tile} - ${SCENE_META.view}`);
+        } else if (SCENE_META.source_image) {
+          const name = String(SCENE_META.source_image).split(/[\\/]/).pop();
+          lines.push(`source: ${name}`);
+        }
+        if (SCENE_META.off_nadir_deg != null || SCENE_META.gsd_m != null) {
+          const bits = [];
+          if (SCENE_META.off_nadir_deg != null) bits.push(`${SCENE_META.off_nadir_deg}° off-nadir`);
+          if (SCENE_META.gsd_m != null) bits.push(`${SCENE_META.gsd_m} m/px`);
+          lines.push(bits.join(", "));
+        }
+        if (SCENE_META.sun_elevation_deg != null || SCENE_META.sun_azimuth_deg != null) {
+          const bits = [];
+          if (SCENE_META.sun_elevation_deg != null) bits.push(`${SCENE_META.sun_elevation_deg}° el`);
+          if (SCENE_META.sun_azimuth_deg != null) bits.push(`${SCENE_META.sun_azimuth_deg}° az (estimated from shadows)`);
+          lines.push(`sun ${bits.join(" / ")}`);
+        }
         lines.push(
-          `tile ${SCENE_META.tile} - ${SCENE_META.view}`,
-          `${SCENE_META.off_nadir_deg}° off-nadir, ${SCENE_META.gsd_m} m/px`,
-          `sun ${SCENE_META.sun_elevation_deg}° el / ${SCENE_META.sun_azimuth_deg}° az`,
           `heights: tier ${SCENE_META.tier}` +
             (SCENE_META.shadow_samples ? ` (${SCENE_META.shadow_samples} shadows)` : ""),
           `${SCENE_META.buildings_extruded} buildings extruded`,
