@@ -42,4 +42,24 @@ Baseline being compared against (2026-09-04):
 | sparse  | 2.039 | 0.744 | 2,115,114 |
 | overall | 3.872 | 2.012 | 4,626,527 |
 
-**Result**: pending — see entry below once `rescore_baseline.py` finishes.
+**Result (2026-09-19, same day)**: **prediction correct on the aggregate, but understated how much the per-terrain breakdown actually moved.**
+
+| terrain | rmse_m (09-04) | rmse_m (09-19) | delta |
+|---|---|---|---|
+| urban   | 6.487 | 5.398 | -1.089 (improved) |
+| hilly   | 1.431 | 1.819 | +0.388 (worse) |
+| forest  | 5.903 | 5.557 | -0.346 (improved) |
+| sparse  | 2.039 | 2.646 | +0.607 (worse) |
+| overall | 3.872 | 3.743 | -0.129 (improved) |
+
+The overall RMSE landed at 3.74 m, inside the predicted 3.6-3.9 m band, and
+did not get worse -- that part of the prediction holds. But calling it "flat
+to slightly improved" undersold what happened underneath: urban and forest
+both improved by more than 0.3 m while hilly and sparse both got
+measurably worse, and those two pairs partly cancel out in the aggregate.
+The prediction reasoned only about the shadow-calibration >80-degree fix,
+which should affect urban scenes (buildings cast the shadows that
+calibration reads) -- consistent with urban's improvement -- but did not
+account for whatever is making hilly and sparse worse, which this entry does
+not have an explanation for yet. Recorded honestly rather than only
+reporting the part that matched.
