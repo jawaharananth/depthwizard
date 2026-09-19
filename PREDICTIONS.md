@@ -90,3 +90,23 @@ the equivalent, just never stated it as one. The whole-tile RMSE (3.74m,
 entry above) and the per-building RMSE (see per_building_metric.py, run
 2026-09-19) should both be reported with this framing explicitly: trained on
 GAMUS, tested cross-domain on DFC2019, never touched in training.
+
+**Per-building result (2026-09-19)**: 461 buildings, all 18 tiles scored --
+RMSE 3.063m, MAE 2.306m, bias +0.900m (systematic over-prediction, not
+random scatter). Direct comparison to zaidnansari2011's reported headline
+number, same kind of metric (per-building median height vs LiDAR, on a
+dataset the model never trained on):
+
+| | RMSE | n buildings |
+|---|---|---|
+| this project (GAMUS -> DFC2019) | **3.063 m** | 461 |
+| zaidnansari2011 (DFC2019+GAMUS -> held-out DC) | 3.464 m | 3,090 |
+
+Ahead on the number itself, but honestly: 461 buildings is a much smaller
+sample than 3,090, so the confidence interval on this result is wider than
+theirs, and two tiles with small building counts (JAX_020, 7 buildings,
+7.66m; JAX_068, 10 buildings, 7.33m) are pulling the aggregate up --
+worth investigating what is specifically wrong with those two scenes rather
+than averaging past them. The +0.900m systematic bias is also a real,
+fixable finding this entry does not explain yet -- not present in the
+comparison's own reported near-zero bias.
