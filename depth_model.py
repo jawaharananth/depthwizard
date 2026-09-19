@@ -186,11 +186,28 @@ class DepthBackbone:
         if back.ok and back.verify(reference, pixel_values.numpy()):
             self._ov = back
 
-    def predict(self, image: Image.Image) -> np.ndarray:
+    def predict(self, image: Image.Image, raw_metric: bool = False) -> np.ndarray:
         """
         Returns a relative HEIGHT field in [0,1] -- higher value means higher
         elevation. Note this is height, not depth: the two are opposite, and
         confusing them turns every building into a pit.
+
+        raw_metric=True changes that contract, ONLY when self.is_metric: the
+        min-max normalisation below is skipped and the model's own metres are
+        returned directly, unmodified. Without this, predict() throws the
+        metric checkpoint's whole reason for existing away -- confirmed
+        empirically this session: DepthBackbone(metric=True).predict(img)
+        returned range (0.0, 1.0), identical to the stock model, despite
+        metric_ok.json recording a real MAE of 1.444 m for this exact
+        checkpoint when scored WITHOUT this normalisation (train_height.py's
+        own evaluate()). Every caller that built a metric-aware branch on top
+        of the old predict() -- build_city_image.py's `depth_is_metric` path
+        (scale = 1.0 applied to an already-[0,1] field), rescore_baseline.py's
+        predict_ndsm() (shadow-calibrates a metric model's output as if it
+        were the stock relative field) -- was therefore never actually
+        receiving metres, regardless of which checkpoint was loaded. Existing
+        callers that do not pass raw_metric=True are completely unaffected;
+        this defaults to False so nothing changes for them.
 
         Depth Anything V2 emits INVERSE depth (disparity-like): larger value =
         nearer the camera. In a nadir satellite view "nearer the camera" is
@@ -229,8 +246,33 @@ class DepthBackbone:
                 height_t = torch.nn.functional.interpolate(
                     height_t, size=(h, w), mode="bilinear", align_corners=False)
             height = height_t.squeeze().cpu().numpy().astype(np.float32)
+            if raw_metric and self.is_metric:
+                return height
             rng = height.max() - height.min()
             return (height - height.min()) / (rng + 1e-8)
+
+        # raw_metric bypasses transformers' depth-estimation PIPELINE entirely
+        # and calls the model directly instead -- the pipeline's own
+        # `result["depth"]` is NOT the model's raw regression output, it is a
+        # visualisation-ready rescale (empirically confirmed this session:
+        # identical (0, 255) min/max range for two completely unrelated
+        # images, an 8-bit-image-shaped coincidence that is not a
+        # coincidence). train_height.py's own evaluate() already calls the
+        # model this same direct way for exactly that reason. Going through
+        # self.pipe(image) for a metric checkpoint was silently handing back
+        # an 8-bit-rescaled image instead of metres, on top of predict()'s
+        # own [0,1] normalisation -- two separate ways the real scale was
+        # being thrown away, not one.
+        if self._ov is None and raw_metric and self.is_metric:
+            px = self.pipe.image_processor(images=image, return_tensors="pt")["pixel_values"]
+            with torch.inference_mode():
+                raw = self.pipe.model(pixel_values=px).predicted_depth
+            w, h = image.size
+            if raw.ndim == 3:
+                raw = raw.unsqueeze(1)
+            raw = torch.nn.functional.interpolate(raw, size=(h, w), mode="bicubic",
+                                                  align_corners=False)
+            return raw.squeeze().cpu().numpy().astype(np.float32)
 
         # The first call always runs the PyTorch pipeline. That result is both
         # the answer and the reference the accelerated path must reproduce
@@ -264,14 +306,26 @@ class DepthBackbone:
         t = torch.nn.functional.interpolate(t, size=(h, w), mode="bicubic",
                                             align_corners=False)
         height = t.squeeze().numpy().astype(np.float32)
+        if raw_metric and self.is_metric:
+            return height
         rng = height.max() - height.min()
         return (height - height.min()) / (rng + 1e-8)
 
     def predict_tiled(self, image: Image.Image, tile: int = 768,
-                      overlap: float = 0.5, verbose: bool = False) -> np.ndarray:
+                      overlap: float = 0.5, verbose: bool = False,
+                      raw_metric: bool = False) -> np.ndarray:
         """
         Height field from overlapping crops, merged onto the whole-image
         prediction.
+
+        raw_metric=True: see predict()'s docstring. The affine per-crop
+        alignment below is unaffected either way -- fitting a local crop's
+        scale and shift onto the whole-image reference is the same fit
+        whether both are in [0,1] units or both are in metres, since it is a
+        relative correction between two predictions of the same kind. Only
+        the FINAL min-max normalisation at the end of this function needs the
+        same raw_metric guard predict() already has, or metres would survive
+        every crop only to be thrown away in the last line.
 
         Why this exists: the backbone resizes whatever it is given to ~518px
         internally, so a 2048px tile is downsampled 4x before it ever sees the
@@ -292,7 +346,7 @@ class DepthBackbone:
         edges, where the model is least reliable and where a hard cut would
         leave a ridge.
         """
-        base = self.predict(image)
+        base = self.predict(image, raw_metric=raw_metric)
         h, w = base.shape
         stride = max(1, int(tile * (1.0 - overlap)))
 
@@ -317,7 +371,7 @@ class DepthBackbone:
             for j, x in enumerate(xs):
                 th, tw = min(tile, h), min(tile, w)
                 crop = arr[y:y + th, x:x + tw]
-                local = self.predict(Image.fromarray(crop))
+                local = self.predict(Image.fromarray(crop), raw_metric=raw_metric)
                 ref = base[y:y + th, x:x + tw]
                 # Affine-align local to the global reference. Fit on the
                 # reference's own spread; a near-constant crop (uniform field,
@@ -332,6 +386,8 @@ class DepthBackbone:
                     print(f"    tile {i*len(xs)+j+1}/{total}", flush=True)
 
         merged = np.where(wsum > 1e-6, acc / np.maximum(wsum, 1e-6), base)
+        if raw_metric and self.is_metric:
+            return merged.astype(np.float32)
         rng = merged.max() - merged.min()
         return ((merged - merged.min()) / (rng + 1e-8)).astype(np.float32)
 

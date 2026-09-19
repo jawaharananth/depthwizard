@@ -75,6 +75,25 @@ def predict_ndsm(tile, model, tiled=True, out_px=1024):
     img = o["image"]
     pil = Image.fromarray(img)
 
+    # A metric checkpoint's predict()/predict_tiled() only returns real
+    # metres when explicitly asked for them (see depth_model.py's raw_metric
+    # -- confirmed this session that without it, EVERY caller, this one
+    # included, was silently receiving an 8-bit-rescaled or [0,1]-normalised
+    # field and then shadow-calibrating THAT as if it were the stock
+    # relative depth, discarding the metric checkpoint's real learned scale
+    # entirely). When the model is metric, skip shadow calibration outright
+    # -- the model already predicts metres directly, so re-deriving a scale
+    # from shadows would be recalibrating a number that does not need it,
+    # using a noisier signal than the one already measured on GAMUS.
+    if getattr(model, "is_metric", False):
+        height = (model.predict_tiled(pil, raw_metric=True) if tiled
+                  else model.predict(pil, raw_metric=True))
+        labels, _ = seg.segment(img, height=height)
+        refined = dsm_refine.refine_dsm(height, img)
+        terrain = dtm_mod.estimate_dtm(refined, labels)
+        cal = {"scale_m_per_unit": 1.0, "n": 0, "source": "metric_model_direct"}
+        return np.maximum(refined - terrain, 0.0), o, True, cal
+
     height = model.predict_tiled(pil) if tiled else model.predict(pil)
     labels, _ = seg.segment(img, height=height)
     refined = dsm_refine.refine_dsm(height, img)
