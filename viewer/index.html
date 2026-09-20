@@ -1138,6 +1138,26 @@ function sampleRawAt(ctx, size, uv) {
   return d;
 }
 
+function realCoordsAt(worldX, worldZ) {
+  // Same convention the building-record matcher above already uses (see its
+  // comment on scene X/east, Z/south): scene coordinates are the real map
+  // coordinates minus the scene's own origin corner, so the inverse is a
+  // plain translation back -- no re-derivation, just undoing that shift.
+  // origin_x/origin_y come directly (build_city.py scenes) or from the
+  // affine transform's c/f coefficients (build_city_image.py scenes, added
+  // 2026-09-20 specifically so this could exist).
+  if (!SCENE_META) return null;
+  let originX = SCENE_META.origin_x, originY = SCENE_META.origin_y;
+  if ((originX === undefined || originY === undefined) && SCENE_META.affine_transform) {
+    originX = SCENE_META.affine_transform[2];
+    originY = SCENE_META.affine_transform[5];
+  }
+  if (originX === undefined || originY === undefined || originX === null || originY === null) {
+    return null;   // this scene genuinely has no georeferencing -- say nothing, don't guess
+  }
+  return { easting: worldX + originX, northing: worldZ + originY };
+}
+
 function confidenceAt(uv) {
   const d = sampleRawAt(confRawCtx, confRawSize, uv);
   if (!d) return null;
@@ -1165,20 +1185,27 @@ hoverBadge.style.cssText =
 document.body.appendChild(hoverBadge);
 
 renderer.domElement.addEventListener("pointermove", (e) => {
-  if (confRawCtx === null && errRawCtx === null) return;   // nothing to show yet
   pointer.x = (e.clientX / window.innerWidth) * 2 - 1;
   pointer.y = -(e.clientY / window.innerHeight) * 2 + 1;
   raycaster.setFromCamera(pointer, camera);
   const hits = raycaster.intersectObjects(scene.children, true)
-    .filter((h) => h.object.isMesh && h.object.visible && h.uv);
+    .filter((h) => h.object.isMesh && h.object.visible);
   if (!hits.length) { hoverBadge.style.display = "none"; return; }
 
-  const uv = hits[0].uv;
-  const conf = confidenceAt(uv);
-  const err = errorMAt(uv);
-  if (conf === null && err === null) { hoverBadge.style.display = "none"; return; }
+  const hit = hits[0];
+  const conf = hit.uv ? confidenceAt(hit.uv) : null;
+  const err = hit.uv ? errorMAt(hit.uv) : null;
+  const coords = realCoordsAt(hit.point.x, hit.point.z);
+
+  if (conf === null && err === null && coords === null) {
+    hoverBadge.style.display = "none";
+    return;
+  }
 
   const lines = [];
+  if (coords !== null) {
+    lines.push(`E ${coords.easting.toFixed(1)}  N ${coords.northing.toFixed(1)}`);
+  }
   if (conf !== null) lines.push(`confidence  ${(conf * 100).toFixed(0)}%`);
   if (err !== null) lines.push(`error       ${err >= 0 ? "+" : ""}${err.toFixed(2)} m`);
   hoverBadge.textContent = lines.join("\n");
@@ -2758,6 +2785,100 @@ window.__dw = {
   },
 };
 
+// --- Compass ---
+//
+// Bearing from the camera's look direction, not its position -- a compass
+// reads "which way am I facing," and for an orbit-style camera those are
+// different questions. North = -Z, east = +X, matching the convention this
+// file already documents elsewhere (build_ground_mesh's row-major layout,
+// "Scene Z runs south"). Verified by construction: forward (0,0,-1) [facing
+// north] gives atan2(0, 1) = 0 deg; forward (1,0,0) [facing east] gives
+// atan2(1, 0) = 90 deg.
+const compassEl = document.createElement("div");
+compassEl.id = "compass";
+compassEl.style.cssText =
+  "position:fixed;top:12px;right:12px;z-index:40;pointer-events:none;" +
+  "background:rgba(10,14,20,0.7);color:#cde;border:1px solid #345;" +
+  "border-radius:50%;width:46px;height:46px;display:flex;align-items:center;" +
+  "justify-content:center;font:bold 13px monospace;";
+document.body.appendChild(compassEl);
+const CARDINALS = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
+const _fwd = new THREE.Vector3();
+
+function updateCompass() {
+  camera.getWorldDirection(_fwd);
+  _fwd.y = 0;
+  if (_fwd.lengthSq() < 1e-9) return;   // looking straight down/up: bearing undefined, keep the last reading
+  _fwd.normalize();
+  let bearing = THREE.MathUtils.radToDeg(Math.atan2(_fwd.x, -_fwd.z));
+  if (bearing < 0) bearing += 360;
+  const card = CARDINALS[Math.round(bearing / 45) % 8];
+  compassEl.textContent = card;
+  compassEl.title = bearing.toFixed(0) + "°";
+}
+
+// --- Scale bar ---
+//
+// Computed from the actual current projection, not a fixed pixels-per-metre
+// constant: at a perspective camera's distance from its target, a metre
+// covers a different number of screen pixels depending on zoom, so a scale
+// bar that doesn't recompute every frame is only honest at one zoom level.
+// Method: project the target point and a point NICE_DISTANCES metres to its
+// right (camera's own local +X, i.e. screen-horizontal in world space) into
+// normalised device coordinates, convert both to pixels, and the gap is
+// exactly how many screen pixels that real distance occupies right now.
+const scaleBarEl = document.createElement("div");
+scaleBarEl.id = "scale-bar";
+scaleBarEl.style.cssText =
+  "position:fixed;bottom:16px;left:16px;z-index:40;pointer-events:none;" +
+  "display:flex;flex-direction:column;align-items:center;font:11px monospace;color:#cde;";
+scaleBarEl.innerHTML =
+  '<div id="scale-bar-track" style="height:4px;background:#cde;border-left:1px solid #cde;' +
+  'border-right:1px solid #cde;"></div><div id="scale-bar-label" style="margin-top:2px;"></div>';
+document.body.appendChild(scaleBarEl);
+const scaleBarTrack = document.getElementById("scale-bar-track");
+const scaleBarLabel = document.getElementById("scale-bar-label");
+
+const NICE_DISTANCES_M = [0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000];
+const _scaleRight = new THREE.Vector3();
+const _scaleUpTmp = new THREE.Vector3();
+const _scaleFwdTmp = new THREE.Vector3();
+const _scaleA = new THREE.Vector3();
+const _scaleB = new THREE.Vector3();
+
+function worldToScreenPx(v) {
+  const p = v.clone().project(camera);
+  return { x: (p.x * 0.5 + 0.5) * window.innerWidth, y: (-p.y * 0.5 + 0.5) * window.innerHeight };
+}
+
+function updateScaleBar() {
+  if (!SCENE_META) return;
+  const target = controls.target;
+  camera.matrixWorld.extractBasis(_scaleRight, _scaleUpTmp, _scaleFwdTmp);
+  _scaleRight.y = 0;
+  if (_scaleRight.lengthSq() < 1e-9) { scaleBarEl.style.display = "none"; return; }
+  _scaleRight.normalize();
+
+  // Try candidate distances from largest to smallest; use the first that
+  // fits in a sane on-screen width (60-180px). Bailing out to "no candidate
+  // fits" (extreme close-up or extreme distance) hides the bar rather than
+  // drawing a nonsense one.
+  for (let i = NICE_DISTANCES_M.length - 1; i >= 0; i--) {
+    const d = NICE_DISTANCES_M[i];
+    _scaleA.copy(target);
+    _scaleB.copy(target).addScaledVector(_scaleRight, d);
+    const pa = worldToScreenPx(_scaleA), pb = worldToScreenPx(_scaleB);
+    const px = Math.abs(pb.x - pa.x);
+    if (px >= 60 && px <= 180) {
+      scaleBarTrack.style.width = px.toFixed(0) + "px";
+      scaleBarLabel.textContent = d >= 1000 ? (d / 1000) + " km" : d + " m";
+      scaleBarEl.style.display = "flex";
+      return;
+    }
+  }
+  scaleBarEl.style.display = "none";
+}
+
 // --- Render loop ---
 const _clock = new THREE.Clock();
 function animate() {
@@ -2765,6 +2886,8 @@ function animate() {
   // 60 seconds whether the renderer is managing 120 fps or 20.
   updateTour(_clock.getDelta());
   controls.update();
+  updateCompass();
+  updateScaleBar();
   if (postProcessing) { postProcessing.render(); } else { renderer.render(scene, camera); }
   servicePendingCapture();
 }

@@ -45,9 +45,51 @@ VIEWER_DIR = os.path.join(ROOT, "viewer")
 ALLOWED_EXT = {".tif", ".tiff", ".png", ".jpg", ".jpeg"}
 MAX_UPLOAD_BYTES = 200 * 1024 * 1024
 
+# --- Cost-derived limits -----------------------------------------------------
+#
+# Builds run one at a time (module docstring), so an unbounded queue is a way
+# for one popular moment to make everyone's wait grow without limit -- the
+# same reasoning a public deployment of this pipeline would need, worked out
+# here so the server is ready for that before it needs to be. Every number
+# below comes from progress.py's own recorded timings, not a guess: this
+# server has been run enough to have real per-megapixel evidence, and
+# predict_total_seconds() is exactly the "no evidence, no guess" function
+# that already backs the progress UI.
+MAX_JOB_SECONDS = 600.0    # a queued build must credibly finish within this
+MAX_QUEUE_DEPTH = 3        # jobs allowed to be waiting (not counting the one running)
+IP_SPACING_SECONDS = 20.0  # minimum gap between accepted uploads from one address
+
+_ip_last_accept: dict[str, float] = {}
+_ip_lock = threading.Lock()
+
+
+def max_megapixels_for_budget(budget_s: float = MAX_JOB_SECONDS) -> float | None:
+    """Largest megapixel count this server's own measured timings predict
+    will finish within `budget_s`, or None if there isn't enough calibration
+    history yet to say (in which case the byte-size cap is what's actually
+    bounding cost, not this function -- see its caller).
+    """
+    if prog.predict_total_seconds(1.0) is None:
+        return None   # no evidence yet; refuse to invent a ceiling
+    lo, hi = 0.1, 200.0
+    # predict_total_seconds is monotonic in megapixels (every stage either
+    # scales with px or is a flat cost), so bisection finds the crossing
+    # point in a fixed, small number of steps rather than a linear scan.
+    for _ in range(24):
+        mid = (lo + hi) / 2
+        t = prog.predict_total_seconds(mid)
+        if t is None or t > budget_s:
+            hi = mid
+        else:
+            lo = mid
+    return lo
+
+
 _jobs: dict[str, dict] = {}
 _jobs_lock = threading.Lock()
 _pipeline_lock = threading.Lock()      # serialises builds; see module docstring
+_queue_depth = 0                       # jobs waiting for _pipeline_lock, not counting the one holding it
+_queue_depth_lock = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
@@ -91,6 +133,7 @@ class Job:
 
 
 def run_job(job: Job) -> None:
+    global _queue_depth
     import build_city_image as bci
     from PIL import Image
 
@@ -109,8 +152,13 @@ def run_job(job: Job) -> None:
         job.publish({"job": job.id, "phase": "queued", "stage": None,
                      "message": "Another model is being built -- yours is next.",
                      "eta": None, "eta_known": False, "overrunning": False})
+        with _queue_depth_lock:
+            _queue_depth += 1
 
     with _pipeline_lock:
+        if waiting:
+            with _queue_depth_lock:
+                _queue_depth -= 1
         try:
             bci.build(job.path, job.name, max_px=2048, tracker=tracker,
                       stage=True)
@@ -227,6 +275,29 @@ class Handler(BaseHTTPRequestHandler):
             self._json(404, {"error": "no such route"})
             return
 
+        # Cheapest checks first, before a single byte of the upload is read --
+        # a refusal here costs the caller nothing and this server nothing but
+        # a dict lookup, where accepting bytes only to refuse them afterwards
+        # would have spent bandwidth and disk on a request never going to run.
+        client_ip = self.client_address[0]
+        now = time.time()
+        with _ip_lock:
+            last = _ip_last_accept.get(client_ip)
+        if last is not None and (now - last) < IP_SPACING_SECONDS:
+            wait = IP_SPACING_SECONDS - (now - last)
+            self._json(429, {"error":
+                             f"one upload per {IP_SPACING_SECONDS:.0f}s from the "
+                             f"same address -- try again in {wait:.0f}s"})
+            return
+
+        with _queue_depth_lock:
+            depth = _queue_depth
+        if depth >= MAX_QUEUE_DEPTH:
+            self._json(429, {"error":
+                             f"{depth} builds already queued, the limit is "
+                             f"{MAX_QUEUE_DEPTH} -- try again shortly"})
+            return
+
         qs = urllib.parse.parse_qs(u.query)
         raw_name = (qs.get("name") or ["upload"])[0]
         ext = os.path.splitext(raw_name)[1].lower()
@@ -264,6 +335,35 @@ class Handler(BaseHTTPRequestHandler):
                     break
                 f.write(chunk)
                 remaining -= len(chunk)
+
+        # Byte size alone under-predicts cost for satellite imagery: a large,
+        # sparse, well-compressed GeoTIFF can be small on disk and enormous
+        # in pixels. A header-only read (PIL is lazy -- .size reads the
+        # header, not the pixels) catches that before the expensive part
+        # starts, the same reasoning a public deployment of this pipeline
+        # would need and worked out now rather than after the fact.
+        try:
+            from PIL import Image
+            with Image.open(dest) as im:
+                w, h = im.size
+            megapixels = (w * h) / 1e6
+        except Exception:
+            megapixels = None   # let the pipeline's own decode raise a real error
+
+        if megapixels is not None:
+            ceiling = max_megapixels_for_budget()
+            if ceiling is not None and megapixels > ceiling:
+                os.remove(dest)
+                predicted = prog.predict_total_seconds(megapixels)
+                self._json(413, {"error":
+                    f"{megapixels:.1f} MP is projected to take "
+                    f"{predicted/60:.1f} min, over this server's "
+                    f"{MAX_JOB_SECONDS/60:.0f} min budget -- crop to under "
+                    f"~{ceiling:.1f} MP and try again"})
+                return
+
+        with _ip_lock:
+            _ip_last_accept[client_ip] = time.time()
 
         job = Job(job_id, dest, "upload_" + job_id)
         with _jobs_lock:

@@ -1153,6 +1153,18 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
                     else "elevation not recoverable from a single image without a "
                          "known height or capture time+location"),
         "crs": src_crs,
+        # The affine transform (rasterio's 6-coefficient convention: a,b,c,
+        # d,e,f, applied as easting = a*col + b*row + c, northing = d*col +
+        # e*row + f) was already used above to place building footprints in
+        # real map coordinates for the GeoJSON export, but was never itself
+        # exported -- so the viewer had no way to convert a point it hovers
+        # on the mesh back into a real coordinate. Only meaningful alongside
+        # a non-null crs; a scene with no georeferencing carries this as null
+        # rather than a transform that would silently imply one exists.
+        "affine_transform": (
+            [src_transform.a, src_transform.b, src_transform.c,
+             src_transform.d, src_transform.e, src_transform.f]
+            if src_transform is not None else None),
         "ground_truth": "NONE -- no LiDAR available for this image; no accuracy "
                         "figure can be quoted for this scene",
         "nadir_check": nad,

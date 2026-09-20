@@ -199,6 +199,26 @@ def predict_stage(stage_key: str, megapixels: float,
     return statistics.median([s["s"] for s in samples])
 
 
+def predict_total_seconds(megapixels: float,
+                          calib: Optional[Dict] = None) -> Optional[float]:
+    """Predicted end-to-end build time in seconds, or None if any stage has
+    no evidence yet -- summing partial evidence with silent zeros for the
+    unmeasured stages would produce a confident-looking number that is
+    actually missing most of the pipeline. server.py uses this to refuse an
+    upload whose predicted cost is too large, the same "no evidence, no
+    guess, and no fabricated number is safer than a wrong one" rule
+    predict_stage() already applies to a single stage.
+    """
+    calib = _load_calibration() if calib is None else calib
+    total = 0.0
+    for spec in STAGES:
+        t = predict_stage(spec["key"], megapixels, calib)
+        if t is None:
+            return None
+        total += t
+    return total
+
+
 def stage_spread(stage_key: str, calib: Optional[Dict] = None) -> Optional[float]:
     """Typical variation of a stage's duration, for the fast/slow remark."""
     calib = _load_calibration() if calib is None else calib
