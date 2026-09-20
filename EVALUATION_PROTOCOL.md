@@ -57,14 +57,17 @@ scale.**
 | 2026-09-19 | 2 (whole-tile) | 18 | — | 3.743m | 2.024m | — | current, post shadow-calib fix |
 | 2026-09-19 | 3 (per-building) | 18 | 461 | ~~3.063m~~ | ~~2.306m~~ | ~~+0.900m~~ | **VOID — predates raw_metric fix** |
 | 2026-09-19 | 3 (per-building) | 50 | 1,063 | ~~4.219m~~ | ~~2.998m~~ | ~~+1.465m~~ | **VOID — predates raw_metric fix** |
-| 2026-09-20 | 3 (per-building) | 18 | 461 | 2.164m | 1.597m | -0.596m | current, post raw_metric fix |
-| 2026-09-20 | 3 (per-building) | ~54 | ~1,000+ | *pending* | *pending* | *pending* | the number that actually decides this |
+| 2026-09-20 | 3 (per-building) | 18 | 461 | 2.164m | 1.597m | -0.596m | provisional, superseded by 50-tile row below |
+| 2026-09-20 | 3 (per-building) | 50 | 1,063 | **3.132m** | **1.870m** | **-0.608m** | **CURRENT, validated at scale** |
 
-**Do not cite the 2.164m row as final.** Per the sample-size rule above, it
-needs the ~54-tile check to hold before it is a real result rather than a
-provisional one — exactly the trap the 3.063m row fell into. Fill in the last
-row when that run completes and strike through whichever earlier row it
-supersedes, the same way the void rows above are marked rather than deleted.
+**The 3.132m / 50-tile / 1,063-building row is the number to cite.** It
+survived the exact test that broke the earlier 3.063m claim: RMSE widened
+from 2.164m to 3.132m going from 18 to 50 tiles (expected — more, harder
+buildings included), but the direction held — still ahead of the 3.464m
+comparison figure, this time on a real, checked sample. Bias also stayed
+consistent (-0.596m -> -0.608m) rather than drifting the way the broken
+pipeline's bias did (+0.900m -> +1.465m), which is itself evidence this
+result is real rather than a sample-size artifact.
 
 ## Standing rules for this project
 

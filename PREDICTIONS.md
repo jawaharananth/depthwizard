@@ -172,3 +172,14 @@ time instead of a broken fallback. This is now a genuine, bug-fixed
 project's own recent history in this exact file, an 18-tile result is not
 trusted until it survives the expanded 50+ tile check. That run is in
 progress; do not cite the 2.164m number as final until it does.
+
+**FINAL RESULT (2026-09-20), 50 tiles, 1,063 buildings**: RMSE 3.132m, MAE
+1.870m, bias -0.608m. **This is the number that decides the saga, and it
+holds.** RMSE widened from 2.164m to 3.132m as expected with more and harder
+buildings included, but stayed ahead of the 3.464m comparison figure --
+unlike the broken pipeline's earlier reversal (3.063m -> 4.219m going the
+same direction). Bias also stayed essentially flat (-0.596m -> -0.608m)
+rather than drifting worse, which is itself evidence this is a real,
+stable result and not another small-sample artifact. See
+EVALUATION_PROTOCOL.md for the full numbered history of every number this
+saga produced, including the two now-void ones from before the bug fix.
