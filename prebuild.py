@@ -38,6 +38,9 @@ ASSETS = [
     "terrain_heatmap.png", "terrain_confidence.png", "terrain_error.png",
     "terrain_slope.png", "terrain_normal.png", "terrain_ao.png",
     "terrain_roughness.png", "terrain_metalness.png",
+    # Raw (non-colourised) confidence/error, for the viewer's live hover
+    # readout -- exact values, not a re-derived guess from a colour ramp.
+    "terrain_confidence_raw.png", "terrain_error_raw.png",
 ]
 
 

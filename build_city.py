@@ -411,6 +411,32 @@ def build(tile: str, out_px: int = 2048, stage: bool = True,
             _full = np.full((out_px, out_px, 3), 40, np.uint8)
             _full[_inset:_inset + _tw, _inset:_inset + _tw] = _img
             Image.fromarray(_full).save(stem + "_error.png")
+            # Raw signed metres, exact, alongside the colourised (lossy, ±10m
+            # clipped) visualisation above -- for a viewer hover readout that
+            # reports a real number rather than re-deriving one from a colour
+            # ramp. Encoded across two 8-bit channels (R = high byte, G = low
+            # byte of an unsigned 16-bit int), not a native 16-bit PNG mode --
+            # browsers do not reliably preserve 16-bit-per-channel precision
+            # through <img>/canvas decoding (the behaviour is not obligated by
+            # spec), and a silently-wrong readout is worse than none. Plain
+            # 8-bit RGB decodes byte-exact everywhere. B channel unused
+            # (0 = invalid/no-truth pixel, 1 = valid), so a fully-zero pixel
+            # is unambiguous rather than reading as a real "-100m" value.
+            _enc = np.clip((_diff + 100.0) * 100.0, 0, 65535).astype(np.uint16)
+            _rgb_raw = np.zeros((out_px, out_px, 3), np.uint8)
+            _hi = (_enc >> 8).astype(np.uint8)
+            _lo = (_enc & 0xFF).astype(np.uint8)
+            _valid = np.isfinite(_diff)
+            _hi_full = np.zeros((out_px, out_px), np.uint8)
+            _lo_full = np.zeros((out_px, out_px), np.uint8)
+            _valid_full = np.zeros((out_px, out_px), np.uint8)
+            _hi_full[_inset:_inset + _tw, _inset:_inset + _tw] = np.where(_valid, _hi, 0)
+            _lo_full[_inset:_inset + _tw, _inset:_inset + _tw] = np.where(_valid, _lo, 0)
+            _valid_full[_inset:_inset + _tw, _inset:_inset + _tw] = np.where(_valid, 1, 0)
+            _rgb_raw[..., 0] = _hi_full
+            _rgb_raw[..., 1] = _lo_full
+            _rgb_raw[..., 2] = _valid_full
+            Image.fromarray(_rgb_raw, mode="RGB").save(stem + "_error_raw.png")
             _f = np.isfinite(_diff)
             err_stats = {
                 "rmse_m": round(float(np.sqrt((_diff[_f] ** 2).mean())), 2),
@@ -431,6 +457,12 @@ def build(tile: str, out_px: int = 2048, stage: bool = True,
         conf01 = conf_mod.to_image_grid(mvs["confidence"], image_np.shape[:2])
         conf_stats = conf_mod.summarise(conf01)
         Image.fromarray(conf_mod.colourise(conf01)).save(stem + "_confidence.png")
+        # Raw linear [0,1] confidence, exact, alongside the red-green
+        # visualisation above -- same reasoning as _error_raw.png just above:
+        # a hover readout needs the real number, not an inversion of a colour
+        # ramp designed for human eyes, not machine readback.
+        Image.fromarray((np.clip(conf01, 0, 1) * 255).astype(np.uint8)
+                        ).save(stem + "_confidence_raw.png")
         print(f"      confidence: median {conf_stats['median']:.2f}, "
               f"{conf_stats['frac_low']*100:.0f}% of pixels below "
               f"{conf_mod.LOW_CONFIDENCE} (weakly constrained)")
@@ -847,14 +879,25 @@ def build(tile: str, out_px: int = 2048, stage: bool = True,
         if conf01 is not None and os.path.exists(stem + "_confidence.png"):
             shutil.copy2(stem + "_confidence.png",
                          os.path.join(VIEWER_DIR, "terrain_confidence.png"))
+        _confrawp = os.path.join(VIEWER_DIR, "terrain_confidence_raw.png")
+        if conf01 is not None and os.path.exists(stem + "_confidence_raw.png"):
+            shutil.copy2(stem + "_confidence_raw.png", _confrawp)
+        elif os.path.exists(_confrawp):
+            os.remove(_confrawp)
         for _extra, _dst in (("_slope.png", "terrain_slope.png"),):
             if os.path.exists(stem + _extra):
                 shutil.copy2(stem + _extra, os.path.join(VIEWER_DIR, _dst))
         _errp = os.path.join(VIEWER_DIR, "terrain_error.png")
+        _errrawp = os.path.join(VIEWER_DIR, "terrain_error_raw.png")
         if os.path.exists(stem + "_error.png"):
             shutil.copy2(stem + "_error.png", _errp)
-        elif os.path.exists(_errp):
-            os.remove(_errp)   # stale overlay from a tile that HAD truth
+            if os.path.exists(stem + "_error_raw.png"):
+                shutil.copy2(stem + "_error_raw.png", _errrawp)
+        else:
+            if os.path.exists(_errp):
+                os.remove(_errp)   # stale overlay from a tile that HAD truth
+            if os.path.exists(_errrawp):
+                os.remove(_errrawp)
         # Maps baked for the heightfield describe a surface this model no
         # longer has; leaving them staged would light the flat ground with a
         # previous scene's occlusion.

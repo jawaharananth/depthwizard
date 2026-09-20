@@ -158,6 +158,10 @@ const TEXTURE_RGB_URL = `${BASE}/terrain_texture.png`;
 const TEXTURE_HEATMAP_URL = `${BASE}/terrain_heatmap.png`;
 const TEXTURE_CONF_URL = `${BASE}/terrain_confidence.png`;
 const TEXTURE_ERR_URL = `${BASE}/terrain_error.png`;
+// Raw (non-colourised) versions of the two above, for live hover sampling --
+// exact values read from a canvas, not a colour inverted back into a guess.
+const TEXTURE_CONF_RAW_URL = `${BASE}/terrain_confidence_raw.png`;
+const TEXTURE_ERR_RAW_URL = `${BASE}/terrain_error_raw.png`;
 const TEXTURE_SLOPE_URL = `${BASE}/terrain_slope.png`;
 const TEXTURE_NORMAL_URL = `${BASE}/terrain_normal.png`;
 const TEXTURE_AO_URL = `${BASE}/terrain_ao.png`;
@@ -1086,6 +1090,105 @@ Promise.all([
       console.error(err);
     }
   );
+});
+
+// --- Live hover readout: real confidence/error values under the cursor ---
+//
+// Deliberately CPU canvas pixel-reads, not a GPU shader or a stored
+// per-vertex grid: terrain_confidence_raw.png / terrain_error_raw.png are
+// exact linear encodings build_city.py writes specifically for this (see its
+// comments there), so a plain 2D canvas getImageData() at the hit point's UV
+// is an exact, simple readout -- no shader round-trip, no interpolation
+// scheme to keep in sync with the mesh separately from what the texture
+// already says.
+let confRawCtx = null, confRawSize = [0, 0];
+let errRawCtx = null, errRawSize = [0, 0];
+
+function _loadRawSampler(url) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => {
+      const c = document.createElement("canvas");
+      c.width = img.naturalWidth;
+      c.height = img.naturalHeight;
+      const ctx = c.getContext("2d", { willReadFrequently: true });
+      ctx.drawImage(img, 0, 0);
+      resolve({ ctx, size: [img.naturalWidth, img.naturalHeight] });
+    };
+    img.onerror = () => resolve(null);
+    img.src = url;
+  });
+}
+
+Promise.all([_loadRawSampler(TEXTURE_CONF_RAW_URL), _loadRawSampler(TEXTURE_ERR_RAW_URL)])
+  .then(([conf, err]) => {
+    if (conf) { confRawCtx = conf.ctx; confRawSize = conf.size; }
+    if (err) { errRawCtx = err.ctx; errRawSize = err.size; }
+  });
+
+function sampleRawAt(ctx, size, uv) {
+  // uv is Three.js convention: (0,0) bottom-left, (1,1) top-right. Canvas
+  // pixel rows run top-down, so the v axis flips; u does not.
+  if (!ctx || !uv) return null;
+  const [w, h] = size;
+  const x = Math.min(w - 1, Math.max(0, Math.round(uv.x * (w - 1))));
+  const y = Math.min(h - 1, Math.max(0, Math.round((1 - uv.y) * (h - 1))));
+  const d = ctx.getImageData(x, y, 1, 1).data;
+  return d;
+}
+
+function confidenceAt(uv) {
+  const d = sampleRawAt(confRawCtx, confRawSize, uv);
+  if (!d) return null;
+  return d[0] / 255;   // build_city.py: raw grayscale, linear [0,1] -> [0,255]
+}
+
+function errorMAt(uv) {
+  // build_city.py encodes (metres + 100) * 100 as an unsigned 16-bit int
+  // split across two 8-bit channels: R = high byte, G = low byte, B = 1 if
+  // this pixel has ground truth at all (0 means "no truth here", not a real
+  // -100m reading). Exact, byte-for-byte -- no reliance on how a browser
+  // happens to decode 16-bit-per-channel PNGs, which is not spec-guaranteed.
+  const d = sampleRawAt(errRawCtx, errRawSize, uv);
+  if (!d || d[2] === 0) return null;
+  const encoded = d[0] * 256 + d[1];
+  return encoded / 100.0 - 100.0;
+}
+
+const hoverBadge = document.createElement("div");
+hoverBadge.id = "hover-readout";
+hoverBadge.style.cssText =
+  "position:fixed;pointer-events:none;display:none;z-index:50;" +
+  "background:rgba(10,14,20,0.85);color:#cde;border:1px solid #345;" +
+  "border-radius:4px;padding:4px 8px;font:12px monospace;white-space:pre;";
+document.body.appendChild(hoverBadge);
+
+renderer.domElement.addEventListener("pointermove", (e) => {
+  if (confRawCtx === null && errRawCtx === null) return;   // nothing to show yet
+  pointer.x = (e.clientX / window.innerWidth) * 2 - 1;
+  pointer.y = -(e.clientY / window.innerHeight) * 2 + 1;
+  raycaster.setFromCamera(pointer, camera);
+  const hits = raycaster.intersectObjects(scene.children, true)
+    .filter((h) => h.object.isMesh && h.object.visible && h.uv);
+  if (!hits.length) { hoverBadge.style.display = "none"; return; }
+
+  const uv = hits[0].uv;
+  const conf = confidenceAt(uv);
+  const err = errorMAt(uv);
+  if (conf === null && err === null) { hoverBadge.style.display = "none"; return; }
+
+  const lines = [];
+  if (conf !== null) lines.push(`confidence  ${(conf * 100).toFixed(0)}%`);
+  if (err !== null) lines.push(`error       ${err >= 0 ? "+" : ""}${err.toFixed(2)} m`);
+  hoverBadge.textContent = lines.join("\n");
+  hoverBadge.style.left = (e.clientX + 14) + "px";
+  hoverBadge.style.top = (e.clientY + 14) + "px";
+  hoverBadge.style.display = "block";
+});
+
+renderer.domElement.addEventListener("pointerleave", () => {
+  hoverBadge.style.display = "none";
 });
 
 function countVerts(obj) {
