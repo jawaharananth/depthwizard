@@ -201,6 +201,23 @@ def estimate_sun_elevation(image_np: np.ndarray, seg_labels: np.ndarray,
                               f"{shadow_len_m:.1f} m -- too short to give a "
                               "stable elevation"}
         elev = math.degrees(math.atan(anchor_height_m / shadow_len_m))
+        # Near-overhead sun is numerically unstable, not just imprecise: height
+        # = shadow_length * tan(elevation), and tan(elevation) explodes as
+        # elevation approaches 90 deg. Measured on a real scene: a shadow of
+        # a few pixels gave elevation 87.7 deg, and applying that tangent to
+        # every OTHER building's shadow produced a median height of 170 m in
+        # a scene of single-storey rural housing. The anchor building's own
+        # height is still right by construction (that is what it was declared
+        # to be) -- it is every other building's derived height that inherits
+        # the blown-up tangent. Refusing here is the same "refuse loudly
+        # rather than guess" rule the metric-model plausibility check applies.
+        if elev > 80.0:
+            return {"elevation_deg": None, "source": "anchor_shadow",
+                    "reason": f"derived elevation {elev:.1f} deg is too close to "
+                              "overhead to calibrate other buildings safely -- "
+                              f"the anchor's own shadow ({shadow_len_m:.1f} m) is "
+                              "short enough that tan(elevation) amplifies any "
+                              "measurement noise into an implausible scale"}
         return {"elevation_deg": elev, "source": "anchor_shadow",
                 "detail": f"tallest structure declared {anchor_height_m:.1f} m, "
                           f"its own shadow measured {shadow_len_m:.1f} m "
@@ -359,7 +376,10 @@ def check_nadir(image_np: np.ndarray) -> dict:
 def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
           anchor_height_m: float = None, max_px: int = 2560,
           stage: bool = True, use_dem: bool = True, dem_path: str = None,
-          dem_source: str = "glo30", return_arrays: bool = False) -> dict:
+          dem_source: str = "glo30", return_arrays: bool = False,
+          use_metric: bool = True, gt_building_mask: np.ndarray = None,
+          gt_building_polygons: list = None,
+          gt_building_heights: list = None) -> dict:
     """
     return_arrays: additive, off by default -- every existing caller (server.py,
     the CLI) is unaffected. When True, meta["_ndsm"] carries the predicted
@@ -478,13 +498,27 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
             "nonsense, so the build stops here rather than producing it.")
 
     _tr.leave(); _tr.enter("height_field")
-    # The backbone tag is part of the key: a cached field from a different
-    # model is not a cache hit, it is a different measurement.
-    key = f"plainimg_{name}_{backbone_tag()}"
+    # use_metric=False must mean "behave as if no metric checkpoint exists",
+    # not just "ignore it later" -- DepthBackbone(metric=False) enforces that
+    # at construction, so _bb.is_metric below can never disagree with the
+    # depth_is_metric check further down (line ~621), which reads use_metric
+    # again independently. Letting the two diverge would mean this backbone
+    # returns real metres (is_metric True) while the pipeline treats them as
+    # an uncalibrated Tier C field and multiplies in an invented "tallest
+    # ~40m" scale on top of numbers that were already correct.
+    _bb = DepthBackbone(metric=(None if use_metric else False))
+    # raw_metric=True changes what this field actually contains -- real
+    # metres instead of a [0,1] relative field -- so it has to be part of the
+    # cache key too, not just the backbone tag. Without this, a field cached
+    # BEFORE this fix existed (silently [0,1]-normalised despite a metric
+    # checkpoint being active) would be loaded here as if it were the
+    # now-correct real-metres field, and everything downstream that assumes
+    # `depth_is_metric => height is already in metres` would be wrong in the
+    # specific, silent way this whole fix exists to stop.
+    key = f"plainimg_{name}_{backbone_tag()}" + ("_metric" if _bb.is_metric else "")
     height = height_cache.load(key, "tiled", H) if H == W else None
     if height is None:
-        _bb = DepthBackbone()
-        height = _bb.predict_tiled(pil)
+        height = _bb.predict_tiled(pil, raw_metric=_bb.is_metric)
         if H == W:
             height_cache.save(key, "tiled", H, height)
     print(f"[2/5] height field in {time.time()-t0:.0f}s")
@@ -506,6 +540,22 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
                   "inpainting restores appearance, not the data the graphic hid.")
 
     seg_labels, _ = seg.segment(image_np, height=height)
+    if gt_building_mask is not None:
+        # Every scale computation below (initial p99, DTM ground-fit, the
+        # roof-squaring refit) reads seg_labels' building channel, not just
+        # footprint discovery. Left un-patched, the "tallest structure" that
+        # anchors the whole scene's vertical scale is measured under the
+        # STOCK classifier's ~0.2-precision mask -- noise and canopy fragments
+        # included -- even on a build whose footprints come from ground truth.
+        # Splicing the real mask in here, once, before anything reads it,
+        # is what actually makes height and DTM ground-fit trust the GT too.
+        _gt0 = gt_building_mask
+        if _gt0.shape != seg_labels.shape:
+            _gt0 = cv2.resize(_gt0.astype(np.uint8),
+                              (seg_labels.shape[1], seg_labels.shape[0]),
+                              interpolation=cv2.INTER_NEAREST)
+        seg_labels = seg_labels.copy()
+        seg_labels[_gt0 > 0] = seg.CLASS_IDX["building"]
     oc = orientation_check(height, seg_labels)
     if oc.get("checked") and not oc["correct_orientation"]:
         raise SystemExit("height field inverted -- refusing to build")
@@ -576,7 +626,7 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
     # in the branch above, on an explicit pass of the same n>=10 floor
     # build_city.py uses.
     # Does the backbone in use predict metres, or a relative field?
-    depth_is_metric = DepthBackbone.metric_available()
+    depth_is_metric = use_metric and DepthBackbone.metric_available()
 
     if tier is None and depth_is_metric:
         # A METRIC BACKBONE SKIPS THE SCALE QUESTION ENTIRELY.
@@ -608,12 +658,20 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
         # GAMUS, so the field is checked against the scene in front of it.
         _p99_metric = float(np.percentile(rel, 99))
         if _p99_metric < 3.0:
-            print(f"      WARNING: the metric model's 99th percentile height is "
+            print(f"      REFUSED: the metric model's 99th percentile height is "
                   f"{_p99_metric:.2f} m across this whole scene. That is not a "
-                  f"plausible city, and every building will fall below the "
-                  f"minimum height. The checkpoint is licensed on GAMUS but is "
-                  f"not transferring to this image -- rerun with --no-metric to "
-                  f"use the stock backbone.")
+                  f"plausible city, so the checkpoint's metres are rejected "
+                  f"rather than used -- it is licensed on GAMUS but is not "
+                  f"transferring to this image. Falling back to the stock "
+                  f"backbone's relative field, scaled the same way Tier C "
+                  f"always has been.")
+            # Undo everything the metric branch set, so the Tier C block
+            # below runs exactly as if depth_is_metric had been False from
+            # the start -- a rejected reading must not leave a half-applied
+            # scale=1.0 behind for the next block to inherit by accident.
+            tier = None
+            scale = None
+            scale_source = None
 
     if tier is None:
         if anchor_height_m is not None:
@@ -763,22 +821,67 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
     # min_height_m is in ndsm's units, which on this Tier C path are not metres
     # -- the surface was rescaled so the tallest structure reads TARGET_TALL_M,
     # so a 2 m threshold means "2 units on that assumed scale".
-    rres = region_footprints.extract(
-        image_np, ndsm, gsd, seg_labels=seg_labels,
-        min_area_m2=8.0, min_height_m=1.5)
-    footprints = rres["polygons"]
-    # Drop the flattest share of candidates, judged against this scene's own
-    # height distribution. These are the car parks and bare ground the height
-    # field reads as slightly raised -- the buildings-on-roads problem.
-    footprints, _thr = region_footprints.drop_low_regions(footprints, ndsm)
-    if _thr is not None:
-        print(f"      flat-region gate: kept {len(footprints)} "
-              f"(cut below height {_thr:.1f})")
-    print(f"      footprints from image regions: {rres['report']['retained']} "
-          f"of {rres['report']['regions_examined']} regions")
-    _rej = "  ".join(f"{k} {v}" for k, v in rres["report"]["rejected"].items() if v)
-    if _rej:
-        print(f"      rejected: {_rej}")
+    if gt_building_polygons is not None:
+        # One step better than extract_from_mask: identity comes from the
+        # annotation, not a re-traced raster contour, so two buildings that
+        # touch (a common Indian row-house pattern) never fuse into one --
+        # see extract_from_polygons's docstring for the measured 1,751-to-834
+        # collapse that rasterising first causes.
+        assert gt_building_mask is not None, (
+            "gt_building_polygons needs gt_building_mask alongside it, purely "
+            "to know the pixel grid the polygon coordinates were computed on")
+        _sy = ndsm.shape[0] / gt_building_mask.shape[0]
+        _sx = ndsm.shape[1] / gt_building_mask.shape[1]
+        _scaled_polys = [np.asarray(p, np.float32) * [_sx, _sy]
+                         for p in gt_building_polygons]
+        rres = region_footprints.extract_from_polygons(
+            _scaled_polys, ndsm, gsd, known_heights=gt_building_heights)
+        footprints = rres["polygons"]
+        print(f"      footprints from GROUND TRUTH polygons: {rres['report']['retained']} "
+              f"of {rres['report']['regions_examined']} individually-labelled buildings")
+        if gt_building_heights is not None:
+            print(f"      of those, {rres['report']['measured_heights']} carry a REAL "
+                  f"measured height (e.g. municipal floor-count record), not an estimate")
+        _rej = "  ".join(f"{k} {v}" for k, v in rres["report"]["rejected"].items() if v)
+        if _rej:
+            print(f"      rejected: {_rej}")
+    elif gt_building_mask is not None:
+        # Existence and shape are already decided by the annotator -- see
+        # extract_from_mask's docstring for why the height/size gates below
+        # would otherwise throw away real, human-verified buildings.
+        _gt = gt_building_mask
+        if _gt.shape != ndsm.shape:
+            _gt = cv2.resize(_gt.astype(np.uint8), (ndsm.shape[1], ndsm.shape[0]),
+                             interpolation=cv2.INTER_NEAREST)
+        rres = region_footprints.extract_from_mask(_gt, ndsm, gsd)
+        footprints = rres["polygons"]
+        print(f"      footprints from GROUND TRUTH mask: {rres['report']['retained']} "
+              f"of {rres['report']['regions_examined']} labelled buildings")
+        _rej = "  ".join(f"{k} {v}" for k, v in rres["report"]["rejected"].items() if v)
+        if _rej:
+            print(f"      rejected: {_rej}")
+    else:
+        # recall 0.745). One extractor, used everywhere.
+        #
+        # min_height_m is in ndsm's units, which on this Tier C path are not
+        # metres -- the surface was rescaled so the tallest structure reads
+        # TARGET_TALL_M, so a 2 m threshold means "2 units on that assumed scale".
+        rres = region_footprints.extract(
+            image_np, ndsm, gsd, seg_labels=seg_labels,
+            min_area_m2=8.0, min_height_m=1.5)
+        footprints = rres["polygons"]
+        # Drop the flattest share of candidates, judged against this scene's own
+        # height distribution. These are the car parks and bare ground the height
+        # field reads as slightly raised -- the buildings-on-roads problem.
+        footprints, _thr = region_footprints.drop_low_regions(footprints, ndsm)
+        if _thr is not None:
+            print(f"      flat-region gate: kept {len(footprints)} "
+                  f"(cut below height {_thr:.1f})")
+        print(f"      footprints from image regions: {rres['report']['retained']} "
+              f"of {rres['report']['regions_examined']} regions")
+        _rej = "  ".join(f"{k} {v}" for k, v in rres["report"]["rejected"].items() if v)
+        if _rej:
+            print(f"      rejected: {_rej}")
 
     # Provenance now tracks the tier actually reached: a height is MEASURED
     # only on B/A, where a physical shadow or DEM calibration produced the
@@ -850,9 +953,20 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
     # Second system: does the finished model agree with the image it came from?
     # Everything above checks the model against itself.
     try:
+        if gt_building_mask is not None:
+            # Score against the real ground truth, not the stock classifier --
+            # otherwise the audit grades GT-driven footprints against the very
+            # segmentation they were built specifically to bypass.
+            _audit_truth = gt_building_mask
+            if _audit_truth.shape != ndsm.shape:
+                _audit_truth = cv2.resize(
+                    _audit_truth.astype(np.uint8), (ndsm.shape[1], ndsm.shape[0]),
+                    interpolation=cv2.INTER_NEAREST).astype(bool)
+        else:
+            _audit_truth = seg_labels == seg.CLASS_IDX["building"]
         _audit = model_audit.audit(
             footprints, binfo, image_np, ndsm,
-            seg_labels == seg.CLASS_IDX["building"],
+            _audit_truth,
             sun_azimuth_deg=sun_az)
         print(model_audit.report(_audit))
     except Exception as _e:
