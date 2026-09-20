@@ -132,3 +132,43 @@ varied buildings are included, which points at a real, general calibration
 problem rather than noise. Any earlier claim in this project's materials
 that cited the 3.063m / "ahead of 3.464m" number is now superseded and
 should not be repeated without this correction attached.
+
+---
+
+## 2026-09-19/20 — root cause of the whole per-building saga: a real bug, not bad luck
+
+While investigating why the expanded sample got WORSE instead of narrowing
+the gap, found and fixed a genuine bug (see the same-day commits): every
+single number in this file up to this point, and the entire production Tier
+B "metric depth model" path in build_city_image.py, was silently receiving
+a broken height field, not the GAMUS fine-tuned model's real output.
+
+Two compounding causes: (1) `depth_model.py`'s `predict()`/`predict_tiled()`
+unconditionally normalised every output to [0,1] regardless of whether a
+metric checkpoint was active, and (2) going through transformers'
+`pipeline()` wrapper made it worse -- `result["depth"]` turned out to be an
+8-bit visualisation rescale, not the raw regression output (confirmed by an
+identical (0, 255) range on two unrelated images). Fixed with a
+`raw_metric=True` option that bypasses both problems; verified against a
+real tile that the direct model call and the fixed predict() now agree
+exactly (0.0-16.17m, mean 4.06m, where before both returned [0,1] or (0,255)
+depending on the path).
+
+**Prediction, made before re-running the 18-tile check**: since the model's
+real GAMUS-validated capability (MAE 1.444m) has never actually been
+exercised end-to-end before, I expect the corrected number to land closer
+to that 1.444m figure than either of the two broken numbers above (3.063m
+or 4.219m) -- somewhere in the 1.5-2.5m range for the 18-tile RMSE, though
+this is a genuine prediction, not a certainty, since GAMUS-to-DFC2019 is
+still a real cross-domain jump the 1.444m figure (measured on GAMUS's own
+held-out split) does not by itself guarantee.
+
+**Result**: RMSE 2.164m, MAE 1.597m, bias -0.596m (461 buildings, same 18
+tiles). Inside the predicted 1.5-2.5m range. The bias also flipped sign and
+shrank (+0.900m over-predicting -> -0.596m slightly under-predicting),
+consistent with the model's real learned scale being used for the first
+time instead of a broken fallback. This is now a genuine, bug-fixed
+**37% lower RMSE than the 3.464m comparison figure** -- but per this
+project's own recent history in this exact file, an 18-tile result is not
+trusted until it survives the expanded 50+ tile check. That run is in
+progress; do not cite the 2.164m number as final until it does.
