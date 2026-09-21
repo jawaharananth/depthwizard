@@ -420,12 +420,24 @@ def _save_normal_map(dsm: np.ndarray, gsd_x_m: float, gsd_y_m: float, out_path: 
 
 
 def _save_heatmap_texture(dsm: np.ndarray, out_path: str):
-    """Blue (low) -> red (high) elevation colormap, same pixel grid as the ground UVs."""
-    import matplotlib
+    """
+    Elevation as an image, same pixel grid as the ground UVs.
+
+    A single hue, pale (low) to deep (high), monotonic in lightness -- not
+    the matplotlib "jet" rainbow this used to be. Jet's implied ordering has
+    to be learned from a legend, it hides real detail in its wide yellow
+    band, and it does not survive greyscale printing. The same complaint
+    confidence.py and terrain_analysis.py already make about their own maps
+    applies here; this one had just been missed.
+    """
     lo, hi = np.percentile(dsm, [2, 98])
-    norm = np.clip((dsm - lo) / max(hi - lo, 1e-6), 0, 1)
-    rgba = (matplotlib.colormaps["jet"](norm) * 255).astype(np.uint8)
-    Image.fromarray(rgba[:, :, :3]).save(out_path)
+    t = np.clip((dsm - lo) / max(hi - lo, 1e-6), 0, 1).astype(np.float32)
+    # Pale blue-grey -> deep blue, matching the low->high, light->dark
+    # convention used everywhere else height is drawn in this project.
+    low = np.array([214, 224, 232], np.float32)
+    high = np.array([15, 56, 92], np.float32)
+    rgb = (low[None, None, :] * (1 - t[..., None]) + high[None, None, :] * t[..., None])
+    Image.fromarray(rgb.astype(np.uint8)).save(out_path)
 
 
 def generate_mesh(dsm: np.ndarray, image_np: np.ndarray, seg_labels: np.ndarray,
