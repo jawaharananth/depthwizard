@@ -904,7 +904,7 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
         # TARGET_TALL_M, so a 2 m threshold means "2 units on that assumed scale".
         rres = region_footprints.extract(
             image_np, ndsm, gsd, seg_labels=seg_labels,
-            min_area_m2=8.0, min_height_m=1.5)
+            min_area_m2=6.0, min_height_m=1.5)
         footprints = rres["polygons"]
         # Drop the flattest share of candidates, judged against this scene's own
         # height distribution. These are the car parks and bare ground the height

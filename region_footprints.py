@@ -114,7 +114,7 @@ def extract(image_np: np.ndarray, ndsm: np.ndarray, gsd_m: float,
             # disagree recovers to 0.562 -- still no gain. Recorded so the next
             # person does not repeat it.
             seg_labels: np.ndarray = None,
-            min_area_m2: float = 8.0,
+            min_area_m2: float = 6.0,
             min_height_m: float = 2.0,
             rough_gate: float = 0.55,
             fill_gate: float = 0.25) -> dict:
@@ -124,6 +124,17 @@ def extract(image_np: np.ndarray, ndsm: np.ndarray, gsd_m: float,
     min_height_m is in the same units as ndsm. On a Tier C scene those are not
     metres, so the caller must pass a threshold in whatever units it is using --
     the name reflects intent, not a guarantee about the unit.
+
+    min_area_m2 was 8.0, which is inconsistent with this module's own
+    docstring: it names a 10x10 px / 6 sq m shed at 0.25 m/px as the exact
+    case worth keeping, but 8.0 silently excluded that same shed from ever
+    becoming a watershed region -- before height/edge/texture/shadow evidence
+    got a chance to evaluate it at all. This is the one gate upstream of the
+    evidence system, not a replacement for it: candidates admitted here can
+    still be dropped for lacking evidence, so lowering this floor does not
+    weaken the "never area < threshold: delete" rule the module exists to
+    enforce, it just stops the rule from being undercut before it runs. Set
+    to match the module's own worked example.
     """
     H, W = ndsm.shape
     px_area = gsd_m * gsd_m
