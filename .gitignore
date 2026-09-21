@@ -19,6 +19,32 @@
 # Benchmark dataset -- licensed, and far too large to redistribute.
 # Obtain from IEEE DataPort: 2019 IEEE GRSS Data Fusion Contest, Track 3.
 dfc2019_data/
+dfc2019_data.zip
+
+# Source imagery for build_karnataka_gt.py / build_mumbai_bmc*.py -- real,
+# hard-won input data (a Maxar mosaic + human-verified footprints for
+# Karnataka; a BMC ArcGIS scrape + hand-curated polygons for Mumbai), but
+# large binary snapshots, same category as dfc2019_data/ above: not source,
+# not redistributable at this size (ramp_karnataka/ alone is 1.3 GB), kept
+# out of git for the same reason. The scripts that consume them document
+# what they need; the data itself lives outside version control.
+ramp_karnataka/
+mumbai_bmc/
+mumbai_bmc_big/
+mumbai_dataset/
+mumbai_dataset_full/
+mumbai_dataset.zip
+iccd_extract/
+iccd_sample.zip
+moge_out/
+colab - Copy/
+
+# Stray junk files that landed in the working tree during interactive
+# sessions -- not source, not meant to be tracked.
+mongodb
+nul
+htcdc_full.txt
+mendeley.json
 
 # Python environment
 venv/
@@ -133,6 +159,7 @@ dist/
 checkpoints/
 
 # Images people upload through the dashboard. Not ours to redistribute.
+uploads/
 
 # Stage timings are calibrated per machine. Committing this laptop's numbers
 # would give a different machine wrong ETAs on its first run, which is worse

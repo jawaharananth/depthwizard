@@ -21,11 +21,13 @@ the bytes are the request body, which the browser's fetch() sends natively.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import mimetypes
 import os
 import queue
 import shutil
+import signal
 import threading
 import time
 import traceback
@@ -35,9 +37,39 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import progress as prog
 
+# Stdlib-only memory check, deliberately not psutil -- same reasoning the
+# module docstring already gives for avoiding Flask/FastAPI: a dependency
+# that isn't installed is a demo-day failure waiting to happen, and this one
+# buys very little over what's already in the standard library on the
+# platform that actually matters (the deployed container is Linux; `resource`
+# is stdlib there). On Windows (local dev) it's simply absent, so the
+# capacity check below degrades to "always OK" rather than crashing --
+# skipping a non-critical check honestly beats faking a number for it.
+try:
+    import resource
+except ImportError:
+    resource = None
+
 ROOT = os.path.dirname(os.path.abspath(__file__))
 UPLOAD_DIR = os.path.join(ROOT, "uploads")
 VIEWER_DIR = os.path.join(ROOT, "viewer")
+OUTPUT_DIR = os.path.join(VIEWER_DIR, "output")
+
+# Content-hash result cache: a judge reloading the page, retrying after a
+# network blip, or a second judge trying the same sample image all produce
+# the identical upload bytes, and re-running the whole pipeline for bytes
+# already processed is pure waste. Keyed on sha256 of the exact upload, so a
+# hit is provably the same input producing the same output, not an
+# approximation of one -- if even one byte differs, it's a fresh build.
+RESULT_CACHE_DIR = os.path.join(ROOT, "cache", "uploads")
+
+
+def _upload_hash(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
 # Uploads are user-supplied files written to disk, so both the extension and the
 # size are checked before anything touches them. The pipeline itself refuses
@@ -91,6 +123,33 @@ _pipeline_lock = threading.Lock()      # serialises builds; see module docstring
 _queue_depth = 0                       # jobs waiting for _pipeline_lock, not counting the one holding it
 _queue_depth_lock = threading.Lock()
 
+# --- Demo-day safety state ---------------------------------------------------
+#
+# _shutting_down lets a redeploy/restart during a live demo drain cleanly
+# instead of severing an in-flight SSE stream with no explanation -- see
+# main()'s signal handler. MAX_RSS_MB is a self-imposed ceiling well under a
+# typical free-tier container's real limit (4Gi in DEPLOY.md), so uploads get
+# refused with a clear message before the OS OOM-kills the whole process,
+# which would otherwise look identical to "the app is broken" from a judge's
+# side of the screen.
+_shutting_down = False
+MAX_RSS_MB = 3200.0
+
+
+def _rss_mb() -> float | None:
+    """Current process resident memory in MB, or None where unmeasurable
+    (Windows dev machine -- see the `resource` import above)."""
+    if resource is None:
+        return None
+    # ru_maxrss is KB on Linux, bytes on macOS -- this server only ever
+    # deploys to Linux containers (DEPLOY.md), so KB is the correct unit here.
+    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0
+
+
+def _over_capacity() -> bool:
+    rss = _rss_mb()
+    return rss is not None and rss > MAX_RSS_MB
+
 
 # ---------------------------------------------------------------------------
 # Job plumbing
@@ -132,6 +191,31 @@ class Job:
                 self.subscribers.remove(q)
 
 
+def _copy_cached_result(cache_dir: str) -> None:
+    """Populate viewer/output from a cache hit -- only files the cached
+    build actually produced, never a stale leftover from whatever was in
+    viewer/output before (a benchmark scene's compare_*.png left behind by
+    an earlier job must not silently reappear on an unrelated upload)."""
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    import prebuild
+    for name in prebuild.ASSETS:
+        src = os.path.join(cache_dir, name)
+        dst = os.path.join(OUTPUT_DIR, name)
+        if os.path.exists(src):
+            shutil.copy2(src, dst)
+        elif os.path.exists(dst):
+            os.remove(dst)   # this build never produced it -- don't leave a stale one
+
+
+def _save_result_to_cache(cache_dir: str) -> None:
+    import prebuild
+    os.makedirs(cache_dir, exist_ok=True)
+    for name in prebuild.ASSETS:
+        src = os.path.join(OUTPUT_DIR, name)
+        if os.path.exists(src):
+            shutil.copy2(src, os.path.join(cache_dir, name))
+
+
 def run_job(job: Job) -> None:
     global _queue_depth
     import build_city_image as bci
@@ -146,6 +230,12 @@ def run_job(job: Job) -> None:
 
     tracker = prog.StageTracker(job.id, megapixels=mp, sink=job.publish)
 
+    content_hash = None
+    try:
+        content_hash = _upload_hash(job.path)
+    except Exception:
+        pass   # caching is an optimisation, never a requirement -- proceed without it
+
     waiting = _pipeline_lock.locked()
     if waiting:
         # Say so rather than showing a stalled 0% for an unexplained minute.
@@ -159,10 +249,33 @@ def run_job(job: Job) -> None:
         if waiting:
             with _queue_depth_lock:
                 _queue_depth -= 1
+
+        cache_dir = os.path.join(RESULT_CACHE_DIR, content_hash) if content_hash else None
+        if cache_dir and os.path.isdir(cache_dir):
+            # Identical bytes already built once -- reuse it rather than
+            # re-running a multi-minute pipeline for a provably identical
+            # input. Still holds _pipeline_lock: this writes to the same
+            # shared viewer/output a concurrent real build would, so it
+            # needs the same serialisation, just none of the compute.
+            try:
+                _copy_cached_result(cache_dir)
+                job.publish({"job": job.id, "phase": "done", "elapsed_total": 0.0,
+                             "message": "Identical image already processed -- served instantly from cache.",
+                             "eta": 0, "eta_known": True, "overrunning": False,
+                             "stage_timings": {}})
+                return
+            except Exception:
+                pass   # cache is corrupt/partial -- fall through and rebuild for real
+
         try:
             bci.build(job.path, job.name, max_px=2048, tracker=tracker,
                       stage=True)
             tracker.finish(ok=True)
+            if cache_dir:
+                try:
+                    _save_result_to_cache(cache_dir)
+                except Exception:
+                    pass   # caching failure must never fail an otherwise-successful build
         except SystemExit as e:
             # The pipeline refuses obliques and undersized images on purpose,
             # and that refusal is a real answer, not a crash. Pass its reasoning
@@ -229,6 +342,34 @@ class Handler(BaseHTTPRequestHandler):
             self._file(os.path.join(ROOT, "dashboard.html"))
             return
 
+        if route == "/health":
+            # Liveness only: "is the process alive and answering requests at
+            # all". Deliberately does not check the model or memory -- a
+            # hosting platform's liveness probe restarting the container
+            # because a long build made it "look" unresponsive is exactly the
+            # kind of glitch that must never happen mid-demo. /ready is the
+            # separate, stricter check for that.
+            self._json(200, {"status": "alive", "shutting_down": _shutting_down})
+            return
+
+        if route == "/ready":
+            # Readiness: is this instance actually fit to take new work.
+            # Checked, not assumed -- both the model-loaded flag and the
+            # memory reading below are real measurements, not a hardcoded 200.
+            import depth_model
+            model_loaded = bool(depth_model.DepthBackbone._instances)
+            rss = _rss_mb()
+            over = _over_capacity()
+            ok = model_loaded and not over and not _shutting_down
+            self._json(200 if ok else 503, {
+                "status": "ready" if ok else "not_ready",
+                "model_loaded": model_loaded,
+                "rss_mb": round(rss, 1) if rss is not None else None,
+                "over_capacity": over,
+                "shutting_down": _shutting_down,
+            })
+            return
+
         if route == "/api/gallery":
             import prebuild
             self._json(200, {"scenes": prebuild.list_scenes()})
@@ -279,6 +420,13 @@ class Handler(BaseHTTPRequestHandler):
         # a refusal here costs the caller nothing and this server nothing but
         # a dict lookup, where accepting bytes only to refuse them afterwards
         # would have spent bandwidth and disk on a request never going to run.
+        if _shutting_down:
+            self._json(503, {"error": "server is restarting -- try again in a moment"})
+            return
+        if _over_capacity():
+            self._json(503, {"error": "server is at capacity -- try again shortly"})
+            return
+
         client_ip = self.client_address[0]
         now = time.time()
         with _ip_lock:
@@ -336,19 +484,48 @@ class Handler(BaseHTTPRequestHandler):
                 f.write(chunk)
                 remaining -= len(chunk)
 
+        if remaining > 0:
+            # The connection dropped before every promised byte arrived (slow
+            # wifi, a browser tab closed mid-upload). Refusing outright beats
+            # handing a truncated file to the pipeline, which -- depending on
+            # format -- can silently decode a partial image as if it were
+            # complete, padding whatever's missing with black. That produces
+            # a confident-looking result over fabricated pixels with no
+            # error anywhere, which is worse than any honest rejection.
+            os.remove(dest)
+            self._json(400, {"error":
+                             f"upload incomplete -- received {length-remaining} of "
+                             f"{length} bytes -- try again"})
+            return
+
         # Byte size alone under-predicts cost for satellite imagery: a large,
         # sparse, well-compressed GeoTIFF can be small on disk and enormous
         # in pixels. A header-only read (PIL is lazy -- .size reads the
         # header, not the pixels) catches that before the expensive part
         # starts, the same reasoning a public deployment of this pipeline
         # would need and worked out now rather than after the fact.
+        #
+        # im.load() forces a FULL decode, not just the header -- .size alone
+        # would pass a file whose byte count matches but whose pixel data is
+        # corrupt or truncated inside a container format (rare, but the same
+        # failure class a truncated-network-upload could produce even with
+        # every byte present, e.g. corruption in transit). PIL raises on a
+        # truncated/corrupt decode by default (this project never sets
+        # ImageFile.LOAD_TRUNCATED_IMAGES, checked), so this is a real,
+        # meaningful check, not a formality.
         try:
             from PIL import Image
             with Image.open(dest) as im:
                 w, h = im.size
+                im.load()
             megapixels = (w * h) / 1e6
-        except Exception:
-            megapixels = None   # let the pipeline's own decode raise a real error
+        except Exception as e:
+            os.remove(dest)
+            self._json(400, {"error":
+                             f"could not decode this image ({type(e).__name__}) -- "
+                             "the file may be corrupt or incomplete. Try re-exporting "
+                             "or re-uploading it."})
+            return
 
         if megapixels is not None:
             ceiling = max_megapixels_for_budget()
@@ -410,6 +587,48 @@ class Handler(BaseHTTPRequestHandler):
             job.unsubscribe(q)
 
 
+def _warm_load_model() -> None:
+    """Load the depth model once at boot, not on the first judge's upload.
+
+    Deliberately not wrapped in try/except: a model that cannot load means
+    every real job will fail anyway, and finding that out at container boot
+    (visible in deploy logs, before anyone is watching) beats finding it out
+    when the first judge's upload silently times out. Fail loud, fail early.
+    """
+    import depth_model
+    t0 = time.time()
+    depth_model.DepthBackbone()
+    print(f"  model warm-loaded in {time.time()-t0:.1f}s")
+
+
+def _install_shutdown_handler(srv: ThreadingHTTPServer) -> None:
+    """A redeploy/restart during a live demo should drain, not sever.
+
+    Without this, SIGTERM (what Cloud Run/Azure Container Apps send on every
+    redeploy or scale-down) kills the process mid-request with no warning --
+    an in-flight SSE stream just stops, which reads as "it crashed" to
+    whoever is watching it happen. This stops accepting new work immediately
+    (do_POST/do_GET check _shutting_down) and gives any job already running
+    a bounded grace window to actually finish and tell its subscriber, rather
+    than being cut off.
+    """
+    def _handler(signum, frame):
+        global _shutting_down
+        _shutting_down = True
+        print(f"\n  shutdown signal received -- draining (grace {MAX_JOB_SECONDS:.0f}s max)")
+
+        def _drain():
+            deadline = time.time() + MAX_JOB_SECONDS
+            while _pipeline_lock.locked() and time.time() < deadline:
+                time.sleep(1.0)
+            srv.shutdown()
+
+        threading.Thread(target=_drain, daemon=True).start()
+
+    signal.signal(signal.SIGTERM, _handler)
+    signal.signal(signal.SIGINT, _handler)
+
+
 def main() -> None:
     import argparse
     ap = argparse.ArgumentParser(description="DepthWizard upload dashboard")
@@ -423,11 +642,14 @@ def main() -> None:
     print("stage timing calibration:")
     print(prog.calibration_summary())
     print()
+    _warm_load_model()
     srv = ThreadingHTTPServer((a.host, a.port), Handler)
+    _install_shutdown_handler(srv)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
-        print("\nstopped")
+        pass
+    print("\nstopped")
 
 
 if __name__ == "__main__":

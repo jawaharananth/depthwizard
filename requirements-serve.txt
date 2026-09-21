@@ -1,0 +1,27 @@
+# Serving-only dependencies -- deliberately a subset of requirements.txt.
+#
+# Traced by actually walking server.py's real import graph (server.py ->
+# build_city_image.py -> every module it touches), not guessed: h5py
+# (GAMUS training only), scikit-image, and playwright (screenshot capture
+# for stills) never appear in that trace and are left out. openvino/
+# ov_backend appear but are optional and gracefully skipped when absent
+# (see ov_backend.py's own try/except) -- irrelevant on a Cloud Run
+# container with no Intel iGPU, and only adds image weight if included.
+#
+# torch is CPU-only here on purpose. Cloud Run has no GPU by default, and
+# pip's default wheel for torch pulls the full CUDA runtime (~2.5GB of
+# libraries a CPU container can never use) unless told otherwise -- the
+# same problem zaidnansari2011's deployment notes document hitting and
+# fixing the same way (see COMPETITOR_INTEL.md).
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+torch==2.13.0
+transformers==5.15.1
+numpy==2.5.2
+opencv-python-headless==5.0.0.93
+rasterio==1.5.1
+pillow==12.3.0
+scipy==1.18.1
+matplotlib==3.11.1
+safetensors==0.8.0
+huggingface-hub==1.28.0

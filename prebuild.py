@@ -41,6 +41,10 @@ ASSETS = [
     # Raw (non-colourised) confidence/error, for the viewer's live hover
     # readout -- exact values, not a re-derived guess from a colour ramp.
     "terrain_confidence_raw.png", "terrain_error_raw.png",
+    # Compare-slider material -- only present on scenes built from a real
+    # LiDAR benchmark tile (build_city.py's ground-truth path); absent
+    # everywhere else, and skipped rather than faked.
+    "compare_truth.png", "compare_pred.png",
 ]
 
 

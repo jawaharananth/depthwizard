@@ -1,0 +1,55 @@
+name: CI
+
+# What this actually gates, beyond "do the tests pass":
+#
+# CAPABILITIES.md (scripts/verify_capabilities.py) is a live, code-derived
+# report of what's actually wired up -- not a hand-maintained checklist that
+# can silently drift from the code it describes. The "docs must match code"
+# step below regenerates it fresh and fails the build if the committed copy
+# disagrees, which is the property a static completion checklist can never
+# have: a checklist can say "done" about something that regressed, and
+# nothing stops it from lying. This can't, because it's regenerated from the
+# actual entry points and viewer markup on every run, not edited by hand.
+on:
+  push:
+  pull_request:
+
+jobs:
+  test-and-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run test suite
+        run: python -m pytest tests/ -q
+
+      - name: Regenerate CAPABILITIES.md
+        run: python scripts/verify_capabilities.py
+
+      - name: Fail if CAPABILITIES.md is stale relative to the code
+        run: |
+          if ! git diff --exit-code CAPABILITIES.md; then
+            echo "::error::CAPABILITIES.md is out of date -- a code or viewer" \
+                 "change moved a claim's status without regenerating the" \
+                 "committed report. Run 'python scripts/verify_capabilities.py'" \
+                 "locally and commit the result."
+            exit 1
+          fi
+
+      - name: Regenerate the decision log and fail if it drifted
+        run: |
+          python scripts/extract_decisions.py
+          if ! git diff --exit-code DECISIONS.md; then
+            echo "::error::DECISIONS.md is out of date relative to the" \
+                 "rationale comments actually in the code. Run" \
+                 "'python scripts/extract_decisions.py' locally and commit" \
+                 "the result."
+            exit 1
+          fi

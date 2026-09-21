@@ -28,6 +28,8 @@ or stepped roof becomes a flat-topped block. That is a deliberate abstraction
 the lumpy version was not, because it does not pretend to roof detail the
 input cannot support.
 """
+import math
+
 import numpy as np
 import cv2
 
@@ -134,6 +136,114 @@ def _ear_clip(poly: np.ndarray) -> list:
     return tris
 
 
+def _regularise_rectilinear(poly: np.ndarray, max_area_change: float = 0.45):
+    """
+    Snap a footprint onto its own right-angle grid.
+
+    approxPolyDP runs on a contour traced from a RASTER mask, so every
+    staircase artefact along a diagonal wall survives as a short arbitrary-angle
+    edge. Extruded, those read as jagged, spiky roofs -- the single most visible
+    defect in the rendered city, and one no amount of segmentation quality
+    fixes, because the raggedness is introduced after the mask.
+
+    Real buildings are overwhelmingly rectilinear: walls meet at right angles,
+    even when the building as a whole sits at an angle to the image grid. So the
+    footprint is rotated onto the dominant axis of its own minimum-area
+    rectangle, each edge is classified as running along X or along Y, runs of
+    like edges collapse to a single straight line at their length-weighted mean,
+    and the corners are rebuilt as the intersections of those lines. The result
+    is an L, T, U or plain rectangle -- the shapes buildings actually are.
+
+    The rotation is what makes this safe on a city that is not aligned to north:
+    "rectilinear" is enforced in the building's own frame, not the image's.
+
+    Returns the original polygon unchanged if the snap would distort its area by
+    more than max_area_change, which is the signal that the ring was not a
+    building outline in the first place (a merged blob, a courtyard, a sliver).
+    """
+    if len(poly) < 4:
+        return poly
+
+    poly = poly.astype(np.float32)
+    orig_area = abs(cv2.contourArea(poly))
+    if orig_area < 1.0:
+        return poly
+
+    # Dominant axis from the minimum-area rectangle, so a building at 30 deg to
+    # the image grid is regularised against ITS axes rather than the image's.
+    angle = cv2.minAreaRect(poly)[2]
+    theta = np.deg2rad(angle)
+    c, s = float(np.cos(-theta)), float(np.sin(-theta))
+    fwd = np.array([[c, -s], [s, c]], np.float32)
+    inv = np.array([[c, s], [-s, c]], np.float32)
+
+    centre = poly.mean(axis=0)
+    local = (poly - centre) @ fwd.T
+
+    n = len(local)
+    # 0 = edge runs along X (a horizontal wall), 1 = along Y (a vertical wall).
+    cls = []
+    for i in range(n):
+        d = local[(i + 1) % n] - local[i]
+        cls.append(0 if abs(d[0]) >= abs(d[1]) else 1)
+
+    # Collapse consecutive like-classified edges into one wall each.
+    runs = []          # (class, [edge indices])
+    for i in range(n):
+        if runs and runs[-1][0] == cls[i]:
+            runs[-1][1].append(i)
+        else:
+            runs.append((cls[i], [i]))
+    # The ring wraps: if the last run matches the first, merge them.
+    if len(runs) > 1 and runs[0][0] == runs[-1][0]:
+        runs[0][1].extend(runs[-1][1])
+        runs.pop()
+
+    # A rectilinear ring alternates X-walls and Y-walls, so it needs an even
+    # number of at least four. Anything else is not a shape this can snap.
+    if len(runs) < 4 or len(runs) % 2 != 0:
+        return poly
+
+    # Each wall becomes a single line: y = const for an X-wall, x = const for a
+    # Y-wall, placed at the mean of its edges weighted by their length so a long
+    # true wall outvotes the short staircase steps hanging off it.
+    lines = []
+    for klass, idxs in runs:
+        num = 0.0
+        den = 0.0
+        for i in idxs:
+            a, b = local[i], local[(i + 1) % n]
+            if klass == 0:                      # X-wall: fix its y
+                w = abs(b[0] - a[0]) + 1e-6
+                num += w * 0.5 * (a[1] + b[1])
+            else:                               # Y-wall: fix its x
+                w = abs(b[1] - a[1]) + 1e-6
+                num += w * 0.5 * (a[0] + b[0])
+            den += w
+        lines.append((klass, num / den))
+
+    # Corners are the intersections of consecutive walls. Because the runs
+    # alternate, each consecutive pair is one X-wall and one Y-wall, which meet
+    # at exactly one point -- a true right angle by construction.
+    snapped = []
+    m = len(lines)
+    for i in range(m):
+        k0, v0 = lines[i]
+        k1, v1 = lines[(i + 1) % m]
+        if k0 == k1:
+            return poly
+        x = v0 if k0 == 1 else v1
+        y = v0 if k0 == 0 else v1
+        snapped.append((x, y))
+
+    out = (np.asarray(snapped, np.float32) @ inv.T) + centre
+
+    new_area = abs(cv2.contourArea(out))
+    if new_area < 1.0 or abs(new_area - orig_area) / orig_area > max_area_change:
+        return poly
+    return out
+
+
 def extract_footprints(seg_labels: np.ndarray, ndsm: np.ndarray = None,
                        min_area_px: int = 300, simplify_frac: float = 0.012,
                        band_m: float = 3.0) -> list:
@@ -190,7 +300,7 @@ def extract_footprints(seg_labels: np.ndarray, ndsm: np.ndarray = None,
             approx = cv2.approxPolyDP(cnt, eps, True).reshape(-1, 2).astype(np.float32)
             if len(approx) < 3:
                 continue
-            polys.append(approx)
+            polys.append(_regularise_rectilinear(approx))
     return polys
 
 
@@ -576,6 +686,11 @@ def flatten_ground(dtm: np.ndarray, seg_labels: np.ndarray,
     return cv2.GaussianBlur(dtm.astype(np.float32), (0, 0), sigmaX=sigma_px)
 
 
+# A tree crown wider than it is tall is the norm; 2.5x its own width is
+# already a very slender tree and anything beyond is a depth spike.
+CANOPY_MAX_ASPECT = 2.5
+
+
 def build_canopy(seg_labels: np.ndarray, dsm: np.ndarray, ground: np.ndarray,
                  gsd_x_m: float, gsd_y_m: float, min_area_px: int = 250,
                  min_height_m: float = 2.0, band_m: float = 4.0):
@@ -640,6 +755,19 @@ def build_canopy(seg_labels: np.ndarray, dsm: np.ndarray, ground: np.ndarray,
             base = float(np.percentile(ground[y0:y1, x0:x1][inside], 20))
             if crown - base < min_height_m:
                 continue
+
+            # A crown cannot be far taller than the patch it grows from. The
+            # depth field spikes inside small vegetation patches, and without
+            # this a ten-pixel patch takes the tallest height in the scene and
+            # renders as a needle. The cap is an aspect ratio, not a height in
+            # metres, so it holds in a Tier C scene that has no scale at all.
+            span_m = math.sqrt(max(float(inside.sum()), 1.0)
+                               * gsd_x_m * gsd_y_m)
+            tallest = base + CANOPY_MAX_ASPECT * span_m
+            if crown > tallest:
+                crown = tallest
+                if crown - base < min_height_m:
+                    continue
 
             centre = poly.mean(axis=0)
             n = len(poly)

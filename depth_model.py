@@ -1,9 +1,105 @@
+import hashlib
+import json
 import os
 
 import numpy as np
 from PIL import Image
 import torch
 from transformers import pipeline
+
+# --- Behavioural checkpoint verification --------------------------------
+#
+# A licensed checkpoint (metric_ok.json / htc_ok.json) is trusted to swap
+# straight into the pipeline with no further check -- fine until the file on
+# disk is not the file that earned that trust: a bad copy, a partial
+# download, a manual edit, or (worse) a wrong-but-similarly-named checkpoint
+# left in the same directory by mistake. A raw file hash would catch that,
+# but only that -- it says nothing about whether the weights still BEHAVE
+# the way they did when licensed, which is the property that actually
+# matters here and is not implied by "the bytes match" (a hash also breaks
+# on any benign re-save: a different safetensors shard layout, a metadata
+# touch-up, a format migration -- none of which change what the model
+# computes).
+#
+# This project already has a working pattern for exactly this question:
+# ov_backend.py never trusts the OpenVINO iGPU path just because it loaded
+# without error -- it runs a real input through both backends and only
+# keeps the accelerated one if its output matches PyTorch's within
+# MAX_REL_ERROR. The same idea, applied at load time instead of backend-
+# switch time: run a fixed, reproducible synthetic input through the loaded
+# weights and compare the OUTPUT against a fingerprint recorded when this
+# exact checkpoint was licensed. A mismatch means the weights on disk no
+# longer behave like the ones that were promoted, whatever the reason, and
+# the checkpoint is refused rather than trusted on faith.
+CANARY_SEED = 20260920     # fixed, so every machine generates the identical input
+CANARY_PX = 64              # small: this runs on every process start, not once
+CANARY_REL_TOL = 0.01       # same threshold ov_backend.py already uses for "matches"
+
+
+def _canary_input() -> Image.Image:
+    """A deterministic synthetic image, not a file on disk -- generating it
+    from a fixed seed means verification never depends on a golden-image
+    file that could itself go missing, get corrupted, or drift out of sync
+    with the code, which is exactly the class of problem this exists to
+    avoid introducing elsewhere."""
+    rng = np.random.RandomState(CANARY_SEED)
+    arr = (rng.rand(CANARY_PX, CANARY_PX, 3) * 255).astype(np.uint8)
+    return Image.fromarray(arr)
+
+
+def _fingerprint_array(arr: np.ndarray) -> dict:
+    """A compact, reproducible description of an output array's BEHAVIOUR.
+
+    Rounded before hashing: bit-exact reproducibility across CPU/GPU/library
+    versions is not guaranteed even for identical weights, so hashing raw
+    float64 bytes would false-positive on harmless numerical noise. Three
+    decimal places is far tighter than CANARY_REL_TOL, so real drift still
+    changes the hash while floating-point jitter mostly doesn't -- and the
+    mean/std/relative check below is the actual pass/fail criterion; the
+    hash is a stronger secondary signal for a human comparing two reports.
+    """
+    a = np.asarray(arr, dtype=np.float64)
+    rounded = np.round(a, 3)
+    return {
+        "hash": hashlib.sha256(rounded.tobytes()).hexdigest()[:16],
+        "mean": round(float(rounded.mean()), 4),
+        "std": round(float(rounded.std()), 4),
+        "shape": list(a.shape),
+    }
+
+
+def _fingerprints_match(expected: dict, actual: dict) -> tuple[bool, str]:
+    if not expected or "mean" not in expected:
+        return False, "no fingerprint on record"
+    if list(expected.get("shape") or []) != list(actual["shape"]):
+        return False, f"output shape changed ({expected.get('shape')} -> {actual['shape']})"
+    denom = max(abs(expected["mean"]), 1e-6)
+    rel = abs(actual["mean"] - expected["mean"]) / denom
+    if rel > CANARY_REL_TOL:
+        return False, (f"canary output mean drifted {rel*100:.1f}% "
+                        f"(licensed {expected['mean']}, now {actual['mean']}, "
+                        f"limit {CANARY_REL_TOL*100:.0f}%)")
+    return True, "ok"
+
+
+def license_checkpoint(marker_path: str, backbone: "DepthBackbone") -> dict:
+    """Records the behavioural fingerprint that later loads of THIS
+    checkpoint will be checked against -- called once, at the moment a
+    checkpoint earns its marker file (metric_ok.json / htc_ok.json), never
+    at load time. Merges into whatever's already in the marker rather than
+    overwriting it, since train_height.py's own promotion stats (MAE,
+    baseline comparison) already live in that same file.
+    """
+    fp = _fingerprint_array(backbone.predict(_canary_input(), raw_metric=True))
+    try:
+        with open(marker_path, encoding="utf-8") as f:
+            info = json.load(f)
+    except Exception:
+        info = {}
+    info["canary"] = fp
+    with open(marker_path, "w", encoding="utf-8") as f:
+        json.dump(info, f, indent=2)
+    return fp
 
 
 # Identifies which backbone produced a cached height field. Cache keys must
@@ -104,8 +200,33 @@ class DepthBackbone:
         except Exception:
             return {}
 
+    # Every request used to pay for a full weight reload from disk -- confirmed
+    # by reading the actual call path, not assumed: build_city_image.build()
+    # constructs a fresh DepthBackbone() on every job, and server.py calls
+    # build() fresh per upload, so a "cached" model was never real. Fixed with
+    # a flyweight keyed on the exact constructor args: the pipeline's own
+    # `_pipeline_lock` (server.py) already serialises every job to one at a
+    # time, so there is no concurrent-construction race to guard against, and
+    # the args (model_name/device/metric/htc) are the complete description of
+    # which weights get loaded -- two calls with the same args always want the
+    # same already-loaded model, never a fresh copy of it.
+    _instances: dict = {}
+
+    def __new__(cls, model_name: str = "depth-anything/Depth-Anything-V2-Base-hf",
+                device: str = None, metric: bool = None, htc: bool = None):
+        key = (model_name, device, metric, htc)
+        cached = cls._instances.get(key)
+        if cached is not None:
+            return cached
+        obj = super().__new__(cls)
+        cls._instances[key] = obj
+        return obj
+
     def __init__(self, model_name: str = "depth-anything/Depth-Anything-V2-Base-hf",
                  device: str = None, metric: bool = None, htc: bool = None):
+        if getattr(self, "_loaded", False):
+            return   # flyweight hit -- weights are already in memory
+        self._loaded = True
         # metric=None means "use the fine-tuned checkpoint if one is there".
         # Explicit True demands it and fails loudly if absent, so a benchmark
         # cannot silently score the stock model and report it as the metric one.
@@ -171,6 +292,47 @@ class DepthBackbone:
                 model=model_name,
                 device=0 if self.device == "cuda" else -1,
             )
+
+        self._canary_verified = None   # not applicable to the stock backbone
+        if self.is_metric or self.is_htc:
+            self._verify_checkpoint_behaviour()
+
+    def _verify_checkpoint_behaviour(self) -> None:
+        """Refuses a licensed checkpoint whose OUTPUT no longer matches what
+        was recorded when it was promoted -- see the module docstring above
+        _canary_input for why this checks behaviour rather than file bytes."""
+        ckpt_dir = self.HTC_CKPT if self.is_htc else self.METRIC_CKPT
+        marker = self.HTC_MARKER if self.is_htc else self.MARKER
+        marker_path = os.path.join(ckpt_dir, marker)
+        try:
+            with open(marker_path, encoding="utf-8") as f:
+                info = json.load(f)
+        except Exception:
+            info = {}
+
+        actual = _fingerprint_array(self.predict(_canary_input(), raw_metric=True))
+        expected = info.get("canary")
+        if expected is None:
+            # Predates this check (or was licensed before it existed). Not a
+            # trust failure -- there is nothing to compare against -- but
+            # loud rather than silent, since it means this specific safety
+            # net is not actually active for this checkpoint.
+            print(f"      NOTE: {marker_path} has no behavioural fingerprint on "
+                  f"record; re-run the licensing step to enable verification "
+                  f"for this checkpoint (see depth_model.license_checkpoint).")
+            self._canary_verified = None
+            return
+
+        ok, reason = _fingerprints_match(expected, actual)
+        if not ok:
+            raise RuntimeError(
+                f"checkpoint at {ckpt_dir} FAILED behavioural verification: {reason}. "
+                f"The weights on disk no longer compute what this checkpoint did "
+                f"when it was licensed -- refusing to use it rather than trust it "
+                f"on faith. If this is an intentional retrain, re-run the "
+                f"licensing step to record a fresh fingerprint.")
+        self._canary_verified = True
+        print(f"      checkpoint behaviour verified against licensed fingerprint ({actual['hash']})")
 
     def _try_openvino(self, pixel_values, reference):
         """Bring up the iGPU path once, verifying it against the CPU result."""

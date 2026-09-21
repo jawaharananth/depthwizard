@@ -5,12 +5,26 @@
 <title>DepthWizard 3D Terrain Viewer</title>
 <style>
   html, body { margin: 0; height: 100%; overflow: hidden; background: #000; font-family: system-ui, sans-serif; }
-  #canvas-container { width: 100%; height: 100%; }
+  /* touch-action: none on the canvas itself -- without it, mobile Safari/
+     Chrome intercept a two-finger pinch as native page-zoom (or a one-finger
+     drag as scroll) before OrbitControls' own pointer handlers ever see the
+     gesture. OrbitControls already implements one-finger-rotate/two-finger-
+     pinch-zoom internally; this is the one CSS property standing between
+     "already works" and "the browser eats the gesture first". */
+  #canvas-container { width: 100%; height: 100%; touch-action: none; }
+  #canvas-container canvas { touch-action: none; }
   #ui {
     position: fixed; top: 12px; left: 12px; z-index: 10;
     background: rgba(20,20,25,0.75); backdrop-filter: blur(6px);
     border-radius: 10px; padding: 12px 14px; color: #eee; font-size: 13px;
     min-width: 220px;
+    /* The panel accumulates sections (tools, measure readout, a 320x120
+       cross-section canvas, GCP rows, sliders) that can exceed a short
+       viewport -- a 1366x768 hall laptop with browser chrome eating into
+       that leaves well under 700px of usable height. Without this, controls
+       below the fold are simply unreachable, not just ugly. */
+    max-height: calc(100vh - 24px);
+    overflow-y: auto;
   }
   #ui h3 { margin: 0 0 8px; font-size: 14px; color: #9fd; }
   .row { display: flex; gap: 6px; margin-bottom: 8px; flex-wrap: wrap; }
@@ -89,22 +103,34 @@
   <div class="row">
     <button id="btn-dof">Tilt-Shift</button>
     <button id="btn-tour">Flythrough</button>
+    <button id="btn-record" style="display:none;">Record Flythrough</button>
   </div>
   <div class="row">
     <button id="btn-slope">SLOPE</button>
     <button id="btn-los">Line of Sight</button>
     <button id="btn-xsec">Cross-Section</button>
+    <button id="btn-area">Measure Area</button>
     <button id="btn-gcp">Ground Control</button>
     <button id="btn-flood">Flood Source</button>
     <button id="btn-bands">Uncertainty</button>
     <button id="btn-damage">Damage</button>
+    <button id="btn-annotate">Add Pin</button>
   </div>
   <div id="dmg-panel"></div>
   <div id="gcp-panel"></div>
+  <div id="pin-panel" style="display:none;"></div>
   <div class="row">
     <button id="btn-pdf">Export PDF</button>
+    <button id="btn-pins-export" style="display:none;">Export Pins</button>
     <button id="btn-xr" style="display:none;">Enter VR</button>
   </div>
+  <div class="row" style="margin-top:4px;">
+    <input id="query-input" type="text" placeholder="e.g. buildings over 15m with low confidence"
+           style="flex:1;background:#1a1c22;color:#ddd;border:1px solid #444;border-radius:6px;
+                  padding:6px 10px;font-size:12px;">
+    <button id="btn-query">Ask</button>
+  </div>
+  <div id="query-panel" style="display:none;font-size:12px;color:#cde;margin-top:6px;line-height:1.5;"></div>
   <div class="slider-row">
     <label for="flood">Flood</label>
     <input type="range" id="flood" min="0" max="60" step="0.5" value="0">
@@ -235,7 +261,80 @@ renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;  // soft penumbra, not hard-edged stencils
 container.appendChild(renderer.domElement);
-await renderer.init();
+
+// Demo-hall hardening, part 1: a laptop with no working GPU (disabled
+// drivers, a remote-desktop session with no 3D passthrough, an ancient
+// browser) must not fail as a blank canvas and a console error nobody in
+// the room can see. WebGPURenderer already falls back to WebGL2 on its own
+// (comment above); this catches the case where BOTH backends are
+// unavailable, which is the actual "nothing will render here" case.
+try {
+  await renderer.init();
+} catch (initErr) {
+  container.innerHTML =
+    '<div style="position:fixed;inset:0;display:flex;align-items:center;' +
+    'justify-content:center;background:#0a0e14;color:#cde;font:15px sans-serif;' +
+    'text-align:center;padding:24px;">' +
+    '<div style="max-width:480px;">' +
+    '<div style="font-size:32px;margin-bottom:12px;">&#9888;</div>' +
+    '<div style="font-weight:bold;margin-bottom:8px;">This browser/device has no ' +
+    'working 3D graphics.</div>' +
+    '<div style="color:#9ab;font-size:13px;line-height:1.5;">Try the latest Chrome ' +
+    'or Edge, make sure hardware acceleration is enabled in browser settings, and ' +
+    'update GPU drivers if this is a physical machine. A remote-desktop session ' +
+    'without 3D passthrough will not render this viewer.</div>' +
+    '<div style="color:#678;font-size:11px;margin-top:14px;">(' +
+    String(initErr && initErr.message || initErr).slice(0, 200) + ')</div>' +
+    '</div></div>';
+  throw initErr;   // stop here -- nothing below can run without a renderer
+}
+
+// Demo-hall hardening, part 2: recover from a lost graphics context instead
+// of freezing on the last rendered frame. A projector swap, a driver reset,
+// or the OS reclaiming GPU memory under load can all kill the context mid-
+// demo, and the default behaviour is a silently frozen canvas that looks
+// exactly like a crash to everyone watching. This does not attempt to
+// reconstruct GPU resources in place -- Three.js's resource graph after a
+// context loss is large enough that an untested in-place recovery path is
+// itself a demo-day risk -- instead it shows a clear, honest message and
+// reloads automatically, which is a real, verifiable recovery rather than a
+// seamless-looking one that has never been tested against real hardware.
+let _contextLostBadge = null;
+function _showContextLostBadge(text) {
+  if (_contextLostBadge) return;
+  _contextLostBadge = document.createElement("div");
+  _contextLostBadge.style.cssText =
+    "position:fixed;inset:0;z-index:9999;display:flex;align-items:center;" +
+    "justify-content:center;background:rgba(10,14,20,0.92);color:#cde;" +
+    "font:15px sans-serif;text-align:center;";
+  _contextLostBadge.innerHTML =
+    '<div>' + text + '<br><span style="color:#9ab;font-size:12px;">reloading...</span></div>';
+  document.body.appendChild(_contextLostBadge);
+}
+renderer.domElement.addEventListener("webglcontextlost", (e) => {
+  e.preventDefault();
+  _showContextLostBadge("Graphics context lost.");
+  setTimeout(() => window.location.reload(), 2000);
+}, false);
+renderer.domElement.addEventListener("webglcontextrestored", () => {
+  // Reached only if the reload above hasn't already fired; a fresh load is
+  // simpler and more trustworthy than resuming mid-scene.
+  window.location.reload();
+}, false);
+// Real WebGPU (not the WebGL2 fallback) reports device loss through a
+// different API -- the GPUDevice's own `.lost` promise, not a DOM event.
+// Introspecting Three.js's internal backend object is version-fragile, so
+// this is wrapped defensively: if it can't find the device, it silently
+// skips rather than breaking renderer init over a best-effort extra check.
+try {
+  const gpuDevice = renderer.backend && renderer.backend.device;
+  if (gpuDevice && gpuDevice.lost && typeof gpuDevice.lost.then === "function") {
+    gpuDevice.lost.then((info) => {
+      _showContextLostBadge("Graphics device lost" + (info && info.message ? ": " + info.message : "") + ".");
+      setTimeout(() => window.location.reload(), 2000);
+    });
+  }
+} catch (e) { /* best-effort only */ }
 
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.1, 20000);
@@ -1318,8 +1417,128 @@ function clearMeasure() {
 
 let floodSeedMode = false;
 
+// --- Annotation pins ---------------------------------------------------
+//
+// Persisted per-scene (localStorage keyed on BASE, the same scene identity
+// every other per-scene lookup here already uses), so a pin dropped during
+// one visit is still there after a reload -- a real, checkable record a
+// disaster-response team could actually rely on, not a session-only toy.
+let annotateActive = false;
+let pins = [];
+const pinMarkers = [];
+const PIN_STORAGE_KEY = "depthwizard_pins:" + BASE;
+
+function loadPins() {
+  try {
+    const raw = localStorage.getItem(PIN_STORAGE_KEY);
+    pins = raw ? JSON.parse(raw) : [];
+  } catch (e) { pins = []; }
+}
+
+function savePins() {
+  try { localStorage.setItem(PIN_STORAGE_KEY, JSON.stringify(pins)); } catch (e) { /* storage unavailable -- pins still work this session */ }
+}
+
+function makePinSprite(text) {
+  const canvas = document.createElement("canvas");
+  canvas.width = 256; canvas.height = 64;
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "rgba(20,14,10,0.88)";
+  ctx.beginPath();
+  ctx.roundRect(0, 0, 256, 64, 10);
+  ctx.fill();
+  ctx.strokeStyle = "#e0a05a"; ctx.lineWidth = 3; ctx.stroke();
+  ctx.fillStyle = "#fff"; ctx.font = "bold 20px sans-serif"; ctx.textBaseline = "middle";
+  const label = text.length > 22 ? text.slice(0, 21) + "…" : text;
+  ctx.fillText(label, 12, 32);
+  const tex = new THREE.CanvasTexture(canvas);
+  const mat = new THREE.SpriteMaterial({ map: tex, depthTest: false });
+  const spr = new THREE.Sprite(mat);
+  spr.scale.set(24, 6, 1);
+  spr.renderOrder = 10;
+  return spr;
+}
+
+function renderPins() {
+  pinMarkers.forEach((m) => scene.remove(m));
+  pinMarkers.length = 0;
+  for (const pin of pins) {
+    const spr = makePinSprite(pin.text);
+    spr.position.set(pin.x, pin.y + 6, pin.z);
+    scene.add(spr);
+    pinMarkers.push(spr);
+  }
+  const panel = document.getElementById("pin-panel");
+  const exportBtn = document.getElementById("btn-pins-export");
+  if (panel) {
+    panel.style.display = pins.length ? "block" : "none";
+    panel.innerHTML = pins.map((p, i) =>
+      `<div style="display:flex;justify-content:space-between;gap:6px;padding:2px 0;">`
+      + `<span>${p.text.replace(/</g, "&lt;")}</span>`
+      + `<a href="#" data-i="${i}" class="pin-del" style="color:#e0a05a;">remove</a></div>`
+    ).join("");
+    panel.querySelectorAll(".pin-del").forEach((a) => {
+      a.addEventListener("click", (e) => {
+        e.preventDefault();
+        pins.splice(parseInt(a.dataset.i, 10), 1);
+        savePins();
+        renderPins();
+      });
+    });
+  }
+  if (exportBtn) exportBtn.style.display = pins.length ? "inline-block" : "none";
+}
+
+document.getElementById("btn-annotate").addEventListener("click", () => {
+  annotateActive = !annotateActive;
+  document.getElementById("btn-annotate").classList.toggle("active", annotateActive);
+  if (annotateActive) {
+    measureActive = false; gcpActive = false; floodSeedMode = false; toolMode = null;
+    document.getElementById("btn-measure").classList.remove("active");
+    document.getElementById("btn-gcp").classList.remove("active");
+    document.getElementById("btn-flood").classList.remove("active");
+    document.getElementById("measure-panel").textContent =
+      "Click anywhere to drop a labelled pin.";
+  } else {
+    document.getElementById("measure-panel").textContent = "Click a building to read its height.";
+  }
+});
+
+document.getElementById("btn-pins-export").addEventListener("click", () => {
+  const rows = [["text", "easting", "northing", "scene_x", "scene_y", "scene_z"]];
+  for (const p of pins) {
+    const rc = realCoordsAt(p.x, p.z) || {};
+    rows.push([p.text, rc.easting ?? "", rc.northing ?? "", p.x, p.y, p.z]);
+  }
+  const csv = rows.map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\n");
+  const blob = new Blob([csv], { type: "text/csv" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "depthwizard_pins.csv";
+  a.click();
+  URL.revokeObjectURL(a.href);
+});
+
+loadPins();
+renderPins();
+
 renderer.domElement.addEventListener("click", (event) => {
   if (toolMode) { handleToolClick(event); return; }
+  if (annotateActive) {
+    pointer.x = (event.clientX / window.innerWidth) * 2 - 1;
+    pointer.y = -(event.clientY / window.innerHeight) * 2 + 1;
+    raycaster.setFromCamera(pointer, camera);
+    const hits = raycaster.intersectObjects(scene.children, true)
+      .filter((h) => h.object.isMesh && h.object.visible && h.object !== floodMeshObj);
+    if (hits.length === 0) return;
+    const p = hits[0].point.clone();
+    const text = window.prompt("Note for this location:", "");
+    if (text === null || text.trim() === "") return;   // cancelled or empty -- drop nothing
+    pins.push({ x: p.x, y: p.y, z: p.z, text: text.trim() });
+    savePins();
+    renderPins();
+    return;
+  }
   if (!measureActive && !gcpActive && !floodSeedMode) return;
   pointer.x = (event.clientX / window.innerWidth) * 2 - 1;
   pointer.y = -(event.clientY / window.innerHeight) * 2 + 1;
@@ -1518,6 +1737,122 @@ let gcpActive = false;
 let gcpPoints = [];          // {id, measured, known, x, z, marker}
 let gcpApplied = null;       // the factor currently applied, if any
 
+// Ordinary least squares for known=a*measured^b via y=ln(known), x=ln(measured),
+// y = b*x + ln(a). Returns null on a degenerate (near-zero-variance) x, same
+// guard the caller already had.
+function fitPowerLaw(usable) {
+  const xs = usable.map((p) => Math.log(p.measured));
+  const ys = usable.map((p) => Math.log(p.known));
+  const n = xs.length;
+  const xbar = xs.reduce((s, v) => s + v, 0) / n;
+  const ybar = ys.reduce((s, v) => s + v, 0) / n;
+  let num = 0, den = 0;
+  for (let i = 0; i < n; i++) { num += (xs[i] - xbar) * (ys[i] - ybar); den += (xs[i] - xbar) ** 2; }
+  if (den < 1e-9) return null;
+  const b = num / den;
+  const a = Math.exp(ybar - b * xbar);
+  return { a, b, xbar, xvar: den / n };
+}
+
+// Condition number of the [x, 1] design matrix used by the fit above,
+// computed in closed form from X^T X's eigenvalues (a 2x2 symmetric matrix
+// has a direct quadratic-formula eigen-solution, no iterative solver
+// needed). A high condition number means the fit is numerically fragile --
+// the same underlying concern a convex-hull spread check or a collinearity
+// test each approximate geometrically, but this measures it directly for
+// the regression actually being solved, on a continuous scale rather than
+// two separate pass/fail heuristics.
+function designMatrixConditionNumber(xs) {
+  const n = xs.length;
+  const sx = xs.reduce((s, v) => s + v, 0);
+  const sxx = xs.reduce((s, v) => s + v * v, 0);
+  // X^T X = [[sxx, sx], [sx, n]]
+  const trace = sxx + n, det = sxx * n - sx * sx;
+  const disc = Math.sqrt(Math.max(0, trace * trace - 4 * det));
+  const l1 = (trace + disc) / 2, l2 = (trace - disc) / 2;
+  if (l2 <= 1e-12) return Infinity;   // singular or numerically indistinguishable from it
+  return Math.sqrt(l1 / l2);
+}
+
+// Leave-one-out cross-validation: refit on every point but one, predict the
+// held-out point, repeat for each point. Reports RMSE over those N genuinely
+// held-out predictions -- the standard, unbiased way to ask "how well does
+// this curve generalise" rather than just reporting fit error on the same
+// points that trained it.
+function powerLawLOOCV(usable) {
+  if (usable.length < 3) return null;   // need >=2 points left after holding one out
+  let sqSum = 0, nOk = 0;
+  for (let i = 0; i < usable.length; i++) {
+    const rest = usable.slice(0, i).concat(usable.slice(i + 1));
+    const fit = fitPowerLaw(rest);
+    if (!fit) continue;
+    const held = usable[i];
+    const predicted = fit.a * Math.pow(held.measured, fit.b);
+    sqSum += (predicted - held.known) ** 2;
+    nOk++;
+  }
+  if (nOk === 0) return null;
+  return { rmse: Math.sqrt(sqSum / nOk), n: nOk };
+}
+
+// Bootstrap confidence interval on the fitted exponent b: resample the
+// control points WITH replacement many times, refit each resample, and
+// take the 5th/95th percentile of the resulting b values. This answers a
+// different, harder question than LOOCV's prediction error -- "how much
+// would the fitted CURVE SHAPE itself change if slightly different points
+// had been clicked" -- which a single point estimate plus a cross-
+// validation score never reports at all.
+function powerLawBootstrapCI(usable, resamples) {
+  if (usable.length < 3) return null;
+  const n = usable.length;
+  const bs = [];
+  // Deterministic PRNG (mulberry32), not Math.random(): a control-point
+  // configuration's reported confidence interval must reproduce identically
+  // on a re-click of "recompute," or the number itself becomes something to
+  // distrust.
+  let seed = 0x2f6e2b1;
+  const rnd = () => {
+    seed |= 0; seed = (seed + 0x6D2B79F5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  for (let r = 0; r < resamples; r++) {
+    const sample = [];
+    for (let i = 0; i < n; i++) sample.push(usable[Math.floor(rnd() * n)]);
+    const fit = fitPowerLaw(sample);
+    if (fit) bs.push(fit.b);
+  }
+  if (bs.length < resamples * 0.5) return null;   // too many degenerate resamples to trust
+  bs.sort((x, y) => x - y);
+  const pct = (p) => bs[Math.min(bs.length - 1, Math.floor(p * bs.length))];
+  return { lo: pct(0.05), hi: pct(0.95), n: bs.length };
+}
+
+function fitPowerLawDiagnostics(usable, flatOut) {
+  if (usable.length < 2) return null;
+  const fit = fitPowerLaw(usable);
+  if (!fit) return null;
+  const { a, b } = fit;
+  const n = usable.length;
+  const plOut = usable.map((p) => {
+    const predicted = a * Math.pow(p.measured, b);
+    return { ...p, predicted, residual: predicted - p.known };
+  });
+  const plMae = plOut.reduce((s, p) => s + Math.abs(p.residual), 0) / n;
+  const flatMae = flatOut.reduce((s, p) => s + Math.abs(p.residual), 0) / flatOut.length;
+  const xs = usable.map((p) => Math.log(p.measured));
+  return {
+    a, b, mae: plMae,
+    improvementFrac: flatMae > 1e-9 ? (flatMae - plMae) / flatMae : 0,
+    significant: Math.abs(b - 1.0) > 0.15,
+    conditionNumber: designMatrixConditionNumber(xs),
+    illConditioned: designMatrixConditionNumber(xs) > 30,   // Belsley et al.'s standard econometric threshold
+    loocv: powerLawLOOCV(usable),
+    bootstrapCI: powerLawBootstrapCI(usable, 500),
+  };
+}
+
 function gcpSolve(points) {
   const usable = points.filter((p) => p.measured >= GCP_MIN_MEASURED && p.known > 0);
   if (usable.length < 2) {
@@ -1537,12 +1872,38 @@ function gcpSolve(points) {
     return { ...p, predicted, residual, frac, suspect: frac > GCP_SUSPECT_FRAC };
   });
   const disagreement = Math.abs(factor - alt) / Math.max(Math.abs(factor), 1e-9);
+
+  // A flat ratio assumes the same proportional error at every height, which
+  // is only true if error is genuinely scale-invariant. It usually isn't --
+  // a shed a metre off is a much bigger fraction of its own height than a
+  // tower a metre off. Fitting known = a * measured^b in log space (b=1
+  // would mean "flat ratio was already right") checks that assumption
+  // against these actual points instead of assuming it, and surfaces
+  // whether it matters HERE rather than only citing that it can matter in
+  // general. This is reported alongside the flat factor, not swapped in for
+  // it -- applying a per-vertex power-law correction to the actual geometry
+  // is a materially larger, riskier change than this diagnostic, and isn't
+  // attempted here.
+  //
+  // Rigor here is deliberately regression diagnostics (condition number,
+  // leave-one-out cross-validation, a bootstrap confidence interval on the
+  // fitted exponent), not geometric heuristics (a convex-hull spread check,
+  // a separate collinearity test). Those two heuristics both exist to catch
+  // "the points are badly arranged for this fit" -- a condition number
+  // measures exactly that, directly, as a single continuous number, for
+  // whatever is actually being fit, rather than two separate binary
+  // pass/fail geometric proxies for it. The bootstrap CI goes further than
+  // a point-estimate-plus-cross-validation-error: it reports UNCERTAINTY in
+  // the curve's shape itself, not just how well it predicts held-out points.
+  const powerLaw = fitPowerLawDiagnostics(usable, out);
+
   return {
     ok: true, factor, alt, disagreement,
     disagree: disagreement > 0.10,
     points: out,
     mae: out.reduce((s, p) => s + Math.abs(p.residual), 0) / out.length,
     nSuspect: out.filter((p) => p.suspect).length,
+    powerLaw,
   };
 }
 
@@ -1637,6 +1998,32 @@ function gcpRender() {
       html += `<div class="gcp-warn">${res.nSuspect} point(s) marked suspect — `
            + `a residual over ${Math.round(GCP_SUSPECT_FRAC * 100)}% is as likely `
            + `a mistyped height as a bad reconstruction.</div>`;
+    }
+    if (res.powerLaw && res.powerLaw.significant) {
+      const pl = res.powerLaw;
+      html += `<div class="gcp-warn">Error here isn't a flat ratio — a height^`
+           + `${pl.b.toFixed(2)} curve fits ${Math.round(pl.improvementFrac * 100)}% `
+           + `better than one flat scale on these points. The Apply button still uses the flat `
+           + `scale (uniform to every vertex); this is a diagnostic, not yet a correction.</div>`;
+      if (pl.bootstrapCI) {
+        html += `<div class="gcp-hint">exponent 90% CI [${pl.bootstrapCI.lo.toFixed(2)}, `
+             + `${pl.bootstrapCI.hi.toFixed(2)}] over ${pl.bootstrapCI.n} resamples`
+             + (pl.bootstrapCI.lo <= 1.0 && pl.bootstrapCI.hi >= 1.0
+                ? " — includes 1.0, so \"it's just a flat ratio\" isn't ruled out yet"
+                : " — reliably excludes 1.0 (flat ratio), the curve is real")
+             + `.</div>`;
+      }
+      if (pl.loocv) {
+        html += `<div class="gcp-hint">leave-one-out cross-validation: `
+             + `${pl.loocv.rmse.toFixed(2)} m RMSE on ${pl.loocv.n} held-out points `
+             + `(fit-on-same-data MAE above is optimistic; this isn't).</div>`;
+      }
+      if (pl.illConditioned) {
+        html += `<div class="gcp-warn">Condition number ${pl.conditionNumber.toFixed(0)} — `
+             + `these points' heights are too similar/too few to trust the curve shape `
+             + `(threshold 30, standard for this kind of regression). Add a point at a `
+             + `different height before relying on this.</div>`;
+      }
     }
     html += `<button class="gcp-apply" id="gcp-apply">Apply scale &rarr; metric</button>`;
   } else {
@@ -2444,33 +2831,76 @@ function applySunHour(hour) {
 // share one collector rather than each growing a private copy of it, so a
 // change to how picking works cannot leave one tool behaving differently from
 // the other.
-let toolMode = null;                  // null | "los" | "xsec"
+let toolMode = null;                  // null | "los" | "xsec" | "area"
 let toolPoints = [];
 const toolMarkers = [];
+let areaLine = null;                  // growing outline while an area pick is in progress
 
 function clearToolPicks() {
   toolPoints = [];
   toolMarkers.forEach((m) => scene.remove(m));
   toolMarkers.length = 0;
+  if (areaLine) { scene.remove(areaLine); areaLine.geometry.dispose(); areaLine = null; }
+}
+
+// Shoelace formula on the real ground plane (X/Z, ignoring Y so a building
+// roof the polygon brushes past doesn't inflate the footprint) -- the
+// standard, exact method for a simple polygon's area from its vertices, not
+// an approximation. Scene units are already real metres when the scene is
+// georeferenced/metric (SCENE_META.height_is_metric), so no separate scale
+// factor is needed beyond what every other real-unit readout here already
+// assumes.
+function polygonAreaM2(points) {
+  let sum = 0;
+  for (let i = 0; i < points.length; i++) {
+    const a = points[i], b = points[(i + 1) % points.length];
+    sum += a.x * b.z - b.x * a.z;
+  }
+  return Math.abs(sum) / 2;
+}
+
+function finishAreaMeasurement() {
+  const panel = document.getElementById("measure-panel");
+  if (toolPoints.length < 3) {
+    if (panel) panel.textContent = "Need at least 3 points for an area -- click more, or Measure Area again to cancel.";
+    return;
+  }
+  const metric = SCENE_META && SCENE_META.height_is_metric;
+  const areaM2 = polygonAreaM2(toolPoints);
+  if (panel) {
+    panel.textContent = metric
+      ? `Area: ${areaM2 < 10000 ? areaM2.toFixed(0) + " m²" : (areaM2 / 10000).toFixed(2) + " ha"} `
+        + `(${toolPoints.length} points)`
+      : `Area: ${areaM2.toFixed(0)} sq. units (relative scale, ${toolPoints.length} points)`;
+  }
 }
 
 function setToolMode(next) {
+  const wasArea = toolMode === "area";
+  const finishingArea = wasArea && next === "area" && toolPoints.length >= 3;
   toolMode = (toolMode === next) ? null : next;
-  clearToolPicks();
+  if (finishingArea) finishAreaMeasurement();
+  if (toolMode !== "area") clearToolPicks();
   clearLineOfSight();
   hideCrossSection();
   document.getElementById("btn-los").classList.toggle("active", toolMode === "los");
   document.getElementById("btn-xsec").classList.toggle("active", toolMode === "xsec");
+  const areaBtn = document.getElementById("btn-area");
+  if (areaBtn) areaBtn.classList.toggle("active", toolMode === "area");
   if (toolMode) {
-    // Turning a two-point tool on cancels the one-point tool: leaving both
-    // armed would make a single click mean two different things.
+    // Turning a multi-point tool on cancels the one-point tool and pin
+    // placement: leaving several armed at once would make a single click
+    // mean more than one thing.
     measureActive = false;
+    annotateActive = false;
     document.getElementById("btn-measure").classList.remove("active");
+    const annBtn = document.getElementById("btn-annotate");
+    if (annBtn) annBtn.classList.remove("active");
     document.getElementById("measure-panel").textContent =
-      (toolMode === "los")
-        ? "Click the observer position, then the target."
-        : "Click the two ends of the section line.";
-  } else {
+      (toolMode === "los") ? "Click the observer position, then the target."
+      : (toolMode === "xsec") ? "Click the two ends of the section line."
+      : "Click each corner of the area, then press Measure Area again to close it.";
+  } else if (!finishingArea) {
     document.getElementById("measure-panel").textContent =
       "Click a building to read its height.";
   }
@@ -2489,11 +2919,26 @@ function handleToolClick(event) {
 
   const marker = new THREE.Mesh(
     new THREE.SphereGeometry(Math.max(0.8, camera.position.distanceTo(p) * 0.003), 12, 12),
-    new THREE.MeshBasicMaterial({ color: toolMode === "los" ? 0x44dd77 : 0x6ab6cd })
+    new THREE.MeshBasicMaterial({ color: toolMode === "los" ? 0x44dd77 : toolMode === "area" ? 0xe0c04a : 0x6ab6cd })
   );
   marker.position.copy(p);
   scene.add(marker);
   toolMarkers.push(marker);
+
+  if (toolMode === "area") {
+    // Redraw the outline (open polyline while picking -- closing it only
+    // happens visually once finishAreaMeasurement is called, matching "the
+    // shape isn't final until you say so").
+    if (areaLine) { scene.remove(areaLine); areaLine.geometry.dispose(); areaLine = null; }
+    if (toolPoints.length >= 2) {
+      const g = new THREE.BufferGeometry().setFromPoints(toolPoints);
+      areaLine = new THREE.Line(g, new THREE.LineBasicMaterial({ color: 0xe0c04a }));
+      scene.add(areaLine);
+    }
+    document.getElementById("measure-panel").textContent =
+      `${toolPoints.length} point(s) placed -- keep clicking, or press Measure Area again to close.`;
+    return;
+  }
 
   if (toolPoints.length < 2) {
     document.getElementById("measure-panel").textContent = "Now click the second point.";
@@ -2509,6 +2954,7 @@ function handleToolClick(event) {
 
 document.getElementById("btn-los").addEventListener("click", () => setToolMode("los"));
 document.getElementById("btn-xsec").addEventListener("click", () => setToolMode("xsec"));
+document.getElementById("btn-area").addEventListener("click", () => setToolMode("area"));
 document.getElementById("btn-gcp").addEventListener("click", () => setGcpMode());
 document.getElementById("btn-flood").addEventListener("click", () => {
   floodSeedMode = !floodSeedMode;
@@ -2879,13 +3325,438 @@ function updateScaleBar() {
   scaleBarEl.style.display = "none";
 }
 
+// --- Compare slider: prediction vs ground truth ---
+//
+// Only appears on a scene built from a real LiDAR benchmark tile
+// (build_city.py's ground-truth path writes compare_truth.png /
+// compare_pred.png; every other scene has no such pair, and the panel
+// stays hidden rather than showing a slider with nothing real behind it).
+// Existence is checked by actually loading both images, not by guessing
+// from scene.json, since a stale/partial build could have the field
+// without the file.
+const TEXTURE_COMPARE_TRUTH_URL = `${BASE}/compare_truth.png`;
+const TEXTURE_COMPARE_PRED_URL = `${BASE}/compare_pred.png`;
+
+function _imageLoads(url) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => resolve(true);
+    img.onerror = () => resolve(false);
+    img.src = url;
+  });
+}
+
+const compareToggleBtn = document.createElement("button");
+compareToggleBtn.id = "compare-toggle";
+compareToggleBtn.textContent = "Compare: Prediction vs Ground Truth";
+compareToggleBtn.style.cssText =
+  "position:fixed;bottom:16px;right:16px;z-index:41;display:none;" +
+  "background:rgba(10,14,20,0.8);color:#cde;border:1px solid #345;" +
+  "border-radius:6px;padding:8px 12px;font:12px monospace;cursor:pointer;";
+document.body.appendChild(compareToggleBtn);
+
+const comparePanel = document.createElement("div");
+comparePanel.id = "compare-panel";
+comparePanel.style.cssText =
+  "position:fixed;bottom:64px;right:16px;z-index:41;display:none;" +
+  "background:rgba(10,14,20,0.9);border:1px solid #345;border-radius:8px;" +
+  "padding:10px;color:#cde;font:11px monospace;width:420px;";
+comparePanel.innerHTML =
+  '<div id="compare-caption" style="margin-bottom:6px;"></div>' +
+  '<div id="compare-stage" style="position:relative;width:400px;height:400px;' +
+  'overflow:hidden;border:1px solid #345;">' +
+  '<img id="compare-img-truth" style="position:absolute;top:0;left:0;' +
+  'width:400px;height:400px;object-fit:cover;">' +
+  '<img id="compare-img-pred" style="position:absolute;top:0;left:0;' +
+  'width:400px;height:400px;object-fit:cover;">' +
+  '<div id="compare-divider" style="position:absolute;top:0;bottom:0;width:2px;' +
+  'background:#fff;pointer-events:none;"></div>' +
+  '</div>' +
+  '<input id="compare-range" type="range" min="0" max="100" value="50" ' +
+  'style="width:400px;margin-top:6px;">' +
+  '<div style="display:flex;justify-content:space-between;margin-top:2px;">' +
+  '<span>← Prediction</span><span>Ground truth →</span></div>';
+document.body.appendChild(comparePanel);
+
+(async () => {
+  const [truthOk, predOk] = await Promise.all([
+    _imageLoads(TEXTURE_COMPARE_TRUTH_URL), _imageLoads(TEXTURE_COMPARE_PRED_URL),
+  ]);
+  if (!truthOk || !predOk) return;   // no real ground truth for this scene
+
+  document.getElementById("compare-img-truth").src = TEXTURE_COMPARE_TRUTH_URL;
+  document.getElementById("compare-img-pred").src = TEXTURE_COMPARE_PRED_URL;
+
+  const v = (SCENE_META && SCENE_META.validation) || null;
+  const caption = document.getElementById("compare-caption");
+  caption.textContent = v
+    ? `Same buildings, same colour scale (0-${v.compare_height_scale_m ?? "?"} m). ` +
+      `RMSE ${v.rmse_m} m, bias ${v.bias_m >= 0 ? "+" : ""}${v.bias_m} m over the central ${v.covers_m ?? "?"} m.`
+    : "Same buildings, same colour scale -- drag to compare.";
+
+  const range = document.getElementById("compare-range");
+  const predImg = document.getElementById("compare-img-pred");
+  const divider = document.getElementById("compare-divider");
+  function applyClip() {
+    const pct = range.value;
+    predImg.style.clipPath = `inset(0 ${100 - pct}% 0 0)`;
+    divider.style.left = pct + "%";
+  }
+  range.addEventListener("input", applyClip);
+  applyClip();
+
+  compareToggleBtn.style.display = "block";
+  compareToggleBtn.addEventListener("click", () => {
+    const open = comparePanel.style.display === "block";
+    comparePanel.style.display = open ? "none" : "block";
+  });
+})();
+
+// --- Walk mode: pointer-lock first-person flythrough ---
+//
+// OrbitControls (above) always orbits a fixed target -- good for inspecting
+// a model, wrong for the sensation of actually walking the scene. This is a
+// second, independent camera-control mode: mouse-look via the browser's
+// Pointer Lock API (movementX/Y deltas, not absolute position, so the
+// cursor never hits a screen edge) plus WASD/Space/Shift for 6DOF motion in
+// camera-local space. The two modes are mutually exclusive -- OrbitControls
+// is disabled for the duration of the lock and restored the moment it's
+// released (Esc, or the tab losing focus), so neither fights the other for
+// the camera transform.
+let walkModeActive = false;
+const walkKeys = { w: false, a: false, s: false, d: false, " ": false, shift: false };
+const WALK_SPEED_M_S = 60;
+const _walkEuler = new THREE.Euler(0, 0, 0, "YXZ");
+const _walkForward = new THREE.Vector3();
+const _walkRight = new THREE.Vector3();
+const _walkUp = new THREE.Vector3(0, 1, 0);
+
+const walkToggleBtn = document.createElement("button");
+walkToggleBtn.id = "walk-toggle";
+walkToggleBtn.textContent = "Walk Mode (click, then WASD + mouse, Esc to exit)";
+walkToggleBtn.style.cssText =
+  "position:fixed;bottom:16px;left:16px;z-index:41;" +
+  "background:rgba(10,14,20,0.8);color:#cde;border:1px solid #345;" +
+  "border-radius:6px;padding:8px 12px;font:12px monospace;cursor:pointer;";
+document.body.appendChild(walkToggleBtn);
+walkToggleBtn.addEventListener("click", () => {
+  renderer.domElement.requestPointerLock();
+});
+
+document.addEventListener("pointerlockchange", () => {
+  walkModeActive = document.pointerLockElement === renderer.domElement;
+  controls.enabled = !walkModeActive;
+  walkToggleBtn.textContent = walkModeActive
+    ? "Walk mode active -- Esc to return to orbit"
+    : "Walk Mode (click, then WASD + mouse, Esc to exit)";
+  if (walkModeActive) {
+    // Carry the orbit camera's current facing into the euler used for
+    // mouse-look, so entering walk mode never snaps the view.
+    _walkEuler.setFromQuaternion(camera.quaternion, "YXZ");
+  } else {
+    for (const k of Object.keys(walkKeys)) walkKeys[k] = false;
+  }
+});
+
+document.addEventListener("mousemove", (e) => {
+  if (!walkModeActive) return;
+  const s = 0.0022;
+  _walkEuler.y -= e.movementX * s;
+  _walkEuler.x -= e.movementY * s;
+  _walkEuler.x = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, _walkEuler.x));
+  camera.quaternion.setFromEuler(_walkEuler);
+});
+
+document.addEventListener("keydown", (e) => {
+  if (!walkModeActive) return;
+  const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+  if (k === "Shift") walkKeys.shift = true;
+  else if (k in walkKeys) walkKeys[k] = true;
+});
+document.addEventListener("keyup", (e) => {
+  const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+  if (k === "Shift") walkKeys.shift = false;
+  else if (k in walkKeys) walkKeys[k] = false;
+});
+
+function updateWalkMode(dt) {
+  if (!walkModeActive) return;
+  camera.getWorldDirection(_walkForward);
+  _walkRight.crossVectors(_walkForward, _walkUp).normalize();
+  const speed = WALK_SPEED_M_S * (walkKeys.shift ? 3 : 1) * dt;
+  if (walkKeys.w) camera.position.addScaledVector(_walkForward, speed);
+  if (walkKeys.s) camera.position.addScaledVector(_walkForward, -speed);
+  if (walkKeys.d) camera.position.addScaledVector(_walkRight, speed);
+  if (walkKeys.a) camera.position.addScaledVector(_walkRight, -speed);
+  if (walkKeys[" "]) camera.position.y += speed;
+}
+
+// --- Flythrough video export --------------------------------------------
+//
+// Records exactly what the tour camera already does, straight off the
+// canvas via the browser's own MediaRecorder + captureStream() -- no
+// external muxing library, no server round-trip, works fully offline once
+// the page is loaded. This doubles as the SIH-recommended offline backup:
+// if the live link ever hiccups in front of judges, a fresh recording of
+// the exact scene on screen can be made on the spot, seconds before it's
+// needed, rather than relying on a stale video made days earlier.
+let mediaRecorder = null;
+let recordingChunks = [];
+
+function pickRecorderMime() {
+  // Chrome/Edge ship VP9 or H.264 in WebM/MP4 containers; try the most
+  // broadly playable options first and fall back gracefully. If NONE are
+  // supported (old browser), recording is disabled outright rather than
+  // producing a file that won't open anywhere.
+  const candidates = [
+    "video/mp4;codecs=avc1", "video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm",
+  ];
+  for (const c of candidates) {
+    if (typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported(c)) return c;
+  }
+  return null;
+}
+
+function startRecording() {
+  const mime = pickRecorderMime();
+  const panel = document.getElementById("query-panel");
+  if (!mime) {
+    if (panel) { panel.style.display = "block"; panel.textContent = "This browser can't record video -- try Chrome or Edge."; }
+    return;
+  }
+  const stream = renderer.domElement.captureStream(30);
+  recordingChunks = [];
+  try {
+    mediaRecorder = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 8_000_000 });
+  } catch (e) {
+    if (panel) { panel.style.display = "block"; panel.textContent = "Recording failed to start: " + e.message; }
+    return;
+  }
+  mediaRecorder.ondataavailable = (e) => { if (e.data.size) recordingChunks.push(e.data); };
+  mediaRecorder.onstop = () => {
+    const blob = new Blob(recordingChunks, { type: mime.split(";")[0] });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "depthwizard_flythrough." + (mime.includes("mp4") ? "mp4" : "webm");
+    a.click();
+    URL.revokeObjectURL(a.href);
+  };
+
+  // Drive the tour if it isn't already running, so pressing Record alone is
+  // enough -- and remember whether the tour was already going, so stopping
+  // the recording doesn't stop a tour the user started independently.
+  const wasTourActive = tourActive;
+  if (!tourActive && btnTour) btnTour.click();
+  mediaRecorder.start();
+
+  const recordBtn = document.getElementById("btn-record");
+  if (recordBtn) { recordBtn.textContent = "Stop Recording"; recordBtn.classList.add("active"); }
+
+  // One full 60s tour loop, then auto-stop -- long enough to show the whole
+  // circuit, short enough that "Record Flythrough" can't be left running
+  // and forgotten through an entire demo.
+  const autoStopId = setTimeout(() => stopRecording(wasTourActive), 60_000);
+  mediaRecorder._autoStopId = autoStopId;
+  mediaRecorder._wasTourActive = wasTourActive;
+}
+
+function stopRecording(wasTourActive) {
+  if (!mediaRecorder || mediaRecorder.state === "inactive") return;
+  clearTimeout(mediaRecorder._autoStopId);
+  const restoreTour = wasTourActive !== undefined ? wasTourActive : mediaRecorder._wasTourActive;
+  mediaRecorder.stop();
+  mediaRecorder = null;
+  if (!restoreTour && tourActive && btnTour) btnTour.click();   // only stop the tour if THIS action started it
+  const recordBtn = document.getElementById("btn-record");
+  if (recordBtn) { recordBtn.textContent = "Record Flythrough"; recordBtn.classList.remove("active"); }
+}
+
+(() => {
+  const recordBtn = document.getElementById("btn-record");
+  if (!recordBtn) return;
+  if (typeof MediaRecorder === "undefined" || !renderer.domElement.captureStream) return;
+  recordBtn.style.display = "inline-block";
+  recordBtn.addEventListener("click", () => {
+    if (mediaRecorder && mediaRecorder.state !== "inactive") stopRecording();
+    else startRecording();
+  });
+})();
+
+// --- Scene query -------------------------------------------------------
+//
+// A text box that answers real questions about the actual buildings in this
+// scene ("which buildings are over 15m with low confidence") by filtering
+// BUILDING_RECORDS -- the exact same evidence-trail data the click-a-
+// building readout already reports, so an answer here is never a number the
+// query engine invented; it can only ever surface what the pipeline already
+// computed. This keyword parser is deliberately built and shipped FIRST as
+// the reliable base: a later, optional AI layer (translating free-form
+// English into the same filter shape) only ever REPLACES how the filter
+// gets constructed, never what answers it -- if that layer fails to load or
+// errors, this keeps working exactly as it does right now.
+function extractComparison(q, keywordRe) {
+  const idx = q.search(keywordRe);
+  if (idx < 0) return null;
+  // Looks both directions from the anchor -- "measured buildings UNDER 10m"
+  // has the direction word BEFORE the number, which a forward-only window
+  // starting at the anchor would miss entirely (verified by testing: it
+  // silently defaulted "under 10m" to ">=" instead of "<=" before this).
+  const window = q.slice(Math.max(0, idx - 20), idx + 40);
+  const numMatch = window.match(/(-?\d+(?:\.\d+)?)/);
+  if (!numMatch) return null;
+  const value = parseFloat(numMatch[1]);
+  const isLess = /(<|under|below|less than|fewer than|shorter than|at most)/.test(window);
+  const isGreater = /(>|over|above|greater than|more than|taller than|at least|exceeding)/.test(window);
+  const op = (isLess && !isGreater) ? "<=" : ">=";   // default: "over/above X" is the common phrasing
+  return { op, value };
+}
+
+function parseSceneQuery(text) {
+  const q = text.toLowerCase();
+  const filters = [];
+  // Tracks whether some OTHER clause already claimed a number in the
+  // string -- a phrase match like "low confidence" or "inferred" claims no
+  // digit at all, so a trailing "over 15m" in the same sentence must still
+  // reach the height fallback below. Only a genuine numeric match (confidence
+  // N, area N) should block it, or "buildings over 15m with low confidence"
+  // would silently lose its height clause entirely -- a real bug caught by
+  // testing this against actual phrasings, not a hypothetical one.
+  let numericClaimed = false;
+
+  const conf = extractComparison(q, /confidence/);
+  if (conf) { filters.push({ field: "confidence", ...conf }); numericClaimed = true; }
+  else if (/low confidence|weakly constrained|uncertain/.test(q)) filters.push({ field: "confidence", op: "<=", value: 0.5 });
+  else if (/high confidence|well constrained|\bconfident\b|\breliable\b/.test(q)) filters.push({ field: "confidence", op: ">=", value: 0.7 });
+
+  if (/\bmeasured\b/.test(q)) filters.push({ field: "provenance", op: "==", value: "MEASURED" });
+  else if (/\binferred\b/.test(q)) filters.push({ field: "provenance", op: "==", value: "INFERRED" });
+
+  const area = extractComparison(q, /area|footprint/);
+  if (area) { filters.push({ field: "area_m2", ...area }); numericClaimed = true; }
+
+  const height = extractComparison(q, /height|tall|storey|storeys|floor/);
+  if (height) {
+    filters.push({ field: "height_m", ...height });
+  } else if (!numericClaimed) {
+    // No metric keyword recognised at all -- if there's still a bare
+    // comparator+number, assume height, since "buildings over 15m" (no
+    // explicit word "height") is the single most natural phrasing this
+    // parser needs to get right.
+    const bare = extractComparison(q, /\d/);
+    if (bare) filters.push({ field: "height_m", ...bare });
+  }
+
+  return filters;
+}
+
+function applySceneFilters(records, filters) {
+  return records.filter((rec) => {
+    const p = rec.props || {};
+    return filters.every((f) => {
+      const v = p[f.field];
+      if (v === undefined || v === null) return false;
+      if (f.op === "==") return String(v).toUpperCase() === String(f.value).toUpperCase();
+      if (f.op === ">=") return v >= f.value;
+      if (f.op === "<=") return v <= f.value;
+      return false;
+    });
+  });
+}
+
+let queryHighlightGroup = null;
+
+function clearQueryHighlights() {
+  if (queryHighlightGroup) { scene.remove(queryHighlightGroup); queryHighlightGroup = null; }
+}
+
+function highlightMatches(matches) {
+  clearQueryHighlights();
+  if (!matches.length || !groundMesh) return;
+  const ox = SCENE_META.origin_x || 0, oy = SCENE_META.origin_y || 0;
+  const datum = new THREE.Box3().setFromObject(groundMesh).min.y;
+  queryHighlightGroup = new THREE.Group();
+  queryHighlightGroup.name = "query-highlights";
+
+  for (const rec of matches) {
+    if (!rec.ring || rec.ring.length < 3) continue;
+    const pts = rec.ring.map((pt) => new THREE.Vector2(pt[0] - ox, -(pt[1] - oy)));
+    let shape;
+    try { shape = new THREE.Shape(pts); } catch (e) { continue; }
+    const h = rec.props.height_m || 1.0;
+    const geo = new THREE.ExtrudeGeometry(shape, { depth: h + 1.5, bevelEnabled: false });
+    geo.rotateX(-Math.PI / 2);
+    const gy = sampleGroundAt(rec.cx - ox, rec.cy - oy, datum);
+    const mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
+      color: 0xffcc33, transparent: true, opacity: 0.35, depthWrite: false,
+    }));
+    mesh.position.y = gy - 0.5;
+    mesh.renderOrder = 5;
+    queryHighlightGroup.add(mesh);
+  }
+  scene.add(queryHighlightGroup);
+}
+
+function flyToMatches(matches) {
+  if (!matches.length) return;
+  const ox = SCENE_META.origin_x || 0, oy = SCENE_META.origin_y || 0;
+  let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+  for (const rec of matches) {
+    const x = rec.cx - ox, z = rec.cy - oy;
+    minX = Math.min(minX, x); maxX = Math.max(maxX, x);
+    minZ = Math.min(minZ, z); maxZ = Math.max(maxZ, z);
+  }
+  const cx = (minX + maxX) / 2, cz = (minZ + maxZ) / 2;
+  const span = Math.max(20, Math.max(maxX - minX, maxZ - minZ) * 1.6);
+  controls.target.set(cx, 0, cz);
+  camera.position.set(cx + span * 0.5, span * 0.7, cz + span * 0.5);
+  controls.update();
+}
+
+function runSceneQuery(text) {
+  const panel = document.getElementById("query-panel");
+  panel.style.display = "block";
+  if (!BUILDING_RECORDS || !BUILDING_RECORDS.length) {
+    panel.textContent = "No building data loaded for this scene.";
+    return;
+  }
+  const filters = parseSceneQuery(text);
+  if (!filters.length) {
+    panel.textContent = "Couldn't parse that. Try: \"buildings over 15m\", "
+      + "\"low confidence buildings\", \"measured buildings under 10m\", "
+      + "\"area over 200\".";
+    clearQueryHighlights();
+    return;
+  }
+  const matches = applySceneFilters(BUILDING_RECORDS, filters);
+  const desc = filters.map((f) =>
+    `${f.field} ${f.op === "==" ? "=" : f.op} ${f.value}`).join(" and ");
+  if (!matches.length) {
+    panel.textContent = `0 buildings match (${desc}).`;
+    clearQueryHighlights();
+    return;
+  }
+  panel.textContent = `${matches.length} building(s) match (${desc}) -- highlighted in amber.`;
+  highlightMatches(matches);
+  flyToMatches(matches);
+}
+
+document.getElementById("btn-query").addEventListener("click", () => {
+  const input = document.getElementById("query-input");
+  if (input.value.trim()) runSceneQuery(input.value.trim());
+});
+document.getElementById("query-input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && e.target.value.trim()) runSceneQuery(e.target.value.trim());
+});
+
 // --- Render loop ---
 const _clock = new THREE.Clock();
 function animate() {
   // Real elapsed time, not a fixed per-frame step: the tour must take the same
   // 60 seconds whether the renderer is managing 120 fps or 20.
-  updateTour(_clock.getDelta());
-  controls.update();
+  const dt = _clock.getDelta();
+  updateTour(dt);
+  updateWalkMode(dt);
+  if (!walkModeActive) controls.update();
   updateCompass();
   updateScaleBar();
   if (postProcessing) { postProcessing.render(); } else { renderer.render(scene, camera); }

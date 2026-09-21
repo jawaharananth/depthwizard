@@ -204,7 +204,8 @@ def _orthorectify_blind(tile: str, out_px: int) -> dict:
     }
 
 
-def predict_tile_blind(tile: str, out_px: int = 1024) -> dict:
+def predict_tile_blind(tile: str, out_px: int = 1024,
+                       use_dem: bool = True, use_metric: bool = True) -> dict:
     """
     Prediction only. Returns pred_ndsm, the tier reached, and enough
     bookkeeping to score it -- and NOTHING derived from ground truth.
@@ -235,7 +236,8 @@ def predict_tile_blind(tile: str, out_px: int = 1024) -> dict:
             dst.update_tags(**tags)
 
     meta = bci.build(geotiff_path, f"blind_{tile}", max_px=out_px,
-                     stage=False, return_arrays=True)
+                     stage=False, return_arrays=True,
+                     use_dem=use_dem, use_metric=use_metric)
     pred_ndsm = meta.pop("_ndsm")
     effective_scale = meta.pop("_effective_scale_m_per_unit")
     fingerprint = _array_fingerprint(pred_ndsm)
@@ -297,7 +299,15 @@ def score_tile(result: dict) -> dict:
     is_metric = tier.startswith("A") or tier.startswith("B")
     shadow_cal = result["meta"].get("shadow_calibration") or {}
 
-    scale_source = "dem" if tier.startswith("A") else "shadow" if tier.startswith("B") else "none"
+    _detail = result["meta"].get("scale_source") or ""
+    if tier.startswith("A"):
+        scale_source = "dem"
+    elif tier.startswith("B") and "metric depth model" in _detail:
+        scale_source = "metric"
+    elif tier.startswith("B"):
+        scale_source = "shadow"
+    else:
+        scale_source = "none"
 
     out = {
         "tile": tile, "tier": tier, "view": result["view"],
@@ -352,18 +362,21 @@ def score_tile(result: dict) -> dict:
     return out
 
 
-def main(max_tiles: int = 20, out_px: int = 1024):
+def main(max_tiles: int = 20, out_px: int = 1024,
+        use_dem: bool = True, use_metric: bool = True, report_path: str = None):
     tiles = sorted({os.path.basename(p)[:7]
                     for p in glob.glob(os.path.join(TRUTH, "*_DSM.tif"))})
     tiles = [t for t in tiles if glob.glob(os.path.join(RGB, f"{t}_*_RGB.tif"))]
     tiles = tiles[:max_tiles]
-    print(f"blind benchmark: {len(tiles)} tiles, no affine fit to truth\n")
+    print(f"blind benchmark: {len(tiles)} tiles, no affine fit to truth "
+          f"(use_dem={use_dem} use_metric={use_metric})\n")
 
     results = []
     for i, tile in enumerate(tiles, 1):
         t0 = time.time()
         try:
-            pred = predict_tile_blind(tile, out_px=out_px)
+            pred = predict_tile_blind(tile, out_px=out_px,
+                                      use_dem=use_dem, use_metric=use_metric)
         except Exception as exc:
             print(f"[{i}/{len(tiles)}] {tile}: PREDICT FAILED -- {type(exc).__name__}: {exc}")
             results.append({"tile": tile, "status": "PREDICT_FAILED",
@@ -387,7 +400,8 @@ def main(max_tiles: int = 20, out_px: int = 1024):
                   f"{scored.get('reason', '')}  ({dt:.0f}s)")
         results.append(scored)
 
-    write_report(results, out_px)
+    write_report(results, out_px, path=report_path)
+    return results
 
 
 def write_report(results: list, out_px: int, path: str = None):

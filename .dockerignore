@@ -1,0 +1,77 @@
+# Controls the Docker build context -- used by `az containerapp up --source .`
+# (and by a plain `docker build .`, or GCP's Cloud Build). Without this the
+# build context includes the full ~25GB working tree (measured: dfc2019_data/
+# 16GB, dfc2019_data.zip 7.8GB, .git 633MB, checkpoints/ 930MB including the
+# unused HTC checkpoint, venv/ 1.5GB, plus dozens of one-off debug PNGs/logs)
+# -- the Dockerfile only ever COPYs a specific, short file list, so none of
+# that belongs in the build context either. Same exclusion list as
+# .gcloudignore, kept in sync since both feed the same Dockerfile.
+
+.git/
+.dockerignore
+.gcloudignore
+.gitignore
+.pytest_cache/
+venv/
+__pycache__/
+*.pyc
+
+# Licensed benchmark dataset and its zip -- never needed at serve time.
+dfc2019_data/
+dfc2019_data.zip
+
+# Only checkpoints/height_best/ is used by server.py; everything else in
+# checkpoints/ (the OpenVINO export, the unvalidated HTC run) is excluded
+# explicitly rather than allowing the whole directory through.
+checkpoints/height_best_ov.bin
+checkpoints/height_best_ov.xml
+checkpoints/height_htc_best/
+checkpoints/training_report.json
+
+# Generated output, caches, scratch data -- reproducible, not source.
+final_out/
+viewer/output/
+cache/
+india/
+scenes/
+dfc_out/
+demo_out/
+verify_out/
+moge_out/
+mumbai_bmc/
+mumbai_bmc_big/
+mumbai_dataset/
+mumbai_dataset_full/
+ramp_karnataka/
+taj_out/
+iccd_extract/
+gamus_data/
+gamus_probe/
+colab_subset/
+colab/
+colab - Copy/
+buildings/
+calibration/
+dashboard/
+docs/
+dist/
+packaging/
+scripts/
+src-tauri/
+tools/
+tests/
+webapp/
+
+*.glb
+*.obj
+*.mtl
+*.ply
+*.npy
+*.zip
+*.log
+*.ipynb
+*.png
+*.jpg
+
+*.md
+LICENSE

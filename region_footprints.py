@@ -51,6 +51,11 @@ import cv2
 
 import segmentation as seg
 
+# Narrowest a real structure gets, wall to wall. Watershed boundaries that
+# follow kerbs and the gaps between adjacent roofs come through as long thin
+# regions with a near-perfect convex fill, so only a width test catches them.
+MIN_BUILDING_WIDTH_M = 3.0
+
 # approxPolyDP tolerance as a fraction of each contour's own perimeter, so a
 # city block and a shed simplify proportionally. See extract() for the measured
 # accuracy/rectilinearity trade behind this value.
@@ -165,7 +170,8 @@ def extract(image_np: np.ndarray, ndsm: np.ndarray, gsd_m: float,
     h_cut = min_height_m
 
     polygons, records = [], []
-    rej = {"too_small": 0, "too_low": 0, "too_rough": 0, "vegetation": 0, "ragged": 0}
+    rej = {"too_small": 0, "too_low": 0, "too_rough": 0, "vegetation": 0,
+           "ragged": 0, "sliver": 0}
 
     # Per-region statistics in one pass each, via bounding boxes.
     for rid in ids:
@@ -210,6 +216,19 @@ def extract(image_np: np.ndarray, ndsm: np.ndarray, gsd_m: float,
         if fill < fill_gate:
             rej["ragged"] += 1
             continue
+
+        # A sliver has a convex fill near 1.0, so fill_gate above cannot see it:
+        # a long thin rectangle fills its own hull perfectly. What gives it away
+        # is physical width. These regions come from watershed boundaries that
+        # run along kerbs, walls and the gaps between adjacent roofs, and
+        # extruded they render as the thin blades standing between the real
+        # buildings. The cut is the narrow side of the minimum-area rectangle,
+        # in metres, so it means the same thing on every image regardless of GSD:
+        # a structure people occupy is not 2 m wall to wall.
+        (_cx, _cy), (_w, _h), _ang = cv2.minAreaRect(cnt)
+        if min(_w, _h) * gsd_m < MIN_BUILDING_WIDTH_M:
+            rej["sliver"] += 1
+            continue
         # NOTE on fill_gate's default (0.25, was 0.55): this is area over convex
         # hull, and it was rejecting exactly the building forms worth keeping.
         # An L-shape, a U-shape or a courtyard block has a low convex fill BY
@@ -245,6 +264,7 @@ def extract(image_np: np.ndarray, ndsm: np.ndarray, gsd_m: float,
         if len(poly) < 3:
             continue
         poly = orthogonalize(poly, gsd_m=gsd_m)
+        poly = rebuild_corners(poly)
 
         polygons.append(poly)
         records.append({
@@ -264,6 +284,106 @@ def extract(image_np: np.ndarray, ndsm: np.ndarray, gsd_m: float,
             "rejected": rej,
         },
     }
+
+
+def rebuild_corners(poly: np.ndarray, max_area_change: float = 0.35) -> np.ndarray:
+    """
+    Rebuild a footprint's corners as the intersections of its own walls.
+
+    orthogonalize() above straightens edge DIRECTIONS but cannot close corners,
+    and that is what leaves the rendered roofs spiky. It rotates each edge about
+    its own midpoint independently, so vertex j is written once as the end of
+    edge i and again as the start of edge j, and the second write undoes the
+    first -- the two corrected edges never meet at a point. Short staircase
+    edges are skipped outright by its min_edge_m gate, so they survive between
+    the corrected walls as visible notches.
+
+    This finishes the job: consecutive edges pointing along the same axis
+    collapse into one wall, each wall becomes a single infinite line placed at
+    the length-weighted mean of its edges (so a long true wall outvotes the
+    short steps hanging off it), and every corner is recomputed as the exact
+    intersection of the two walls that meet there. Right angles then hold by
+    construction rather than by tolerance.
+
+    Shapes survive: an L stays an L, a U stays a U, because walls are merged
+    only when they are parallel AND consecutive. The area guard returns the
+    input untouched when the rebuild would distort it, which is the signal the
+    ring was never a building outline -- a merged blob, a courtyard, a sliver.
+    """
+    n = len(poly)
+    if n < 4:
+        return poly
+
+    poly = poly.astype(np.float32)
+    orig_area = abs(cv2.contourArea(poly))
+    if orig_area < 1.0:
+        return poly
+
+    v = np.roll(poly, -1, axis=0) - poly
+    lengths = np.hypot(v[:, 0], v[:, 1])
+    if (lengths > 1e-6).sum() < 4:
+        return poly
+
+    # Same dominant-axis estimate orthogonalize uses: a length-weighted circular
+    # mean in modulo-90 space, so an edge at 3 deg and one at 93 deg count as the
+    # same axis instead of averaging to a meaningless 48.
+    keep = lengths > 1e-6
+    ang = np.arctan2(v[keep, 1], v[keep, 0])
+    L = lengths[keep]
+    a4 = 4.0 * ang
+    dom = float(np.arctan2((L * np.sin(a4)).sum(), (L * np.cos(a4)).sum()) / 4.0)
+
+    c, s = float(np.cos(-dom)), float(np.sin(-dom))
+    fwd = np.array([[c, -s], [s, c]], np.float32)
+    inv = np.array([[c, s], [-s, c]], np.float32)
+    centre = poly.mean(axis=0)
+    local = (poly - centre) @ fwd.T
+
+    # 0 = wall runs along X, 1 = along Y, in the building's own frame.
+    cls = []
+    for i in range(n):
+        d = local[(i + 1) % n] - local[i]
+        cls.append(0 if abs(d[0]) >= abs(d[1]) else 1)
+
+    runs = []
+    for i in range(n):
+        if runs and runs[-1][0] == cls[i]:
+            runs[-1][1].append(i)
+        else:
+            runs.append((cls[i], [i]))
+    if len(runs) > 1 and runs[0][0] == runs[-1][0]:
+        runs[0][1].extend(runs[-1][1])
+        runs.pop()
+
+    # A rectilinear ring alternates X-walls and Y-walls, so it needs an even
+    # count of at least four. Anything else is not a shape this can rebuild.
+    if len(runs) < 4 or len(runs) % 2 != 0:
+        return poly
+
+    lines = []
+    for klass, idxs in runs:
+        num = den = 0.0
+        for i in idxs:
+            a, b = local[i], local[(i + 1) % n]
+            w = (abs(b[0] - a[0]) if klass == 0 else abs(b[1] - a[1])) + 1e-6
+            num += w * 0.5 * ((a[1] + b[1]) if klass == 0 else (a[0] + b[0]))
+            den += w
+        lines.append((klass, num / den))
+
+    corners = []
+    m = len(lines)
+    for i in range(m):
+        k0, v0 = lines[i]
+        k1, v1 = lines[(i + 1) % m]
+        if k0 == k1:
+            return poly
+        corners.append((v0 if k0 == 1 else v1, v0 if k0 == 0 else v1))
+
+    out = (np.asarray(corners, np.float32) @ inv.T) + centre
+    new_area = abs(cv2.contourArea(out))
+    if new_area < 1.0 or abs(new_area - orig_area) / orig_area > max_area_change:
+        return poly
+    return out
 
 
 def orthogonalize(poly: np.ndarray, angle_tol_deg: float = 22.0,
@@ -327,6 +447,174 @@ def orthogonalize(poly: np.ndarray, angle_tol_deg: float = 22.0,
         out[j] = mid + u * (ln / 2.0)
 
     return out.astype(np.float32)
+
+def extract_from_polygons(polygons: list, ndsm: np.ndarray, gsd_m: float,
+                          min_area_m2: float = 4.0, min_height_m: float = 1.0,
+                          known_heights: list = None) -> dict:
+    """
+    Building footprints from individually-labelled ground-truth polygons, not
+    a merged raster mask.
+
+    known_heights, when supplied, is a per-polygon list the same length as
+    polygons -- a real measured height in metres (e.g. floor count from a
+    municipal property record: storeys x a real storey height), or None for
+    a polygon with no such record. Where present, this REPLACES the depth
+    field sample rather than falling back to it: a floor count from a real
+    building record is a measurement, and the depth field's own estimate of
+    the same building is at best a correlated guess -- there is no reason to
+    let an inferred number override a counted one. Only polygons whose own
+    entry is None fall back to sampling ndsm, exactly as before.
+
+    extract_from_mask() below rasterises every GT polygon onto one bitmap and
+    re-traces connected components -- but two adjacent row-house footprints
+    that share a wall, or simply touch at one pixel after rasterisation, fuse
+    into a single component. Measured on one Karnataka scene: 1,751 annotated
+    polygons collapsed to 834 raster blobs before any height gate ran, roughly
+    halving the buildings that could ever appear as distinct prisms. Working
+    from the source polygon list instead of a bitmap means two touching
+    buildings stay two buildings, because they never share a raster region to
+    begin with -- identity comes from the annotation, not from a re-traced
+    contour.
+
+    Returns the same shape of dict as extract_from_mask().
+    """
+    polygons_out, records = [], []
+    rej = {"too_small": 0, "degenerate": 0}
+    examined = len(polygons)
+    n_measured = 0
+
+    for idx, ring in enumerate(polygons):
+        poly = np.asarray(ring, np.float32)
+        if len(poly) >= 2 and np.allclose(poly[0], poly[-1]):
+            poly = poly[:-1]           # GeoJSON rings repeat the first vertex
+        if len(poly) < 3:
+            rej["degenerate"] += 1
+            continue
+        area_px = abs(cv2.contourArea(poly))
+        if area_px * gsd_m * gsd_m < min_area_m2:
+            rej["too_small"] += 1
+            continue
+
+        if len(poly) > 6:
+            eps = SIMPLIFY_FRAC * cv2.arcLength(poly, True)
+            poly = cv2.approxPolyDP(poly, eps, True).reshape(-1, 2).astype(np.float32)
+            if len(poly) < 3:
+                rej["degenerate"] += 1
+                continue
+        poly = orthogonalize(poly, gsd_m=gsd_m)
+        poly = rebuild_corners(poly)
+
+        # Always sample the depth field's own estimate for this footprint,
+        # even when a measured height is available and wins -- this is the
+        # only place the model's opinion of a GROUND-TRUTHED building is
+        # ever computed, and it is what the compare-slider (build_city_image's
+        # _write_compare_assets) needs to show prediction against reality on
+        # the same buildings instead of a synthetic example.
+        model_estimate = max(region_median_height(poly, ndsm), min_height_m)
+        known = known_heights[idx] if known_heights is not None else None
+        if known is not None:
+            height = max(float(known), min_height_m)
+            n_measured += 1
+            provenance = "measured"
+        else:
+            height = model_estimate
+            provenance = "inferred"
+        polygons_out.append(poly)
+        records.append({
+            "area_m2": round(area_px * gsd_m * gsd_m, 1),
+            "height": round(height, 2),
+            "height_provenance": provenance,
+            "height_model_estimate": round(model_estimate, 2),
+            "roughness": 0.0,
+            "fill": 1.0,
+            "greenness": 0.0,
+        })
+
+    return {
+        "polygons": polygons_out,
+        "records": records,
+        "report": {
+            "regions_examined": examined,
+            "retained": len(polygons_out),
+            "rejected": rej,
+            "measured_heights": n_measured,
+        },
+    }
+
+
+def extract_from_mask(gt_mask: np.ndarray, ndsm: np.ndarray, gsd_m: float,
+                      min_area_m2: float = 4.0, min_height_m: float = 1.0) -> dict:
+    """
+    Building footprints directly from a ground-truth mask, not from watershed.
+
+    extract() above finds building SHAPE from image regions because its own
+    measurement proved segmentation input changes its output by exactly zero
+    -- the height-field gates it applies (too_low, too_small, too_rough) exist
+    to reject false positives from an UNVERIFIED region proposal. When the
+    mask is already human-verified ground truth, those same gates reject real,
+    confirmed buildings instead: measured on a Karnataka scene, 1358 of 2800
+    candidate regions were rejected as too_low and 362 as too_small, and most
+    of that loss was small single-storey rural houses whose height signal in a
+    monocular depth field is genuinely weak, not whose existence is in doubt.
+
+    So this is a different, simpler path for the case a mask exists: every
+    connected component of the mask becomes a footprint directly -- nothing to
+    accept or reject, since existence was already decided by the annotator --
+    and the height field is consulted only afterwards, to estimate how tall
+    each one is, which is the one thing it is actually good at.
+
+    Returns the same shape of dict as extract(): {"polygons", "records", "report"}.
+    """
+    mask = (gt_mask > 0).astype(np.uint8)
+    min_px = max(8, int(min_area_m2 / (gsd_m * gsd_m)))
+
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+    polygons, records = [], []
+    rej = {"too_small": 0, "no_contour": 0, "degenerate": 0}
+    examined = 0
+
+    for i in range(1, n):
+        examined += 1
+        if stats[i, cv2.CC_STAT_AREA] < min_px:
+            rej["too_small"] += 1
+            continue
+        x, y, w, h = (stats[i, cv2.CC_STAT_LEFT], stats[i, cv2.CC_STAT_TOP],
+                      stats[i, cv2.CC_STAT_WIDTH], stats[i, cv2.CC_STAT_HEIGHT])
+        sub = (labels[y:y+h, x:x+w] == i).astype(np.uint8)
+        cnts, _ = cv2.findContours(sub, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not cnts:
+            rej["no_contour"] += 1
+            continue
+        cnt = max(cnts, key=cv2.contourArea) + [x, y]
+        eps = SIMPLIFY_FRAC * cv2.arcLength(cnt, True)
+        poly = cv2.approxPolyDP(cnt, eps, True).reshape(-1, 2).astype(np.float32)
+        if len(poly) < 3:
+            rej["degenerate"] += 1
+            continue
+        poly = orthogonalize(poly, gsd_m=gsd_m)
+        poly = rebuild_corners(poly)
+
+        height = max(region_median_height(poly, ndsm), min_height_m)
+        area_px = float(stats[i, cv2.CC_STAT_AREA])
+        polygons.append(poly)
+        records.append({
+            "area_m2": round(area_px * gsd_m * gsd_m, 1),
+            "height": round(height, 2),
+            "roughness": 0.0,   # not evaluated -- existence and shape came from ground truth
+            "fill": 1.0,
+            "greenness": 0.0,
+        })
+
+    return {
+        "polygons": polygons,
+        "records": records,
+        "report": {
+            "regions_examined": examined,
+            "retained": len(polygons),
+            "rejected": rej,
+        },
+    }
+
 
 def region_median_height(poly, ndsm):
     """Median nDSM inside one footprint."""

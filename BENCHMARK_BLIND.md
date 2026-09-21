@@ -9,10 +9,10 @@ This is the counterpart to `BENCHMARK.md`. That document's 3.87 m / 2.01 m figur
 
 ## Result
 
-**RMSE 16.07 m   MAE 10.33 m** -- 5 of 10 tiles reached a metric tier (A/B) blind and were scored.
+**RMSE 5.21 m   MAE 2.41 m** -- 8 of 10 tiles reached a metric tier (A/B) blind and were scored.
 
-- Scored (metric tier, in RMSE aggregate): 5
-- Shape-only (Tier C, correlation reported, excluded from RMSE): 3
+- Scored (metric tier, in RMSE aggregate): 8
+- Shape-only (Tier C, correlation reported, excluded from RMSE): 0
 - Rejected/failed: 2
 
 ## Per-tile (scored)
@@ -21,30 +21,23 @@ scale_error_pct is the key column: |calibrated m/unit - what a truth-fit affine 
 
 | tile | tier | RMSE | MAE | corr | scale_source | m_per_unit | n_shadow | fitted_scale | scale_error_pct |
 |---|---|---|---|---|---|---|---|---|---|
-| JAX_017 | A (DEM-anchored absolute elevation) | 15.65 | 11.29 | 0.533 | dem | 78.97 | 1 | 35.48 | 122.5 |
-| JAX_018 | A (DEM-anchored absolute elevation) | 17.50 | 12.75 | 0.438 | dem | 74.04 | 0 | 26.1 | 183.6 |
-| JAX_020 | A (DEM-anchored absolute elevation) | 16.66 | 9.86 | 0.429 | dem | 90.33 | 0 | 40.62 | 122.4 |
-| JAX_033 | A (DEM-anchored absolute elevation) | 12.53 | 6.74 | 0.361 | dem | 77.86 | 1 | 17.2 | 352.6 |
-| JAX_068 | A (DEM-anchored absolute elevation) | 17.54 | 11.05 | 0.406 | dem | 71.29 | 2 | 57.1 | 24.8 |
+| JAX_004 | A (DEM-anchored absolute elevation) | 4.03 | 1.85 | 0.576 | dem | 1.0 | 1 | 35.19 | 97.2 |
+| JAX_017 | A (DEM-anchored absolute elevation) | 5.25 | 2.80 | 0.533 | dem | 1.0 | 1 | 35.48 | 97.2 |
+| JAX_018 | A (DEM-anchored absolute elevation) | 3.82 | 1.85 | 0.438 | dem | 1.0 | 0 | 26.1 | 96.2 |
+| JAX_020 | A (DEM-anchored absolute elevation) | 4.31 | 1.65 | 0.429 | dem | 1.0 | 0 | 40.62 | 97.5 |
+| JAX_022 | A (DEM-anchored absolute elevation) | 4.97 | 2.73 | 0.415 | dem | 1.0 | 1 | 38.72 | 97.4 |
+| JAX_028 | A (DEM-anchored absolute elevation) | 5.59 | 3.28 | 0.465 | dem | 1.0 | 0 | 29.03 | 96.6 |
+| JAX_033 | A (DEM-anchored absolute elevation) | 1.89 | 0.62 | 0.361 | dem | 1.0 | 1 | 17.2 | 94.2 |
+| JAX_068 | A (DEM-anchored absolute elevation) | 9.09 | 4.60 | 0.406 | dem | 1.0 | 2 | 57.1 | 98.2 |
 
 ## By terrain class
 
 | class | RMSE | MAE | pixels |
 |---|---|---|---|
-| urban | 21.31 | 18.00 | 195500 |
-| hilly | 15.27 | 8.21 | 280281 |
-| forest | 18.23 | 15.96 | 198534 |
-| sparse | 13.50 | 6.99 | 606055 |
-
-## Tier C -- shape correlation only, no scale, excluded from RMSE
-
-m_per_unit is null throughout this table by construction -- no calibrated scale exists on a Tier C tile. fitted_scale is still shown as a diagnostic: what a truth-fit affine would have implied for this tile's raw field, for comparison against the naive assumed-tallest guess, never used to score anything above.
-
-| tile | corr | scale_source | n_shadow | refusal_reason | fitted_scale |
-|---|---|---|---|---|---|
-| JAX_004 | 0.576 | none | 1 | only 1 buildings with a usable shadow | 35.19 |
-| JAX_022 | 0.415 | none | 1 | only 1 buildings with a usable shadow | 38.72 |
-| JAX_028 | 0.465 | none | 0 | only 0 buildings with a usable shadow | 29.03 |
+| urban | 8.87 | 5.51 | 289415 |
+| hilly | 0.81 | 0.24 | 403959 |
+| forest | 8.79 | 7.40 | 421039 |
+| sparse | 0.51 | 0.16 | 941834 |
 
 ## Rejected / failed
 

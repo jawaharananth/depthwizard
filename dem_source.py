@@ -69,6 +69,41 @@ SRTM_BASE = "https://s3.amazonaws.com/elevation-tiles-prod/skadi"
 
 DEM_SOURCES = ("glo30", "srtm")
 
+# --- Circuit breaker for the one real network dependency in this pipeline ---
+#
+# Everything else here is local compute; this is the single call that can hang
+# on a slow or dead venue wifi during a live demo. Two failure modes matter
+# differently: a clean HTTP error already degrades fine (the try/except below
+# returns {"dem": None, ...} and the caller drops to Tier B/C), but an
+# unresponsive endpoint with no explicit timeout can hang far longer than any
+# demo can tolerate, and if it's actually down, every subsequent request would
+# pay that same hang again for no reason. GDAL_HTTP_TIMEOUT bounds the first
+# problem; the trip counter below bounds the second by fast-failing to Tier
+# B/C for a cooldown window instead of re-attempting a known-bad endpoint.
+_FAIL_THRESHOLD = 3
+_COOLDOWN_S = 120.0
+_consecutive_failures = 0
+_tripped_until = 0.0
+
+
+def _breaker_open() -> bool:
+    import time
+    return time.time() < _tripped_until
+
+
+def _record_failure() -> None:
+    global _consecutive_failures, _tripped_until
+    import time
+    _consecutive_failures += 1
+    if _consecutive_failures >= _FAIL_THRESHOLD:
+        _tripped_until = time.time() + _COOLDOWN_S
+
+
+def _record_success() -> None:
+    global _consecutive_failures, _tripped_until
+    _consecutive_failures = 0
+    _tripped_until = 0.0
+
 
 def _srtm_tile_name(lon: float, lat: float) -> str:
     """
@@ -132,8 +167,23 @@ def sample_grid(utm_x0: float, utm_y_top: float, size_px: int, gsd_m: float,
         url = f"/vsicurl/{COP30_BASE}/{tile}/{tile}.tif"
         source = f"Copernicus GLO-30 ({tile})"
 
+    if dem_path is None and _breaker_open():
+        # Known-bad endpoint, still cooling down -- fail fast rather than
+        # hang the build on a network call already shown to not answer.
+        return {"dem": None, "source": source, "coverage": 0.0,
+                "error": "DEM source circuit open (recent repeated failures) "
+                         "-- falling back without a network attempt"}
+
     try:
-        with rasterio.open(url) as src:
+        # Bounded, so a hanging endpoint costs this build seconds, not
+        # minutes -- GDAL's own default has no ceiling at all. 20s/8s is
+        # generous enough not to false-trip on a merely slow (not dead)
+        # venue connection -- this is one step in a pipeline with up to
+        # MAX_JOB_SECONDS=600s total budget (server.py), so a few seconds of
+        # slack here costs little, and the failure mode being guarded
+        # against is "hangs forever," not "takes 15s instead of 3."
+        with rasterio.Env(GDAL_HTTP_TIMEOUT=20, GDAL_HTTP_CONNECTTIMEOUT=8), \
+             rasterio.open(url) as src:
             # Invert the geotransform arithmetically rather than calling
             # src.index() per coordinate. index() is a Python-level call and a
             # 512x512 grid is 262144 of them -- it does not return in reasonable
@@ -152,8 +202,13 @@ def sample_grid(utm_x0: float, utm_y_top: float, size_px: int, gsd_m: float,
             dem = block[rows - r0, cols - c0].reshape(lon.shape)
             nodata = src.nodata
     except Exception as exc:
+        if dem_path is None:
+            _record_failure()
         return {"dem": None, "source": source, "coverage": 0.0,
                 "error": f"{type(exc).__name__}: {exc}"}
+
+    if dem_path is None:
+        _record_success()
 
     valid = np.isfinite(dem)
     if nodata is not None:

@@ -9,18 +9,18 @@ Status legend: **LIVE** reachable on the default path · **OPT-IN** implemented+
 | Claim | Status | Proof | Notes |
 |---|---|---|---|
 | MVS height (mvs_height.compute -> plane_sweep_mvs.plane_sweep_dsm) | **LIVE** | build_city.py:86 calls mvs_height.compute(); mvs_height.py:105 calls plane_sweep_dsm() | on by default; --no-mvs flag (default False) disables it, falling back to monocular depth |
-| DEM anchor / Tier A (dem_source.py, --dem flag, srtm|glo30) | **OPT-IN** | build_city.py:893 defines --dem (action=store_true, default False); build_city.py:895 --dem-source choices=[glo30,srtm], default glo30; build_city.py:241 calls dem_source.sample_grid(); build_city.py:257 calls dem_source.fit_offset() | implemented and wired end-to-end (anchors ground datum, promotes scene to 'A (DEM-anchored absolute elevation)'), but --dem is not passed unless the caller supplies it -- a default run never reaches Tier A |
+| DEM anchor / Tier A (dem_source.py, --dem flag, srtm|glo30) | **OPT-IN** | build_city.py:971 defines --dem (action=store_true, default False); build_city.py:973 --dem-source choices=[glo30,srtm], default glo30; build_city.py:241 calls dem_source.sample_grid(); build_city.py:257 calls dem_source.fit_offset() | implemented and wired end-to-end (anchors ground datum, promotes scene to 'A (DEM-anchored absolute elevation)'), but --dem is not passed unless the caller supplies it -- a default run never reaches Tier A |
 | Shadow calibration / Tier B (calibrate_scale call sites) | **LIVE** | called at build_city.py:157, build_city.py:182 (monocular fallback path; runs whenever MVS is unavailable or --no-mvs is passed) | build_city_image.py uses shadow_correction only for detect_shadow_mask() + azimuth estimation, not calibrate_scale -- the plain-image path never reaches Tier B, only C |
 | Conformal prediction intervals | **LIVE** | imported by entry point(s): ['build_city.py', 'build_city_image.py'] |  |
-| Per-building confidence + reliability tiers | **LIVE** | build_city.py:707 calls confidence.reliability_tier() per building | gated on mvs confidence existing (build_city.py:430); true whenever MVS ran successfully, which is the default path -- absent only if MVS fails and the monocular fallback is used |
-| Self-repair loop (mesh_repair.py) | **LIVE** | repair_build() defined mesh_repair.py:484, called from build_city.py:345, build_city_image.py:800 | runs on every build in both entry points; bounded iterative repair with a terminating strategy (last resort removes the building) |
-| Model-vs-image audit (model_audit.py) | **LIVE** | audit() defined model_audit.py:199, called from build_city.py:638, build_city_image.py:853 | wrapped in try/except in both callers -- failure prints a message and continues rather than aborting the build |
+| Per-building confidence + reliability tiers | **LIVE** | build_city.py:765 calls confidence.reliability_tier() per building | gated on mvs confidence existing (build_city.py:482); true whenever MVS ran successfully, which is the default path -- absent only if MVS fails and the monocular fallback is used |
+| Self-repair loop (mesh_repair.py) | **LIVE** | repair_build() defined mesh_repair.py:484, called from build_city.py:345, build_city_image.py:903 | runs on every build in both entry points; bounded iterative repair with a terminating strategy (last resort removes the building) |
+| Model-vs-image audit (model_audit.py) | **LIVE** | audit() defined model_audit.py:199, called from build_city.py:696, build_city_image.py:967 | wrapped in try/except in both callers -- failure prints a message and continues rather than aborting the build |
 | Change detection (change_detection.py) | **DORMANT** | imported only by non-entry-point script(s): ['damage.py'] |  |
 | GAMUS fine-tuning (train_height.py) | **DORMANT** | train_height.py has its own `if __name__ == "__main__"` block (runnable as `python train_height.py ...`) but is not imported by any entry point -- a build or upload never touches it |  |
 
 ## Viewer tool inventory
 
-17 `<button id=...>` elements found in `viewer/index.html`. Exact on-screen labels below, as they appear in the markup (not assumed from naming convention).
+22 `<button id=...>` elements found in `viewer/index.html`. Exact on-screen labels below, as they appear in the markup (not assumed from naming convention).
 
 | Claim | Status | Proof | Notes |
 |---|---|---|---|
@@ -47,15 +47,20 @@ Status legend: **LIVE** reachable on the default path · **OPT-IN** implemented+
 | `btn-reset` | Reset View | True | False |
 | `btn-dof` | Tilt-Shift | True | False |
 | `btn-tour` | Flythrough | True | False |
+| `btn-record` | Record Flythrough | True | True |
 | `btn-slope` | SLOPE | True | False |
 | `btn-los` | Line of Sight | True | False |
 | `btn-xsec` | Cross-Section | True | False |
+| `btn-area` | Measure Area | True | False |
 | `btn-gcp` | Ground Control | True | False |
 | `btn-flood` | Flood Source | True | False |
 | `btn-bands` | Uncertainty | True | True |
 | `btn-damage` | Damage | True | True |
+| `btn-annotate` | Add Pin | True | False |
 | `btn-pdf` | Export PDF | True | True |
+| `btn-pins-export` | Export Pins | True | True |
 | `btn-xr` | Enter VR | True | True |
+| `btn-query` | Ask | True | False |
 
 ## DOCUMENTED BUT ABSENT / DORMANT
 

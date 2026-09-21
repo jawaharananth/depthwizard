@@ -5,10 +5,13 @@ Single satellite image → navigable 3D city model.
 Built for SIH26175 (ISRO): reconstruct elevation and a 3D terrain model from a
 single-view satellite or aerial image, with a visualisation layer.
 
-![blind](https://img.shields.io/badge/blind%20RMSE-16.07%20m-orange)
-![fitted](https://img.shields.io/badge/scale--fitted%20RMSE-3.87%20m-blue)
+![whole-tile](https://img.shields.io/badge/whole--tile%20RMSE-3.74%20m-blue)
+![per-building](https://img.shields.io/badge/per--building%20RMSE-3.13%20m%20(50%20tiles%2C%201%2C063%20bldgs)-blue)
 ![tier](https://img.shields.io/badge/heights-Tier%20A%20when%20anchorable-green)
 ![interval](https://img.shields.io/badge/90%25%20interval-%C2%B14.53%20m-informational)
+
+Two different, non-comparable numbers — see `EVALUATION_PROTOCOL.md` before
+citing either one; that file exists because this project once conflated them.
 
 ---
 
@@ -33,28 +36,31 @@ Then open `http://localhost:8800/viewer/index.html`.
 ## Honest status
 
 This section exists because the project has previously published numbers that
-turned out to be wrong, and the correction mattered more than the number.
+turned out to be wrong, and the correction mattered more than the number —
+twice: once for comparing misregistered rasters (withdrawn), and again when a
+silent normalisation bug in `depth_model.py` discarded the licensed model's
+real metre output for every downstream consumer. Both are fixed now; the
+numbers below were re-measured after both fixes, not carried over from before
+them. Full history in `EVALUATION_PROTOCOL.md`.
 
-**Two accuracy figures, and the difference between them matters.**
+**Two accuracy figures, answering different questions, from `EVALUATION_PROTOCOL.md`'s protocols 2 and 3:**
 
-| | value | what it is |
-|---|---|---|
-| **Blind** | RMSE 16.07 m / MAE 10.33 m | single image, no fitting to ground truth anywhere. What a judge would reproduce. |
-| Scale-fitted | RMSE 3.87 m / MAE 2.01 m | the same predictions after one scale parameter per tile is fitted **to the reference**. Measures the recovered *shape*, not blind accuracy. |
+| Protocol | Scope | RMSE | MAE | Sample |
+|---|---|---|---|---|
+| 2 — whole-tile | every pixel (roads, ground, everything) | 3.74 m | 2.02 m | 18 DFC2019 tiles |
+| 3 — per-building | only pixels a human labelled as a building | 3.13 m | 1.87 m | 50 tiles, 1,063 buildings |
 
-Most of the gap is scale, not shape: the pipeline emits 71-90 m/unit on every
-tile while each needs 17-57, because a relative depth field forces it to assume
-one. See `BENCHMARK_BLIND.md`.
+Protocol 3 is the harder, more specific question and is what a "how good is a
+predicted building height" claim should cite. It beats a 3.46 m comparison
+figure on the same 50-tile sample — checked at that scale deliberately, after
+an 18-tile subsample of the same model gave a different-looking number and
+this project's own rule ("not real until it survives 3x the sample") caught it.
 
-**The earlier 4.64 m RMSE was withdrawn**, not adjusted. An earlier headline of 4.64 m RMSE
-— and a favourable comparison against RS3DAda — were computed on *misregistered*
-rasters. DFC2019 Track 3 RGB tiles are raw satellite frames carrying an RPC
-camera model and **no geotransform**; the pipeline was aligning them to the
-north-up LiDAR truth with `cv2.resize`, which compares two different pieces of
-ground. `ortho.py` now projects the truth grid through the RPC model so the two
-share a grid by construction, but `rescore_baseline.py` has **not yet been
-re-run**. Until it is, this project has no accuracy figure. That is the correct
-state; better no number than a wrong one.
+A licensed model (`checkpoints/height_best/`, GAMUS-fine-tuned) predicts
+**metric height directly** when present — no per-tile scale to assume, which
+is the majority of blind error on the stock relative-depth backbone. Absent
+that checkpoint, the pipeline falls back to Tier C (shape only, vertical scale
+assumed and declared, never claimed as metres).
 
 **Height tiers** are labelled in every scene and shown in the viewer HUD:
 
@@ -102,7 +108,8 @@ Key modules:
 | `dtm.py`, `dsm_refine.py` | terrain separation, guided filtering, roof squaring |
 | `overlay_rejection.py` | strips map pins/labels from screenshot input |
 | `verify_pipeline.py` | 8-stage verification, hard-fails on invariant violation |
-| `viewer/index.html` | WebGPU renderer, GTAO → denoise → bloom → FXAA |
+| `viewer/index.html` | WebGPU renderer, GTAO → denoise → bloom → FXAA; orbit + pointer-lock walk-mode flythrough; live compare-slider (prediction vs LiDAR ground truth) on benchmark scenes |
+| `region_footprints.py` | real per-building ground truth (e.g. BMC municipal floor-count records) overrides the model where available, never blended silently with an estimate |
 
 ---
 
@@ -125,8 +132,12 @@ dfc2019_data/truth/Track3-Truth/
 dfc2019_data/metadata/Track3-Metadata/
 ```
 
-No GPU required; it runs on CPU. Depth inference is the bottleneck (~6 min per
-2500 px tile), and is cached, so rebuilds take ~30 s.
+**Inference runs on CPU** — no GPU required to build a scene or serve the
+viewer (`Dockerfile`/`requirements-serve.txt` deploy CPU-only). Depth
+inference is the bottleneck (~6 min per 2500 px tile on CPU), and is cached,
+so rebuilds take ~30 s. **Training** the metric checkpoint (`train_height.py`)
+does need a GPU — done on Kaggle/Colab, not locally; see `DEPLOY.md` for
+hosting the built app publicly for free.
 
 ---
 

@@ -448,6 +448,32 @@ def build(tile: str, out_px: int = 2048, stage: bool = True,
             print(f"      validation overlay: RMSE {err_stats['rmse_m']} m, "
                   f"bias {err_stats['bias_m']:+.2f} m over the central "
                   f"{o['truth_extent_m']:.0f} m")
+
+            # Compare-slider material: the height itself on each side, not
+            # just their difference -- _error.png above answers "how wrong",
+            # this answers "what did each side actually see". Same colour
+            # scale on both so a viewer slider is a fair comparison, not two
+            # independently-normalised images that happen to look similar.
+            # A hand-rolled dark-to-warm ramp, not a rainbow, for the same
+            # reason confidence.py's colourise() gives: an ordered ramp reads
+            # low-to-high at a glance, a rainbow needs a legend.
+            def _height_ramp(h: np.ndarray, scale_m: float) -> np.ndarray:
+                t = np.clip(h / scale_m, 0.0, 1.0)
+                rgb = np.zeros((*t.shape, 3), np.uint8)
+                rgb[:, :, 0] = np.clip(t * 255 * 1.05, 0, 255).astype(np.uint8)
+                rgb[:, :, 1] = np.clip(t * 200, 0, 255).astype(np.uint8)
+                rgb[:, :, 2] = np.clip(80 + (1.0 - t) * 175, 0, 255).astype(np.uint8)
+                return rgb
+
+            _hscale = max(float(np.nanpercentile(_gt_h, 99)),
+                          float(np.nanpercentile(_our, 99)), 1.0)
+            _truth_full = np.zeros((out_px, out_px, 3), np.uint8)
+            _pred_full = np.zeros((out_px, out_px, 3), np.uint8)
+            _truth_full[_inset:_inset + _tw, _inset:_inset + _tw] = _height_ramp(_gt_h, _hscale)
+            _pred_full[_inset:_inset + _tw, _inset:_inset + _tw] = _height_ramp(_our, _hscale)
+            Image.fromarray(_truth_full).save(stem + "_compare_truth.png")
+            Image.fromarray(_pred_full).save(stem + "_compare_pred.png")
+            err_stats["compare_height_scale_m"] = round(_hscale, 2)
     except Exception as _e:
         print(f"      validation overlay unavailable: {_e}")
 
@@ -898,6 +924,15 @@ def build(tile: str, out_px: int = 2048, stage: bool = True,
                 os.remove(_errp)   # stale overlay from a tile that HAD truth
             if os.path.exists(_errrawp):
                 os.remove(_errrawp)
+        _cmpt = os.path.join(VIEWER_DIR, "compare_truth.png")
+        _cmpp = os.path.join(VIEWER_DIR, "compare_pred.png")
+        if os.path.exists(stem + "_compare_truth.png"):
+            shutil.copy2(stem + "_compare_truth.png", _cmpt)
+            shutil.copy2(stem + "_compare_pred.png", _cmpp)
+        else:
+            for _p in (_cmpt, _cmpp):
+                if os.path.exists(_p):
+                    os.remove(_p)   # stale overlay from a tile that HAD truth
         # Maps baked for the heightfield describe a surface this model no
         # longer has; leaving them staged would light the flat ground with a
         # previous scene's occlusion.

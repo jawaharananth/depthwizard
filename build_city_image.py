@@ -845,6 +845,42 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
         _rej = "  ".join(f"{k} {v}" for k, v in rres["report"]["rejected"].items() if v)
         if _rej:
             print(f"      rejected: {_rej}")
+
+        # REAL BUG FIX, found by tracing why Mumbai's exported heights never
+        # showed the signature of real floor-count data (multiples of a
+        # storey height): rres["records"] carries each footprint's real
+        # measured height when one exists, but until this fix only
+        # rres["polygons"] (the SHAPES) was ever kept -- the measured
+        # heights were computed, printed as a summary count above, and then
+        # discarded. mesh_repair.repair_build (called further down) samples
+        # HEIGHT from `dsm` directly, with no known-heights parameter of its
+        # own, so a real measurement that never touches `dsm` never reaches
+        # the final geometry or export no matter how correctly it was
+        # computed here. Fix: burn each measured footprint's real height
+        # into `dsm` now, the same "splice the real signal in before
+        # anything reads it" technique already used above for the
+        # segmentation mask -- so every later consumer of `dsm` (mesh
+        # generation, ndsm, the audit) sees the real number as if it had
+        # always been there, rather than needing its own separate
+        # known-heights plumbing.
+        _records = rres["records"]
+        _n_burned = 0
+        for _i, _rec in enumerate(_records):
+            if _rec.get("height_provenance") != "measured" or _i >= len(footprints):
+                continue
+            _poly_px = np.asarray(footprints[_i], np.int32)
+            _fp_mask = np.zeros(dsm.shape[:2], np.uint8)
+            cv2.fillPoly(_fp_mask, [_poly_px], 1)
+            _fp_mask = _fp_mask.astype(bool)
+            if not _fp_mask.any():
+                continue
+            _local_ground = float(np.median(ground[_fp_mask]))
+            dsm[_fp_mask] = _local_ground + _rec["height"]
+            _n_burned += 1
+        if _n_burned:
+            ndsm = np.maximum(dsm - ground, 0.0)
+            print(f"      {_n_burned} real measured height(s) burned into the surface "
+                  f"model -- these now drive the actual geometry, not just the report")
     elif gt_building_mask is not None:
         # Existence and shape are already decided by the annotator -- see
         # extract_from_mask's docstring for why the height/size gates below

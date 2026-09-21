@@ -119,3 +119,154 @@ instead of a vague "they're good."
   evidence. The "real vs. inferred ground truth" distinction still holds.
 - We have real municipal-record + Open-Buildings FUSION (known heights
   override the model per-building). They don't fuse; they compare.
+
+## Re-audit, 2026-09-20 — file-by-file re-read, checking for drift since the above
+
+**Procedural finding first: no commits since 2026-09-12.** Their own
+`docs/submission-plan.md` (last touched in that same commit) plans work
+through Sep 28 — a tall-building fix, GSD-generalization test, demo video —
+none of which is in the public repo yet. Either they're working locally
+without pushing (against their own written rule #7) or paused. As of today
+their tall-building fix and demo video are still genuinely missing, not
+stale intel on our part.
+
+**New detail on the HTC-DC head** (already known at a high level above, but
+deeper on read): adaptive bin widths come from a small MLP on global
+mean/std features (softmax-normalised, summing to the full height range);
+Chamfer loss supervises bin EDGES not centres (a correction from an earlier
+failed attempt that copied AdaBins' centre-supervision); the head/background
+gate is routed by ground truth during early warmup because a
+randomly-initialised 1x1-conv gate was measured sending 0% or 99.4% of
+pixels down one branch at init. Also present: heteroscedastic NLL with
+optional beta-NLL reweighting (Seitzer et al. 2022) and a gradient-matching
+loss on first differences for sharp roof edges. The full loss is a five-term
+composite (NLL + gradient-matching + Chamfer + distribution-KL + gate CE).
+
+**GAMUS data fusion — missed entirely in the original audit.** They unioned
+DFC2019 with GAMUS (CC-BY-4.0 aerial nDSM/RGB, 6,557 usable tiles) to attack
+their diagnosed weak point: DFC2019 alone has only 166 buildings above 30m,
+GAMUS gave them ~6,060. Pre-registered pass/fail criteria before training
+(>20m bias must beat -13m). **The primary criterion still failed** (-15.6m
+vs the -13m bar) and they shipped anyway, with a paired-bootstrap
+significance check (20,000 resamples) and an explicit "failed but shipped"
+writeup rather than moving the goalposts. Real cross-domain transfer number:
+union model 3.497m RMSE / ECE 0.044 on a spatially-disjoint GAMUS holdout vs
+DFC2019-only model's 6.873m / ECE 0.231 — careful to label this
+domain-adaptation, not generalization. Caught four silent GAMUS data traps
+(inverted class codes, a -5.00 void sentinel, leaking official splits,
+missing NYC imagery) before a run could be corrupted by them.
+**Net: even after this whole campaign, their tall-building problem remains
+open** — which is exactly the failure mode our real municipal-record fusion
+targets directly, with measured ground truth rather than more inferred data.
+
+**Viewer (`main.js`) — undersold in the original pass.** "Custom terrain
+raycasting" is specifically Amanatides & Woo's 1987 DDA voxel-traversal
+algorithm, adopted after measuring three.js's default `intersectObject()`
+walking every one of ~2.1M triangles per hover frame. Separately, real
+demo-hall hardening not previously noted: WebGL context-loss recovery
+(`webglcontextlost`/`restored` handlers — a projector swap or driver reset
+would otherwise freeze the frame silently), a no-GPU preflight check with
+actionable remediation text instead of a stack trace, touch/pinch support
+(pointer-lock doesn't exist on mobile), and a HUD layout rewritten after it
+measured 216px of overflow on a 1366x768 hall laptop. Their commit messages
+literally say "make the viewer survive a demo hall" — this overlaps directly
+with our own live-demo-reliability concern and is worth checking our own
+viewer against the same failure modes (small/low-res display, GPU driver
+hiccup, touch input) before finals.
+
+**`serve_app.py` — a sharper upload bug than previously known.** GDAL/rasterio
+was found to silently decode a PNG truncated to a third of its bytes,
+padding missing rows with black — a confident height map over fabricated
+pixels, no error raised. Fixed by forcing a strict PIL decode first (PIL
+raises on truncation where GDAL doesn't). This is a submission-integrity bug,
+not a cosmetic one: an interrupted judge upload would silently produce a
+fabricated result. Worth checking whether our own upload path in `server.py`
+has the same blind spot.
+
+**`infer.py` TTA is more than averaging.** `--fuse-zoom` does a
+Laplacian-pyramid-style multi-scale fusion (a zoom-1 pass for absolute
+calibration/low frequencies, a zoomed pass for high-frequency detail,
+Gaussian-blur frequency-split blend; measured +29% sharpness for +1% RMSE).
+D4 TTA's 8-view disagreement is fed into the reported uncertainty as a
+genuine epistemic term, not just averaged into the mean.
+
+**`metrics.py`**: Spearman rank correlation between predicted sigma and
+realised |error| (0.877 on their shipped run), justified explicitly because
+"calibration can look fine on average while sigma is uninformative pixel to
+pixel" — a real hole a plain coverage/ECE curve alone misses. Cheap to add
+to our own uncertainty reporting if we want the same rigor.
+
+**Balance — real, current weaknesses on their side:**
+- Tall-building bias remains unsolved (-15.6m) despite the full HTC-DC +
+  GAMUS campaign — a structural, still-open problem for them.
+- No training data above 50m exists anywhere they've found (GAMUS tops at
+  44.5m); they state this ceiling "survives this work untouched."
+- Forest canopy ground error (~2.47m) attributed to optics, called unfixable
+  by more data.
+- Viewer's `calibration.json` still points at `run02/best.pt` while every
+  other artifact is on `run07` — an acknowledged, unresolved inconsistency
+  as of their last commit.
+- Their Sikkim hilly-terrain co-registration is admitted noise (peak
+  correlation 0.006) — hilly-terrain "accuracy" there is visual/label
+  agreement, not a measured claim, weaker evidence than urban/sparse.
+- GSD-generalization to ISRO's actual ~0.6-1.0m resolution is untested on
+  their current (run07) checkpoint; they train at 0.3m and call this
+  "Tier 4, first to cut if time runs short."
+- No demo video exists yet, by their own words "the single largest hole" in
+  their submission.
+- Deployment has had real incidents (a docker-build-context mistake caused a
+  two-day outage), not just the one credit-line bug previously known.
+- Model still reloads per request (~8s cost) — unresolved, as before.
+
+**Bottom line.** Their self-assessment ("not a team with a better model,
+because they collected the half we neglected") is now dated — they've
+meaningfully upgraded the model side (real HTC-DC Net, GAMUS fusion) while
+keeping the viewer/rigor edge already known. But their hardest problem
+(tall buildings) is still open even after that whole campaign, and it's
+exactly the failure mode our real municipal ground-truth fusion targets
+with measured data instead of more inferred data — that distinction still
+holds and is arguably sharper now that their answer to the same problem
+(more inferred training data) demonstrably wasn't enough on its own. Two
+things worth adapting by technique, not code: (1) a head-tail/adaptive-bin
+structural approach to the long-tailed height distribution could compound
+with our fusion override rather than compete with it; (2) their
+falsification-first, pre-registered-criteria, bootstrap-significance
+evaluation discipline is a credibility practice worth matching regardless
+of what we build next, and costs nothing to adopt.
+
+## Standing gap list vs. zaidnansari2011, as of 2026-09-20 (post frontend/backend sprint)
+
+Frontend and backend-reliability work this session closed most of the gap
+list that existed before it (walk-mode, compare-slider, scene-query,
+video export, health/readiness checks, upload integrity, DEM circuit
+breaker, result caching -- all real-browser or live-tested, not just
+written). What's left, honestly:
+
+1. **Model/architecture: they're ahead, not us.** Their HTC-DC Net + GAMUS
+   fusion is real and shipped (still didn't solve tall buildings, but it
+   ran, at their full ~6,557-tile scale). Our own HTC-AdaBins attempt has
+   only run as an 8-tile CPU smoke test -- the real Kaggle-scale run
+   (300+60 GAMUS tiles, `kaggle_htc_train.ipynb`) has not actually executed
+   yet. Do not claim parity here until that run lands and is honestly
+   scored against baseline.
+2. **Live public deployment: they have one today, we don't yet.** Blocked
+   on GitHub Education / Azure student credit verification (72h wait,
+   started ~2026-09-20). Closes on its own once that clears -- see
+   `DEPLOY.md`.
+3. **Multi-point GCP calibration is a diagnostic on our side, not a
+   correction.** Our GCP tool now detects and reports a height-dependent
+   error curve (verified against a known synthetic exponent), but the
+   "Apply" action still uses one flat ratio for the whole scene. Applying
+   a true per-vertex power-law correction to actual geometry is a real,
+   larger, riskier change than what's been done -- not attempted.
+4. **SIGTERM graceful-shutdown handling is written but unverified.**
+   Correct-looking code (signal handler -> drain -> `srv.shutdown()`), but
+   could not be tested live on the Windows dev machine (no real POSIX
+   signal delivery, no WSL). Needs a real check once actually running on
+   the Linux deploy target.
+5. Everything else previously tracked here (demo-hall viewer hardening,
+   corrupted-upload handling, uncertainty-error rank correlation via the
+   scene-query/compare-slider work, cartographic furniture, walk-mode) is
+   now closed and verified -- see the Day 1-3 session work for specifics,
+   not restated here to avoid this file going stale the way the old
+   headline numbers did.

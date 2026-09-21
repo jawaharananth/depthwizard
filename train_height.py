@@ -69,6 +69,7 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
+import depth_model as _dm
 import gamus
 import htc_bins
 
@@ -423,13 +424,49 @@ def main() -> None:
 
     # LICENSE THE CHECKPOINT, OR DO NOT.
     #
-    # The marker is what depth_model.py reads before it will use a checkpoint,
-    # and it is written only when the fine-tuned model beat a baseline that was
-    # handed the optimal affine. Weights from a losing run stay on disk for
-    # inspection and are never picked up, because a run that failed should not
+    # Two numeric, stated gates -- not "did MAE go down at all". A single
+    # MAE-improved check promotes a run whose gain is noise-level, and
+    # separately can't tell a real structural fix from a checkpoint that
+    # merely rescaled its errors: MAE can improve by a hair while the model's
+    # actual agreement with the ground truth (correlation) stays flat or
+    # drops, which is exactly the failure mode a competitor's A/B methodology
+    # (reviewed in COMPETITOR_LANDSCAPE.md) is built to catch -- they measure
+    # correlation, not just RMSE, specifically because RMSE alone can hide
+    # whether a fix is real. Both bars below are adopted from that same
+    # reasoning, via our own numbers, not their code:
+    #
+    #   1. MAE must beat baseline by a real margin, not an infinitesimal one.
+    #   2. Correlation must not have quietly regressed while MAE improved.
+    #
+    # The marker is what depth_model.py reads before it will use a
+    # checkpoint. Weights from a rejected run stay on disk for inspection and
+    # are never picked up, because a run that failed either gate should not
     # quietly change every build that follows it.
-    won = bool(history and base and history[-1].get("mae_m") is not None
-               and history[-1]["mae_m"] < base["mae_m"])
+    MAE_MIN_IMPROVEMENT_FRAC = 0.02   # must beat baseline MAE by >=2%, not just >0
+    CORR_MAX_REGRESSION = 0.02        # correlation may not drop by more than this
+
+    gate_report = []
+    won = False
+    if history and base and history[-1].get("mae_m") is not None:
+        fin = history[-1]
+        mae_improve_frac = ((base["mae_m"] - fin["mae_m"]) / base["mae_m"]
+                             if base["mae_m"] > 0 else 0.0)
+        corr_delta = fin.get("corr", 0.0) - base.get("corr", 0.0)
+        mae_gate_pass = mae_improve_frac >= MAE_MIN_IMPROVEMENT_FRAC
+        corr_gate_pass = corr_delta >= -CORR_MAX_REGRESSION
+        gate_report = [
+            (f"MAE improvement", f"{mae_improve_frac*100:+.1f}%",
+             f">= {MAE_MIN_IMPROVEMENT_FRAC*100:.0f}%", mae_gate_pass),
+            (f"correlation change", f"{corr_delta:+.3f}",
+             f">= -{CORR_MAX_REGRESSION:.2f}", corr_gate_pass),
+        ]
+        won = mae_gate_pass and corr_gate_pass
+
+    if gate_report:
+        print("\n  promotion gates (numeric, both required):")
+        for name, value, bar, passed in gate_report:
+            print(f"    [{'PASS' if passed else 'FAIL'}] {name}: {value} (bar: {bar})")
+        print(f"  -> {'PROMOTED' if won else 'REJECTED'}")
 
     if a.htc:
         # A different marker name and directory from the plain-regression
@@ -451,6 +488,10 @@ def main() -> None:
                     "finetuned_mae_m_no_affine": round(history[-1]["mae_m"], 3),
                     "baseline_corr": round(base["corr"], 4),
                     "finetuned_corr": round(history[-1]["corr"], 4),
+                    "promotion_gates": [
+                        {"name": n, "value": v, "bar": b, "passed": p}
+                        for n, v, b, p in gate_report
+                    ],
                     "epochs": a.epochs, "device": device, "n_bins": a.n_bins,
                     "trained_tiles": n_gamus_train + n_dfc_train,
                     "used_dfc2019": a.use_dfc2019,
@@ -462,6 +503,16 @@ def main() -> None:
                 }, f, indent=2)
             print("")
             print(f"  HTC CHECKPOINT LICENSED -> {htc_marker}")
+            try:
+                _bb = _dm.DepthBackbone(htc=True)
+                _fp = _dm.license_checkpoint(htc_marker, _bb)
+                print(f"  behavioural fingerprint recorded ({_fp['hash']}) -- "
+                      f"depth_model.py will refuse this checkpoint later if its "
+                      f"output on a fixed canary input ever drifts past "
+                      f"{_dm.CANARY_REL_TOL*100:.0f}%")
+            except Exception as _e:
+                print(f"  WARNING: could not record a behavioural fingerprint "
+                      f"({_e}) -- checkpoint is licensed but unverifiable at load time")
         else:
             print("")
             print(f"  --htc run finished (did not beat baseline on MAE). Weights "
@@ -481,6 +532,10 @@ def main() -> None:
                 "finetuned_mae_m_no_affine": round(history[-1]["mae_m"], 3),
                 "baseline_corr": round(base["corr"], 4),
                 "finetuned_corr": round(history[-1]["corr"], 4),
+                "promotion_gates": [
+                    {"name": n, "value": v, "bar": b, "passed": p}
+                    for n, v, b, p in gate_report
+                ],
                 "epochs": a.epochs, "device": device,
                 "trained_tiles": n_gamus_train + n_dfc_train,
                 "note": "The pipeline reads this file to decide whether to skip "
@@ -491,6 +546,16 @@ def main() -> None:
         print(f"  CHECKPOINT LICENSED -> {marker}")
         print("  Builds will now predict metres directly and skip the "
               "'tallest ~ 40 m' assumption.")
+        try:
+            _bb = _dm.DepthBackbone(metric=True)
+            _fp = _dm.license_checkpoint(marker, _bb)
+            print(f"  behavioural fingerprint recorded ({_fp['hash']}) -- "
+                  f"depth_model.py will refuse this checkpoint later if its "
+                  f"output on a fixed canary input ever drifts past "
+                  f"{_dm.CANARY_REL_TOL*100:.0f}%")
+        except Exception as _e:
+            print(f"  WARNING: could not record a behavioural fingerprint "
+                  f"({_e}) -- checkpoint is licensed but unverifiable at load time")
     elif not a.htc and os.path.isdir(ckpt):
         print("")
         print("  Checkpoint NOT licensed: no metric_ok.json written, so the "
