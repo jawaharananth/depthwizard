@@ -378,7 +378,7 @@ def build_prisms(footprints: list, dsm: np.ndarray, dtm: np.ndarray,
     the downhill side; sinking it means the wall simply continues below ground
     where nothing can see it.
     """
-    verts, faces, index, colors = [], [], [], []
+    verts, faces, index, colors, uvs = [], [], [], [], []
     skipped = 0
 
     H, W = dsm.shape
@@ -586,6 +586,18 @@ def build_prisms(footprints: list, dsm: np.ndarray, dtm: np.ndarray,
             verts.append((px * gsd_x_m, zh, -py * gsd_y_m))
         for _ in range(2 * n):
             colors.append(rgb)
+        # Planar top-down UV, same convention as build_ground_mesh's
+        # (px/W, 1 - py/H), emitted for both rings so the array stays
+        # aligned with verts/colors. The roof is the one building surface a
+        # nadir image actually photographs, so it can carry the real
+        # satellite texture pixel-for-pixel with no distortion; the base
+        # ring's copy is never sampled by the viewer, which only maps this
+        # UV onto the roof triangles and leaves walls untextured -- stretching
+        # a roof-edge texel down a wall is a different, uglier problem.
+        for px, py in poly:
+            uvs.append((px / max(W - 1, 1), 1.0 - py / max(H - 1, 1)))
+        for px, py in poly:
+            uvs.append((px / max(W - 1, 1), 1.0 - py / max(H - 1, 1)))
 
         # Walls: one quad per footprint edge, emitted as two triangles. These
         # are exactly vertical because both rings share X and Z.
@@ -616,7 +628,8 @@ def build_prisms(footprints: list, dsm: np.ndarray, dtm: np.ndarray,
     if not verts:
         return (np.zeros((0, 3), np.float32), np.zeros((0, 3), np.int64),
                 {"buildings": [], "skipped": skipped,
-                 "colors": np.zeros((0, 3), np.float32)})
+                 "colors": np.zeros((0, 3), np.float32),
+                 "uvs": np.zeros((0, 2), np.float32)})
 
     v = np.asarray(verts, dtype=np.float32)
     f = np.asarray(faces, dtype=np.int64)
@@ -638,7 +651,8 @@ def build_prisms(footprints: list, dsm: np.ndarray, dtm: np.ndarray,
         if not keep.all():
             f = f[keep]
     return v, f, {"buildings": index, "skipped": skipped,
-                  "colors": np.asarray(colors, dtype=np.float32)}
+                  "colors": np.asarray(colors, dtype=np.float32),
+                  "uvs": np.asarray(uvs, dtype=np.float32)}
 
 
 def _orient_outward(verts: np.ndarray, faces: np.ndarray, index: list) -> np.ndarray:

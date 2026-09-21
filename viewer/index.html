@@ -843,7 +843,9 @@ function shadeBuildingPrisms(mesh, mat) {
     g.setIndex(indices);
     g.computeVertexNormals();
     const m = new THREE.Mesh(g, new THREE.MeshStandardMaterial({
-      color, roughness: rough, metalness: 0.0, envMapIntensity: 0.5,
+      color, roughness: rough,
+      metalness: (m2 && m2.metalness) || 0.0,
+      envMapIntensity: (m2 && m2.envMapIntensity) || 0.5,
       vertexColors: true,
     }));
     m.castShadow = m.receiveShadow = true;
@@ -860,7 +862,32 @@ function shadeBuildingPrisms(mesh, mat) {
   // on both surfaces while still reading as roof-vs-wall.
   const m = mat || { roughness: 0.7, metalness: 0.0, color: 0xd0d4d8,
                      envMapIntensity: 0.7 };
-  const roof = mk(roofIdx, m.color, Math.min(1, m.roughness * 1.15), m);
+
+  // A roof is the one building surface a nadir satellite image actually
+  // photographs, top-down and undistorted -- unlike a wall, which the same
+  // image only ever sees as a sliver of grazing-angle pixels or not at all.
+  // When the GLB carries a real per-vertex UV for it (glb_export.py shares
+  // the ground's own satellite texture), sample that instead of the flat
+  // measured-median colour: real per-pixel roof detail -- AC units, roof
+  // material, staining -- where before every roof was one flat swatch.
+  // Falls back to the swatch for any mesh built before this UV existed.
+  let roof;
+  if (roofIdx.length && geom.attributes.uv && rgbTexture) {
+    const rg = new THREE.BufferGeometry();
+    rg.setAttribute("position", pos);
+    rg.setAttribute("uv", geom.attributes.uv);
+    rg.setIndex(roofIdx);
+    rg.computeVertexNormals();
+    roof = new THREE.Mesh(rg, new THREE.MeshStandardMaterial({
+      map: rgbTexture,
+      roughness: Math.min(1, m.roughness * 1.15),
+      metalness: m.metalness || 0.0,
+      envMapIntensity: m.envMapIntensity || 0.5,
+    }));
+    roof.castShadow = roof.receiveShadow = true;
+  } else {
+    roof = mk(roofIdx, m.color, Math.min(1, m.roughness * 1.15), m);
+  }
 
   // WALLS get their own geometry with UVs derived from WORLD POSITION.
   //
@@ -997,16 +1024,18 @@ Promise.all([
             child.geometry.setAttribute("uv1", child.geometry.attributes.uv);
           }
         } else {
-          // Buildings are extruded prisms with real vertical walls, so they
-          // need no texture at all -- and must not get the ground's planar
-          // one, which would stretch a few roof texels down every wall.
+          // Buildings are extruded prisms with real vertical walls. Roofs get
+          // the real satellite texture where the GLB carries a UV for it
+          // (shadeBuildingPrisms), because a nadir image genuinely
+          // photographed that surface. Walls must NOT get the ground's
+          // planar UV -- that would stretch a few roof texels down every
+          // wall -- so they stay on tone plus the disclosed synthetic
+          // facade instead.
           //
-          // Roofs and walls are given slightly different tones instead. That
-          // is what makes a block read as a solid volume rather than a flat
-          // silhouette: the eye separates the two surfaces by value, and the
-          // sun does the rest. Deliberately plain, matching a vector city
-          // model rather than pretending to facade detail the input does not
-          // contain.
+          // Roofs and walls are given slightly different tones on top of
+          // that. That is what makes a block read as a solid volume rather
+          // than a flat silhouette: the eye separates the two surfaces by
+          // value, and the sun does the rest.
           if (child.name && child.name.startsWith("building_")) {
             // Material by height class. Building stock correlates strongly with
             // height at this scale -- tall structures are curtain-walled, low

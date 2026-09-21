@@ -1019,7 +1019,7 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
     tex = io.BytesIO(); Image.fromarray(graded).save(tex, format="PNG")
 
     export_glb(stem + ".glb", gverts, guvs, gfaces, bverts, bfaces,
-               texture_bytes=tex.getvalue(), building_uvs=None,
+               texture_bytes=tex.getvalue(), building_uvs=binfo.get("uvs"),
                building_colors=binfo.get("colors"),
                extra_meshes=[
                    ("canopy", cverts, cfaces, (0.31, 0.44, 0.28, 1.0)),
