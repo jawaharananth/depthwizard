@@ -690,6 +690,25 @@ def flatten_ground(dtm: np.ndarray, seg_labels: np.ndarray,
 # already a very slender tree and anything beyond is a depth spike.
 CANOPY_MAX_ASPECT = 2.5
 
+# Vegetation classification here is a colour heuristic (Excess Green
+# Index), not a learned semantic model -- see segmentation.py's own
+# docstring. A real, observed failure mode: a large greenish-toned open
+# area (a grass field, an airfield median, a shadowed tarmac patch with a
+# green colour cast) reads as "vegetation" over its whole extent, and
+# because it is ONE large contiguous blob rather than many small tree
+# crowns, cv2.approxPolyDP simplifies it down to a handful of vertices --
+# a large, sharp-edged wedge, not anything that reads as foliage. A real
+# tree cluster in an urban scene is bounded; an area this large almost
+# never is one. 2000 sq. m is generous for a real dense grove and still
+# well under what a misclassified field/airfield patch covers.
+CANOPY_MAX_AREA_M2 = 2000.0
+
+# Compactness = 4*pi*area/perimeter^2, 1.0 for a perfect circle. Merged-blob
+# ground artifacts measured at 0.02-0.12 on a real scene; ordinary vegetation
+# contours (including irregular real canopy) median 0.36. 0.22 sits in the
+# real gap between the two populations, not a guessed round number.
+CANOPY_MIN_COMPACTNESS = 0.22
+
 
 def build_canopy(seg_labels: np.ndarray, dsm: np.ndarray, ground: np.ndarray,
                  gsd_x_m: float, gsd_y_m: float, min_area_px: int = 250,
@@ -733,8 +752,24 @@ def build_canopy(seg_labels: np.ndarray, dsm: np.ndarray, ground: np.ndarray,
         band = cv2.morphologyEx(band, cv2.MORPH_OPEN, k)
         contours, _ = cv2.findContours(band, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         for cnt in contours:
-            if cv2.contourArea(cnt) < min_area_px:
+            _cnt_area = cv2.contourArea(cnt)
+            if _cnt_area < min_area_px:
                 continue
+
+            # Real tree crowns are round-ish; the morphological CLOSE above
+            # merges many small, separately-real vegetation patches into one
+            # blob whenever they sit close together, and that merged blob is
+            # long and jagged, not round. Measured on a real scene: the huge
+            # ground-artifact blobs score compactness 0.02-0.12, ordinary
+            # contours score a median of 0.36. Reject shapes shaped nothing
+            # like foliage before they ever reach the mesh.
+            _perim = cv2.arcLength(cnt, True)
+            if _perim <= 0:
+                continue
+            _compactness = 4.0 * math.pi * _cnt_area / (_perim * _perim)
+            if _compactness < CANOPY_MIN_COMPACTNESS:
+                continue
+
             eps = 0.02 * cv2.arcLength(cnt, True)
             poly = cv2.approxPolyDP(cnt, eps, True).reshape(-1, 2).astype(np.float32)
             if len(poly) < 3:
@@ -750,6 +785,10 @@ def build_canopy(seg_labels: np.ndarray, dsm: np.ndarray, ground: np.ndarray,
             inside = sub.astype(bool)
             if inside.sum() < 20:
                 continue
+
+            _area_m2 = float(inside.sum()) * gsd_x_m * gsd_y_m
+            if _area_m2 > CANOPY_MAX_AREA_M2:
+                continue   # almost certainly a misclassified open area, not a tree cluster
 
             crown = float(np.percentile(dsm[y0:y1, x0:x1][inside], 75))
             base = float(np.percentile(ground[y0:y1, x0:x1][inside], 20))
