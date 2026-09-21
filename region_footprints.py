@@ -449,11 +449,30 @@ def orthogonalize(poly: np.ndarray, angle_tol_deg: float = 22.0,
     return out.astype(np.float32)
 
 def extract_from_polygons(polygons: list, ndsm: np.ndarray, gsd_m: float,
-                          min_area_m2: float = 4.0, min_height_m: float = 1.0,
+                          min_area_m2: float = 1.5, min_height_m: float = 1.0,
                           known_heights: list = None) -> dict:
     """
     Building footprints from individually-labelled ground-truth polygons, not
     a merged raster mask.
+
+    min_area_m2 is deliberately lower here than the model-detection paths
+    (extract_regions/extract_from_mask, both 8.0). Those two are filtering a
+    SEGMENTATION MODEL'S OWN guess, and the small-object detection literature
+    is consistent that automated footprint extraction is unreliable below
+    roughly 10 sq m -- a model's tiny "building" is more likely noise than a
+    real structure. This function filters HUMAN-LABELLED polygons instead:
+    someone already looked at the image and drew that shape, so the question
+    is not "can a model be trusted at this size" but "is this size physically
+    plausible for a structure," and informal-settlement mapping research
+    (compact, irregular dwellings a few square metres each) says a real hut
+    can be smaller than what a model could safely be trusted to detect on its
+    own. 1.5 sq m still drops the sub-metre slivers digitisation noise
+    produces -- measured directly on this project's own Mumbai BMC ground
+    truth, the smallest rejected polygons run 0.26-0.9 sq m (50-95 cm
+    across, implausible as a standalone structure) before climbing smoothly
+    through the 1-4 sq m range a real small hut occupies. There is no clean
+    gap in the data to cut at; 1.5 is a judgement call on the low end of
+    "plausible structure," not a measured threshold.
 
     known_heights, when supplied, is a per-polygon list the same length as
     polygons -- a real measured height in metres (e.g. floor count from a
