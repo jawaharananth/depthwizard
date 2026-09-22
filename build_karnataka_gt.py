@@ -81,4 +81,4 @@ if __name__ == "__main__":
     import build_city_image as bci
     bci.build(mosaic_path, scene_name, max_px=1536, use_dem=False,
               gt_building_mask=gt, gt_building_polygons=polygons,
-              anchor_height_m=tallest)
+              anchor_height_m=tallest, skip_canopy=True)

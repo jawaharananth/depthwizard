@@ -379,7 +379,8 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
           dem_source: str = "glo30", return_arrays: bool = False,
           use_metric: bool = True, gt_building_mask: np.ndarray = None,
           gt_building_polygons: list = None,
-          gt_building_heights: list = None) -> dict:
+          gt_building_heights: list = None,
+          skip_canopy: bool = False) -> dict:
     """
     return_arrays: additive, off by default -- every existing caller (server.py,
     the CLI) is unaffected. When True, meta["_ndsm"] carries the predicted
@@ -955,8 +956,17 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
           f"{np.median(heights):.1f}  max {heights.max():.1f} "
           f"({'m' if (anchor_height_m or depth_is_metric or not tier.startswith('C')) else 'relative units'})")
 
-    cverts, cfaces, n_canopy = city_model.build_canopy(
-        seg_labels, dsm, ground, gsd, gsd, min_area_px=120)
+    if skip_canopy:
+        # This scene's canopy depth signal is noise-dominated (measured on
+        # Karnataka kn_a: 95th percentile of vegetation height was 23.3 m,
+        # contaminated well past any per-patch cap worth applying) and the
+        # narrow-footprint taper reads as spikes regardless of height. Rather
+        # than ship a wrong-looking canopy, this scene has none -- an honest
+        # gap, not a wrong claim.
+        cverts, cfaces, n_canopy = np.zeros((0, 3), np.float32), np.zeros((0, 3), np.int64), 0
+    else:
+        cverts, cfaces, n_canopy = city_model.build_canopy(
+            seg_labels, dsm, ground, gsd, gsd, min_area_px=120)
     wverts, wfaces, n_water = city_model.build_water(seg_labels, ground, gsd, gsd)
     vverts, vfaces, n_veh = city_model.detect_vehicles(image_np, seg_labels, ground, gsd)
 

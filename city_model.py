@@ -700,9 +700,14 @@ def flatten_ground(dtm: np.ndarray, seg_labels: np.ndarray,
     return cv2.GaussianBlur(dtm.astype(np.float32), (0, 0), sigmaX=sigma_px)
 
 
-# A tree crown wider than it is tall is the norm; 2.5x its own width is
-# already a very slender tree and anything beyond is a depth spike.
-CANOPY_MAX_ASPECT = 2.5
+# A tree crown wider than it is tall is the norm; measured directly on a
+# real scene (Karnataka kn_a) the worst RAW crown heights before this cap
+# even applies reached 19.2 m on a 15.6 m span and 14-19 m on 5-8 m spans --
+# taller than the scene's own assumed tallest structure (14 m) and clearly
+# depth-field noise, not real trees, since 2.5x was permissive enough to let
+# them through uncapped. 1.2 still allows a genuinely slender tree (palm,
+# conifer) to read as taller than wide; anything beyond that is a spike.
+CANOPY_MAX_ASPECT = 1.2
 
 # Vegetation classification here is a colour heuristic (Excess Green
 # Index), not a learned semantic model -- see segmentation.py's own
@@ -755,6 +760,27 @@ def build_canopy(seg_labels: np.ndarray, dsm: np.ndarray, ground: np.ndarray,
 
     top = float(np.nanpercentile(h, 99.0))
     n_bands = max(1, int(np.ceil(top / max(band_m, 0.5))))
+    # A second, absolute ceiling alongside the aspect-ratio one: no single
+    # patch's crown may exceed what most of the scene's OWN canopy actually
+    # supports. The aspect cap alone was measured insufficient on a real
+    # scene (Karnataka kn_a) -- a wide patch (15.6 m span) still capped to
+    # 18.7 m, barely different from its uncapped 19.2 m, because a
+    # proportional cap grows right along with a patch that is itself an
+    # outlier. This is a scene-relative statistic, not a borrowed constant,
+    # so it holds on a Tier C scene with no absolute metres just as well as
+    # a metric one.
+    # The median, not a high percentile: measured directly on a real scene
+    # (Karnataka kn_a), even p95 of the vegetation height field was 23.3 m --
+    # depth estimation over canopy is noisy (complex, non-planar surfaces
+    # that stereo/MVS handles poorly, a known limitation, not scene content)
+    # and that noise is a long tail, not a few outliers, so ANY high
+    # percentile is itself contaminated. The median (3.6 m on that same
+    # scene) sits where most real canopy pixels actually are and is immune
+    # to the tail. A real tallest tree can reasonably run a few times the
+    # scene's typical canopy height; 3x is generous without re-admitting the
+    # 15-40 m spikes a percentile-based ceiling let through.
+    _veg_median = float(np.nanpercentile(h, 50.0))
+    _veg_ceiling = max(_veg_median * 3.0, min_height_m)
 
     verts, faces = [], []
     count = 0
@@ -816,7 +842,7 @@ def build_canopy(seg_labels: np.ndarray, dsm: np.ndarray, ground: np.ndarray,
             # metres, so it holds in a Tier C scene that has no scale at all.
             span_m = math.sqrt(max(float(inside.sum()), 1.0)
                                * gsd_x_m * gsd_y_m)
-            tallest = base + CANOPY_MAX_ASPECT * span_m
+            tallest = base + min(CANOPY_MAX_ASPECT * span_m, _veg_ceiling)
             if crown > tallest:
                 crown = tallest
                 if crown - base < min_height_m:
