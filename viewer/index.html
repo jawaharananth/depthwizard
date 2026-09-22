@@ -18,6 +18,11 @@
     background: rgba(20,20,25,0.75); backdrop-filter: blur(6px);
     border-radius: 10px; padding: 12px 14px; color: #eee; font-size: 13px;
     min-width: 220px;
+    /* Capped so the button rows wrap into a narrow column instead of
+       sprawling across most of the viewport -- with every tool row present
+       (Record Flythrough, Ground Control, Measure Area, ...) an unbounded
+       width let the panel cover the model it's meant to be a HUD over. */
+    max-width: 280px;
     /* The panel accumulates sections (tools, measure readout, a 320x120
        cross-section canvas, GCP rows, sliders) that can exceed a short
        viewport -- a 1366x768 hall laptop with browser chrome eating into
@@ -25,6 +30,14 @@
        below the fold are simply unreachable, not just ugly. */
     max-height: calc(100vh - 24px);
     overflow-y: auto;
+  }
+  #ui.collapsed { padding: 8px 10px; }
+  #ui.collapsed > *:not(#btn-collapse) { display: none; }
+  #btn-collapse {
+    position: absolute; top: 6px; right: 6px; z-index: 11;
+    background: rgba(20,20,25,0.75); color: #9ab; border: 1px solid #345;
+    border-radius: 6px; width: 22px; height: 22px; font-size: 12px;
+    line-height: 1; cursor: pointer; padding: 0;
   }
   #ui h3 { margin: 0 0 8px; font-size: 14px; color: #9fd; }
   .row { display: flex; gap: 6px; margin-bottom: 8px; flex-wrap: wrap; }
@@ -89,6 +102,7 @@
 <div id="canvas-container"></div>
 
 <div id="ui" style="display:none;">
+  <button id="btn-collapse" title="Collapse panel">&#8722;</button>
   <h3>DepthWizard</h3>
   <div class="row">
     <button id="btn-rgb" class="active">RGB</button>
@@ -693,97 +707,14 @@ if (btnDof) {
  * geometry, the sun, and the environment -- which is exactly what makes a
  * clean prism city legible.
  */
-// --- Procedural facades -----------------------------------------------------
-//
-// A nadir satellite image photographs no vertical surface, so there is NO
-// facade data in the input. These textures are SYNTHETIC and the HUD says so.
-// They exist because an untextured prism reads as a blank mass: without a floor
-// rhythm the eye cannot judge a building's size, and a 12-storey tower and a
-// 3-storey block look identical apart from silhouette.
-//
-// FrankenGAN and Proc-GS solve this with learned or splat-based detail, and
-// both need a GPU this machine does not have. CityEngine solves it in a
-// separate application. Drawing the facade procedurally here needs neither, and
-// keeps every parameter inspectable rather than baked into weights.
-//
-// One storey is one texture tile, mapped against real world height, so windows
-// come out at a believable scale on a 5 m shed and an 80 m tower alike rather
-// than stretching with the building.
-const STOREY_M = 3.5;
-
-function makeFacadeTexture(kind) {
-  const S = 256;
-  const c = document.createElement("canvas");
-  c.width = c.height = S;
-  const g = c.getContext("2d");
-
-  // Per-class facade grammar. Building stock genuinely differs this way: a
-  // curtain-walled tower is mostly glass in a tight regular grid, a mid-rise
-  // has punched openings in a masonry field, a low building has fewer, wider
-  // windows and more solid wall between them.
-  const SPEC = {
-    building_tall: { cols: 6, winW: 0.74, winH: 0.62, spandrel: 0.16,
-                     wall: "#b9c4d2", glass: "#4d6076", reflect: 0.55 },
-    building_mid:  { cols: 4, winW: 0.52, winH: 0.54, spandrel: 0.26,
-                     wall: "#c4c2bc", glass: "#5a6470", reflect: 0.30 },
-    building_low:  { cols: 3, winW: 0.44, winH: 0.44, spandrel: 0.34,
-                     wall: "#cbc6bd", glass: "#63696f", reflect: 0.18 },
-  };
-  const s = SPEC[kind] || SPEC.building_mid;
-
-  g.fillStyle = s.wall;
-  g.fillRect(0, 0, S, S);
-
-  // Spandrel band at the floor line, slightly darker than the wall so the
-  // floor rhythm reads even at a distance where individual windows do not.
-  g.fillStyle = "rgba(0,0,0,0.10)";
-  g.fillRect(0, 0, S, S * s.spandrel);
-
-  const margin = (S * (1 - s.winW)) / (s.cols + 1);
-  const w = (S * s.winW) / s.cols;
-  const top = S * (s.spandrel + 0.06);
-  const h = S * s.winH;
-
-  for (let i = 0; i < s.cols; i++) {
-    const x = margin + i * (w + margin);
-    // Per-window variation. A perfectly uniform grid reads as printed pattern;
-    // real glazing differs with blinds, lighting and reflection angle. Keyed to
-    // the column index so it is deterministic, not flickering.
-    const v = 0.78 + 0.30 * (((i * 37) % 11) / 11);
-    const grad = g.createLinearGradient(x, top, x + w, top + h);
-    grad.addColorStop(0, shade(s.glass, v * (1 + s.reflect * 0.5)));
-    grad.addColorStop(1, shade(s.glass, v * (1 - s.reflect * 0.3)));
-    g.fillStyle = grad;
-    g.fillRect(x, top, w, h);
-
-    // Reveal: a thin light edge where the opening meets the wall. This is what
-    // makes a window read as an opening in a surface rather than a painted
-    // rectangle.
-    g.strokeStyle = "rgba(255,255,255,0.20)";
-    g.lineWidth = Math.max(1, S * 0.004);
-    g.strokeRect(x, top, w, h);
-  }
-
-  const t = new THREE.CanvasTexture(c);
-  t.wrapS = t.wrapT = THREE.RepeatWrapping;
-  t.colorSpace = THREE.SRGBColorSpace;
-  t.anisotropy = 8;
-  return t;
-}
-
-function shade(hex, k) {
-  const n = parseInt(hex.slice(1), 16);
-  const r = Math.min(255, Math.round(((n >> 16) & 255) * k));
-  const gg = Math.min(255, Math.round(((n >> 8) & 255) * k));
-  const b = Math.min(255, Math.round((n & 255) * k));
-  return "rgb(" + r + "," + gg + "," + b + ")";
-}
-
-const FACADE_CACHE = {};
-function facadeFor(kind) {
-  if (!FACADE_CACHE[kind]) FACADE_CACHE[kind] = makeFacadeTexture(kind);
-  return FACADE_CACHE[kind];
-}
+// A nadir satellite image photographs no vertical surface, so there is no
+// real facade data in the input at all. Walls used to carry a synthetic,
+// procedurally drawn window grid to compensate -- disclosed in the HUD, but
+// still an invented pattern, not data about the building. Walls now carry
+// the same real per-vertex colour the roof does instead (see shadeBuildingPrisms
+// below): the one real colour sample this building has, applied to the one
+// surface that was never photographed. An inference, not a measurement, but
+// a real one, grounded in this building's own data.
 
 
 function shadeBuildingPrisms(mesh, mat) {
@@ -895,11 +826,21 @@ function shadeBuildingPrisms(mesh, mat) {
   // face: it spans almost no UV area, so one texel column stretches down the
   // whole wall. Parameterising across the face horizontally and up its height,
   // both in metres, puts one facade tile per storey regardless of building size.
+  // Walls are tinted from the SAME per-vertex colour the roof carries when
+  // the GLB has one -- the building's own measured colour, sampled from the
+  // satellite image at its roof, not a fixed per-class swatch or a
+  // procedurally drawn window grid. A nadir image never photographed the
+  // wall itself, so this is an inference (this building's one real colour
+  // sample, applied to its own walls) rather than a measurement -- but it
+  // is a real inference from this building's own data, which a flat class
+  // colour or a synthetic facade pattern is not. Falls back to the class
+  // colour only for a mesh built before per-vertex colour existed.
   let wall = null;
   if (wallIdx.length) {
-    const wp = [], wuv = [], wn = [];
+    const wp = [], wn = [], wc = [];
     const a3 = new THREE.Vector3(), b3 = new THREE.Vector3(), c3 = new THREE.Vector3();
     const ab3 = new THREE.Vector3(), ac3 = new THREE.Vector3(), n3 = new THREE.Vector3();
+    const hasRealColor = !!geom.attributes.color;
     for (let t = 0; t < wallIdx.length; t += 3) {
       const i0 = wallIdx[t], i1 = wallIdx[t + 1], i2 = wallIdx[t + 2];
       a3.fromBufferAttribute(pos, i0);
@@ -907,25 +848,27 @@ function shadeBuildingPrisms(mesh, mat) {
       c3.fromBufferAttribute(pos, i2);
       ab3.subVectors(b3, a3); ac3.subVectors(c3, a3);
       n3.crossVectors(ab3, ac3).normalize();
-      const horiz = new THREE.Vector3(-n3.z, 0, n3.x).normalize();
-      for (const v of [a3, b3, c3]) {
+      for (const [v, i] of [[a3, i0], [b3, i1], [c3, i2]]) {
         wp.push(v.x, v.y, v.z);
-        wuv.push((v.x * horiz.x + v.z * horiz.z) / STOREY_M, v.y / STOREY_M);
         wn.push(n3.x, n3.y, n3.z);
+        if (hasRealColor) {
+          wc.push(colorAttr.getX(i), colorAttr.getY(i), colorAttr.getZ(i));
+        }
       }
     }
     const wg = new THREE.BufferGeometry();
     wg.setAttribute("position", new THREE.Float32BufferAttribute(wp, 3));
-    wg.setAttribute("uv", new THREE.Float32BufferAttribute(wuv, 2));
     wg.setAttribute("normal", new THREE.Float32BufferAttribute(wn, 3));
-    const wc = new THREE.Color(m.color).multiplyScalar(0.94);
-    wall = new THREE.Mesh(wg, new THREE.MeshStandardMaterial({
-      map: facadeFor(mesh.name || "building_mid"),
-      color: wc,
-      roughness: m.roughness,
-      metalness: m.metalness || 0.0,
-      envMapIntensity: m.envMapIntensity || 0.7,
-    }));
+    const wallMat = { roughness: m.roughness, metalness: m.metalness || 0.0,
+                      envMapIntensity: m.envMapIntensity || 0.7 };
+    if (hasRealColor) {
+      wg.setAttribute("color", new THREE.Float32BufferAttribute(wc, 3));
+      wallMat.vertexColors = true;
+      wallMat.color = 0xffffff;
+    } else {
+      wallMat.color = new THREE.Color(m.color).multiplyScalar(0.94);
+    }
+    wall = new THREE.Mesh(wg, new THREE.MeshStandardMaterial(wallMat));
     wall.castShadow = wall.receiveShadow = true;
   }
 
@@ -1203,7 +1146,7 @@ Promise.all([
           `heights: tier ${SCENE_META.tier}` +
             (SCENE_META.shadow_samples ? ` (${SCENE_META.shadow_samples} shadows)` : ""),
           `${SCENE_META.buildings_extruded} buildings extruded`,
-          `facades are SYNTHETIC (nadir imagery contains no facade pixels)`);
+          `walls: this building's own measured roof colour (nadir imagery has no facade pixels to sample directly)`);
       }
       document.getElementById("stats").textContent = lines.join("\n");
 
@@ -1351,6 +1294,17 @@ function countVerts(obj) {
   obj.traverse((c) => { if (c.isMesh) n += c.geometry.attributes.position.count; });
   return n;
 }
+
+// --- Panel collapse: the tool panel is a HUD over the model, not a
+// permanent fixture -- a viewer wanting an unobstructed look at what was
+// just built should be able to get it in one click, not by shrinking the
+// browser window.
+document.getElementById("btn-collapse").addEventListener("click", () => {
+  const el = document.getElementById("ui");
+  const nowCollapsed = el.classList.toggle("collapsed");
+  document.getElementById("btn-collapse").innerHTML = nowCollapsed ? "&#9633;" : "&#8722;";
+  document.getElementById("btn-collapse").title = nowCollapsed ? "Expand panel" : "Collapse panel";
+});
 
 // --- RGB / Heatmap toggle ---
 document.getElementById("btn-rgb").addEventListener("click", () => setTextureMode("rgb"));
@@ -3181,10 +3135,10 @@ async function exportReport() {
   const note = doc.createElement("p");
   note.className = "note";
   note.textContent = "Heights are derived from a single nadir view by plane-sweep "
-    + "multi-view stereo; facades are synthetic, because nadir imagery contains no "
-    + "facade pixels. Figures above the reference extent line are measured against "
-    + "LiDAR ground truth; outside it, no reference exists and accuracy is not "
-    + "established.";
+    + "multi-view stereo; walls carry each building's own measured roof colour, "
+    + "because nadir imagery contains no facade pixels to sample directly. Figures "
+    + "above the reference extent line are measured against LiDAR ground truth; "
+    + "outside it, no reference exists and accuracy is not established.";
   doc.body.appendChild(note);
 
   // Wait for the embedded frame to decode before printing, or the page prints
