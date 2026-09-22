@@ -791,8 +791,18 @@ function shadeBuildingPrisms(mesh, mat) {
   // Roofs face the sky and take more of it; walls sit in shade. Both ride on
   // the class material rather than replacing it, so a glass tower stays glassy
   // on both surfaces while still reading as roof-vs-wall.
-  const m = mat || { roughness: 0.7, metalness: 0.0, color: 0xd0d4d8,
-                     envMapIntensity: 0.7 };
+  // Peach/tan, stronger than glb_export.py's own original default
+  // building_color (0.82, 0.78, 0.70 = 0xd1c7b2). Verified live (read the
+  // material's own colour back, and sampled actual rendered wall pixels)
+  // that the milder tone washed to near-grey on any wall not directly
+  // sun-lit: a shaded wall's shading is dominated by this scene's ambient
+  // sky light, which is blue, and a subtle tint cannot out-compete it. A
+  // more saturated base colour is what actually survives that, not a
+  // lighting change -- the ambient tint is real and correct, walls in real
+  // shadow do read cooler, so the fix is a stronger starting colour, not
+  // fighting the shading.
+  const m = mat || { roughness: 0.7, metalness: 0.0, color: 0xddb08a,
+                     envMapIntensity: 0.25 };
 
   // A roof is the one building surface a nadir satellite image actually
   // photographs, top-down and undistorted -- unlike a wall, which the same
