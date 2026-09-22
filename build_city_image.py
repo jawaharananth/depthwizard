@@ -40,11 +40,14 @@ import argparse
 import json
 import math
 import os
+import re
 import shutil
 import time
 
 import numpy as np
 import cv2
+import rasterio.warp
+from pyproj import Transformer
 from PIL import Image
 
 import segmentation as seg
@@ -63,6 +66,7 @@ import building_discovery as bd
 import shadow_correction
 import overlay_rejection
 import dem_source as dem_mod
+import open_buildings_source as obs
 from depth_model import DepthBackbone, orientation_check, backbone_tag
 from glb_export import export_glb
 import mesh_generation as mg
@@ -73,6 +77,83 @@ GROUND_GRID = 700
 
 
 MIN_EDGE_PROBES = 20   # below this the direction scan has too little signal to trust
+
+# A footprint's real-height sample is only trusted if at least this share of
+# its own pixels have real data -- otherwise a building that only clips the
+# corner of real coverage gets a height guessed from a handful of pixels,
+# which is worse than not fusing at all.
+OPEN_BUILDINGS_MIN_FOOTPRINT_COVERAGE = 0.3
+# Below this scene-wide coverage, fetching and warping a whole raster for a
+# handful of usable pixels isn't worth it -- report the real "no/low
+# coverage" outcome and move on rather than pretend the attempt helped.
+OPEN_BUILDINGS_MIN_SCENE_COVERAGE = 0.05
+
+
+def fuse_open_buildings_heights(dsm: np.ndarray, ground: np.ndarray,
+                                footprints: list, src_transform, src_crs: str) -> int:
+    """
+    Burns real Google Open Buildings 2.5D per-building heights into the
+    surface model -- the same "splice the real signal into dsm before
+    anything downstream reads it" technique already used for Mumbai's real
+    municipal floor-count records (see build()'s ground-truth fusion,
+    search "REAL BUG FIX"). That fix only ever helps a scene with a
+    per-city record on hand; this is the same fix generalised to ANY scene
+    with a real georeference, sourced from a public dataset instead.
+
+    Returns the number of footprints whose height was fused in. Zero
+    coverage (no tile here, or a tile with no data at this location) is a
+    real, honestly reported outcome -- see open_buildings_source.py's own
+    module docstring -- not a failure to retry or hide.
+    """
+    if src_transform is None or src_crs is None:
+        return 0
+    m = re.search(r"\d+", src_crs)
+    if m is None:
+        return 0
+    epsg = int(m.group())
+
+    H, W = dsm.shape
+    corners_px = [(0, 0), (W, 0), (0, H), (W, H)]
+    corners_crs = [src_transform * p for p in corners_px]
+    xs = [c[0] for c in corners_crs]
+    ys = [c[1] for c in corners_crs]
+    tf_to_ll = Transformer.from_crs(src_crs, "EPSG:4326", always_xy=True)
+    lons, lats = tf_to_ll.transform(xs, ys)
+
+    r = obs.sample_height_grid(min(lons), min(lats), max(lons), max(lats), epsg=epsg)
+    print(f"      Open Buildings height fusion: {r['note']}")
+    if r["heights"] is None or r["coverage"] < OPEN_BUILDINGS_MIN_SCENE_COVERAGE:
+        return 0
+
+    # Warp the fetched grid onto THIS image's own pixel grid. Both
+    # transforms are real Affines in a real CRS -- a genuine reprojection,
+    # not a resize or a guess at alignment.
+    dst = np.full((H, W), np.nan, dtype=np.float32)
+    rasterio.warp.reproject(
+        source=r["heights"].astype(np.float32), destination=dst,
+        src_transform=r["transform"], src_crs=f"EPSG:{epsg}",
+        dst_transform=src_transform, dst_crs=src_crs,
+        resampling=rasterio.warp.Resampling.bilinear)
+
+    n_fused = 0
+    for poly in footprints:
+        poly_px = np.asarray(poly, np.int32)
+        mask = np.zeros((H, W), np.uint8)
+        cv2.fillPoly(mask, [poly_px], 1)
+        mask = mask.astype(bool)
+        if not mask.any():
+            continue
+        vals = dst[mask]
+        vals = vals[np.isfinite(vals)]
+        if vals.size < max(4, int(OPEN_BUILDINGS_MIN_FOOTPRINT_COVERAGE * mask.sum())):
+            continue
+        real_h = float(np.median(vals))
+        if real_h < 1.0:
+            continue
+        local_ground = float(np.median(ground[mask]))
+        dsm[mask] = local_ground + real_h
+        n_fused += 1
+    return n_fused
 
 
 def estimate_sun_azimuth(image_np: np.ndarray, seg_labels: np.ndarray) -> float:
@@ -919,6 +1000,26 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
         _rej = "  ".join(f"{k} {v}" for k, v in rres["report"]["rejected"].items() if v)
         if _rej:
             print(f"      rejected: {_rej}")
+
+        # Real per-building heights where a public dataset has them for
+        # this exact location -- only reachable on a real georeference
+        # (src_transform/src_crs), which this branch is not guaranteed to
+        # have (a plain PNG has neither). Genuinely no-op, not a silent
+        # skip, when neither exists.
+        _n_ob_fused = fuse_open_buildings_heights(
+            dsm, ground, footprints, src_transform, src_crs)
+        if _n_ob_fused:
+            # Same refresh Mumbai's ground-truth fusion already needs (see
+            # the gt_building_polygons branch above): dsm was mutated in
+            # place, but ndsm was computed from the OLD dsm and numpy does
+            # not track that dependency -- every downstream reader of ndsm
+            # (the model-vs-image audit, in particular) would otherwise
+            # keep comparing against pre-fusion heights and see a
+            # correlation collapse that has nothing to do with whether the
+            # fusion itself is right.
+            ndsm = np.maximum(dsm - ground, 0.0)
+            print(f"      {_n_ob_fused} real Open Buildings height(s) fused "
+                  f"into the surface model")
 
     # Provenance now tracks the tier actually reached: a height is MEASURED
     # only on B/A, where a physical shadow or DEM calibration produced the
