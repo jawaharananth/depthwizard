@@ -820,27 +820,20 @@ function shadeBuildingPrisms(mesh, mat) {
     roof = mk(roofIdx, m.color, Math.min(1, m.roughness * 1.15), m);
   }
 
-  // WALLS get their own geometry with UVs derived from WORLD POSITION.
-  //
-  // The mesh carries planar (top-down) UVs, which are meaningless on a vertical
-  // face: it spans almost no UV area, so one texel column stretches down the
-  // whole wall. Parameterising across the face horizontally and up its height,
-  // both in metres, puts one facade tile per storey regardless of building size.
-  // Walls are tinted from the SAME per-vertex colour the roof carries when
-  // the GLB has one -- the building's own measured colour, sampled from the
-  // satellite image at its roof, not a fixed per-class swatch or a
-  // procedurally drawn window grid. A nadir image never photographed the
-  // wall itself, so this is an inference (this building's one real colour
-  // sample, applied to its own walls) rather than a measurement -- but it
-  // is a real inference from this building's own data, which a flat class
-  // colour or a synthetic facade pattern is not. Falls back to the class
-  // colour only for a mesh built before per-vertex colour existed.
+  // WALLS get their own geometry -- a solid tint, no texture, no window
+  // grid. Two things were tried and rejected here: the planar (top-down) UV
+  // the mesh already carries is meaningless on a vertical face (one texel
+  // column stretched down the whole wall); and the per-building measured
+  // colour (real, sampled from the roof) read acceptably there but washed
+  // out pale on a flat wall under this scene's lighting even after shading
+  // it down. The class swatch below is the same measured-material-by-
+  // height-class reasoning the roof material already uses, not an
+  // arbitrary colour, and it is what reads correctly at this surface.
   let wall = null;
   if (wallIdx.length) {
-    const wp = [], wn = [], wc = [];
+    const wp = [], wn = [];
     const a3 = new THREE.Vector3(), b3 = new THREE.Vector3(), c3 = new THREE.Vector3();
     const ab3 = new THREE.Vector3(), ac3 = new THREE.Vector3(), n3 = new THREE.Vector3();
-    const hasRealColor = !!geom.attributes.color;
     for (let t = 0; t < wallIdx.length; t += 3) {
       const i0 = wallIdx[t], i1 = wallIdx[t + 1], i2 = wallIdx[t + 2];
       a3.fromBufferAttribute(pos, i0);
@@ -848,27 +841,19 @@ function shadeBuildingPrisms(mesh, mat) {
       c3.fromBufferAttribute(pos, i2);
       ab3.subVectors(b3, a3); ac3.subVectors(c3, a3);
       n3.crossVectors(ab3, ac3).normalize();
-      for (const [v, i] of [[a3, i0], [b3, i1], [c3, i2]]) {
+      for (const v of [a3, b3, c3]) {
         wp.push(v.x, v.y, v.z);
         wn.push(n3.x, n3.y, n3.z);
-        if (hasRealColor) {
-          wc.push(colorAttr.getX(i), colorAttr.getY(i), colorAttr.getZ(i));
-        }
       }
     }
     const wg = new THREE.BufferGeometry();
     wg.setAttribute("position", new THREE.Float32BufferAttribute(wp, 3));
     wg.setAttribute("normal", new THREE.Float32BufferAttribute(wn, 3));
-    const wallMat = { roughness: m.roughness, metalness: m.metalness || 0.0,
-                      envMapIntensity: m.envMapIntensity || 0.7 };
-    if (hasRealColor) {
-      wg.setAttribute("color", new THREE.Float32BufferAttribute(wc, 3));
-      wallMat.vertexColors = true;
-      wallMat.color = 0xffffff;
-    } else {
-      wallMat.color = new THREE.Color(m.color).multiplyScalar(0.94);
-    }
-    wall = new THREE.Mesh(wg, new THREE.MeshStandardMaterial(wallMat));
+    wall = new THREE.Mesh(wg, new THREE.MeshStandardMaterial({
+      color: new THREE.Color(m.color).multiplyScalar(0.94),
+      roughness: m.roughness, metalness: m.metalness || 0.0,
+      envMapIntensity: m.envMapIntensity || 0.7,
+    }));
     wall.castShadow = wall.receiveShadow = true;
   }
 
@@ -1146,7 +1131,7 @@ Promise.all([
           `heights: tier ${SCENE_META.tier}` +
             (SCENE_META.shadow_samples ? ` (${SCENE_META.shadow_samples} shadows)` : ""),
           `${SCENE_META.buildings_extruded} buildings extruded`,
-          `walls: this building's own measured roof colour (nadir imagery has no facade pixels to sample directly)`);
+          `facades are SYNTHETIC (nadir imagery contains no facade pixels)`);
       }
       document.getElementById("stats").textContent = lines.join("\n");
 
@@ -3135,9 +3120,9 @@ async function exportReport() {
   const note = doc.createElement("p");
   note.className = "note";
   note.textContent = "Heights are derived from a single nadir view by plane-sweep "
-    + "multi-view stereo; walls carry each building's own measured roof colour, "
-    + "because nadir imagery contains no facade pixels to sample directly. Figures "
-    + "above the reference extent line are measured against LiDAR ground truth; "
+    + "multi-view stereo; facades are synthetic, because nadir imagery contains no "
+    + "facade pixels. Figures above the reference extent line are measured against "
+    + "LiDAR ground truth; "
     + "outside it, no reference exists and accuracy is not established.";
   doc.body.appendChild(note);
 
