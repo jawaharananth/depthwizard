@@ -78,7 +78,16 @@ if __name__ == "__main__":
         print(f"      using {len(polygons)} individually-labelled polygons "
               f"(preserves touching-building identity)")
 
+    chm_path = f"{MOSAIC_DIR}/{tag}_chm.npy"
+    canopy_height_map = None
+    if os.path.exists(chm_path):
+        canopy_height_map = np.load(chm_path)
+        print(f"      real CHM raster found ({canopy_height_map.shape}), "
+              f"using it for canopy instead of skipping")
+
     import build_city_image as bci
     bci.build(mosaic_path, scene_name, max_px=1536, use_dem=False,
               gt_building_mask=gt, gt_building_polygons=polygons,
-              anchor_height_m=tallest, skip_canopy=True)
+              anchor_height_m=tallest,
+              skip_canopy=(canopy_height_map is None),
+              canopy_height_map=canopy_height_map)

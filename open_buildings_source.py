@@ -149,30 +149,67 @@ def sample_height_grid(min_lon: float, min_lat: float, max_lon: float, max_lat: 
         return {"heights": None, "transform": None, "coverage": 0.0,
                 "note": f"no Open Buildings tile covers this extent (EPSG:{epsg}, {year})"}
 
-    url = f"/vsicurl/{GCS_BASE}{tile['path']}"
+    remote_url = f"{GCS_BASE}{tile['path']}"
+    url = f"/vsicurl/{remote_url}"
     tf = Transformer.from_crs("EPSG:4326", f"EPSG:{epsg}", always_xy=True)
     x0, y1 = tf.transform(min_lon, max_lat)   # NW corner
     x1, y0 = tf.transform(max_lon, min_lat)   # SE corner
 
+    def _read_window(rio_path):
+        with rasterio.open(rio_path) as src:
+            inv = ~src.transform
+            c0, r0 = inv * (x0, y1)
+            c1, r1 = inv * (x1, y0)
+            c0, c1 = sorted((int(c0), int(c1)))
+            r0, r1 = sorted((int(r0), int(r1)))
+            c0, r0 = max(0, c0), max(0, r0)
+            c1, r1 = min(src.width, c1), min(src.height, r1)
+            if c1 <= c0 or r1 <= r0:
+                return "empty", None
+            window = rasterio.windows.Window(c0, r0, c1 - c0, r1 - r0)
+            return src.read(2, window=window), src.window_transform(window)
+
     try:
         with rasterio.Env(GDAL_HTTP_TIMEOUT=25, GDAL_HTTP_CONNECTTIMEOUT=10):
-            with rasterio.open(url) as src:
-                inv = ~src.transform
-                c0, r0 = inv * (x0, y1)
-                c1, r1 = inv * (x1, y0)
-                c0, c1 = sorted((int(c0), int(c1)))
-                r0, r1 = sorted((int(r0), int(r1)))
-                c0, r0 = max(0, c0), max(0, r0)
-                c1, r1 = min(src.width, c1), min(src.height, r1)
-                if c1 <= c0 or r1 <= r0:
-                    return {"heights": None, "transform": None, "coverage": 0.0,
-                            "note": "computed window is empty (point near tile edge)"}
-                window = rasterio.windows.Window(c0, r0, c1 - c0, r1 - r0)
-                heights = src.read(2, window=window)
-                win_transform = src.window_transform(window)
+            heights, win_transform = _read_window(url)
     except Exception as exc:
+        # GDAL's own bundled cURL uses Windows' native "schannel" TLS backend
+        # for /vsicurl/, which validates against the OS certificate store --
+        # a real, seen-in-practice failure mode on a machine whose store is
+        # missing an intermediate CA, completely independent of whether the
+        # SAME network path works through Python's own SSL stack (it does
+        # here: find_tile's urllib manifest fetch, moments earlier, succeeds
+        # on the exact same host through the exact same network). Rather
+        # than fail a real, available dataset over a local TLS-backend quirk,
+        # fall back to fetching the whole object with urllib (proven working)
+        # to a local temp file and pointing rasterio at that instead -- once
+        # it's a local file, no further network/TLS involvement is needed.
+        if "schannel" not in str(exc).lower() and "curl error" not in str(exc).lower():
+            return {"heights": None, "transform": None, "coverage": 0.0,
+                    "note": f"{type(exc).__name__}: {exc}"}
+        import tempfile
+        try:
+            req = urllib.request.Request(remote_url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                data = resp.read()
+            with tempfile.NamedTemporaryFile(suffix=".tif", delete=False) as tf_local:
+                tf_local.write(data)
+                local_path = tf_local.name
+            heights, win_transform = _read_window(local_path)
+        except Exception as exc2:
+            return {"heights": None, "transform": None, "coverage": 0.0,
+                    "note": f"vsicurl failed ({exc}); local-download fallback also "
+                            f"failed: {type(exc2).__name__}: {exc2}"}
+        finally:
+            try:
+                import os as _os
+                _os.remove(local_path)
+            except Exception:
+                pass
+
+    if isinstance(heights, str) and heights == "empty":
         return {"heights": None, "transform": None, "coverage": 0.0,
-                "note": f"{type(exc).__name__}: {exc}"}
+                "note": "computed window is empty (point near tile edge)"}
 
     valid = heights != NODATA
     coverage = float(valid.mean()) if valid.size else 0.0

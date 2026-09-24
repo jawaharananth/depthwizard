@@ -553,6 +553,96 @@ class DepthBackbone:
         rng = merged.max() - merged.min()
         return ((merged - merged.min()) / (rng + 1e-8)).astype(np.float32)
 
+    def predict_fused(self, image: Image.Image, base_tile: int = 768,
+                      detail_tile: int = 384, fuse_sigma_px: float = 8.0,
+                      raw_metric: bool = False, verbose: bool = False) -> np.ndarray:
+        """Laplacian-style multi-scale fusion: two tiled passes at different
+        crop sizes, blended by spatial frequency rather than simply averaged.
+
+        predict_tiled's own docstring already establishes why crop size
+        matters (a 768px crop downsamples 1.5x into the backbone vs 4x for a
+        whole 2048px image, and that difference is the gap between roofs
+        being distinguishable from streets or not). The same logic run at a
+        SMALLER crop resolves finer detail again, at the cost of each crop
+        covering less ground context to affine-align its absolute level
+        against -- so the small-crop pass is trustworthy for SHAPE, not for
+        overall calibration.
+
+        Gaussian low-pass split keeps each pass doing only the job it is
+        actually good at: base_tile's absolute level survives untouched in
+        the low frequencies, detail_tile's edges are added back only in the
+        high frequencies its larger sibling blurred away. Averaging the two
+        fields directly, by contrast, would let the noisier small-crop pass
+        drag the calibrated absolute level around for no sharpness gain.
+        """
+        import scipy.ndimage as ndi
+
+        base = self.predict_tiled(image, tile=base_tile, raw_metric=raw_metric,
+                                  verbose=verbose)
+        detail = self.predict_tiled(image, tile=detail_tile, raw_metric=raw_metric,
+                                    verbose=verbose)
+        g = float(fuse_sigma_px)
+        fused = (ndi.gaussian_filter(base, g)
+                + (detail - ndi.gaussian_filter(detail, g)))
+        fused = fused.astype(np.float32)
+        if raw_metric and self.is_metric:
+            return fused
+        rng = fused.max() - fused.min()
+        return ((fused - fused.min()) / (rng + 1e-8)).astype(np.float32)
+
+    def predict_tta(self, image: Image.Image, tile: int = 768,
+                    raw_metric: bool = False, verbose: bool = False):
+        """D4 test-time augmentation: 8 views (4 rotations x optional mirror),
+        each run through predict_tiled, averaged.
+
+        D4 is exactly valid for nadir height, not just approximately: rotating
+        the scene rotates the height map identically, and height (not depth,
+        not a shadow-relative quantity) is invariant to reflection. It would
+        NOT be valid once a shadow prior enters the pipeline, since shadow
+        direction is tied to a real sun azimuth that D4 has no way to know
+        it must also rotate.
+
+        Returns (mean_height, epistemic_std) -- NOT full predictive
+        uncertainty. epistemic_std is the disagreement between the 8 views,
+        a genuine per-pixel signal (Var[mu] in the law-of-total-variance
+        decomposition), but this model has no trained sigma/log-variance
+        head, so there is no aleatoric term to add to it -- unlike a model
+        that outputs its own per-pixel confidence, this only ever reports
+        "the 8 augmented views disagreed by this much here", which is real
+        and useful but is not the same claim as total predictive uncertainty.
+        Said plainly rather than silently shipping a narrower number under
+        the same name a fuller one would use.
+        """
+        arr = np.asarray(image)
+        variants = []   # (rotate_k, flip) for the D4 group
+        for flip in (False, True):
+            for k in range(4):
+                variants.append((k, flip))
+
+        preds = []
+        for i, (k, flip) in enumerate(variants):
+            a = arr
+            if flip:
+                a = np.fliplr(a)
+            a = np.rot90(a, k)
+            pred = self.predict_tiled(Image.fromarray(np.ascontiguousarray(a)),
+                                      tile=tile, raw_metric=raw_metric)
+            # Invert exactly the transform applied to the input, so all 8
+            # predictions land back in the ORIGINAL image's pixel grid before
+            # being averaged -- averaging without this would blend a rotated
+            # height map into an unrotated one and scramble the scene.
+            pred = np.rot90(pred, -k)
+            if flip:
+                pred = np.fliplr(pred)
+            preds.append(pred)
+            if verbose:
+                print(f"    TTA view {i+1}/8  (rot{k*90} flip={flip})", flush=True)
+
+        stack = np.stack(preds, axis=0)
+        mean = stack.mean(axis=0).astype(np.float32)
+        epistemic_std = stack.std(axis=0).astype(np.float32)
+        return mean, epistemic_std
+
 
 def orientation_check(height: np.ndarray, seg_labels: np.ndarray) -> dict:
     """

@@ -155,6 +155,14 @@
     <input type="range" id="sunhr" min="6" max="18" step="0.25" value="10.5">
   </div>
   <div class="readout" id="sun-readout">10:30   (matches capture)</div>
+  <div class="slider-row">
+    <label for="vexag">Height boost</label>
+    <input type="range" id="vexag" min="1" max="6" step="0.1" value="1">
+  </div>
+  <div class="readout" id="vexag-readout">1.0&times; (true scale)</div>
+  <div style="font-size:11px;color:#89a;margin-top:-4px;margin-bottom:6px;">
+    Heights are stretched to make the shape readable. The numbers stay true.
+  </div>
   <canvas id="xsec" width="320" height="120"></canvas>
   <div id="measure-panel">Click a building to read its height.</div>
   <div id="stats"></div>
@@ -874,6 +882,32 @@ function shadeBuildingPrisms(mesh, mat) {
 
 // --- Load terrain mesh ---
 let groundMesh = null;
+// The whole loaded scene (ground + buildings + canopy + vehicles), so a
+// height-boost display slider can scale everything that stands on the
+// terrain together, the same way a GIS vertical-exaggeration control does.
+let cityRoot = null;
+let heightBoostFactor = 1.0;
+
+// Every real height/flood/GCP computation below reads the ground's world Y
+// via Box3().setFromObject(groundMesh) or a raycast hit point. Both walk the
+// full ancestor chain including cityRoot's scale, so a display-only boost
+// would otherwise silently corrupt flood relief, GCP calibration, and the
+// cross-section/compare tools -- real, load-bearing numbers, not cosmetics.
+// withTrueScale runs a callback with the boost transform reset to identity,
+// so every consumer of ground geometry keeps reading true metres regardless
+// of what the slider is currently set to; nothing here ever needs its own
+// division-by-boost math, so a future call site can't forget to correct it.
+function withTrueScale(fn) {
+  if (!cityRoot) return fn();
+  const s = cityRoot.scale.y;
+  if (s === 1) return fn();
+  cityRoot.scale.y = 1;
+  cityRoot.updateMatrixWorld(true);
+  const result = fn();
+  cityRoot.scale.y = s;
+  cityRoot.updateMatrixWorld(true);
+  return result;
+}
 let rgbTexture = null, heatmapTexture = null, confidenceTexture = null, errorTexture = null, normalTexture = null;
 let slopeTexture = null;
 let aoTexture = null, roughnessTexture = null, metalnessTexture = null;
@@ -926,6 +960,7 @@ Promise.all([
     MESH_URL,
     (gltf) => {
       const obj = gltf.scene;
+      cityRoot = obj;
       obj.traverse((child) => {
         if (!child.isMesh) return;
         child.castShadow = true;
@@ -1113,6 +1148,8 @@ Promise.all([
       const lines = [
         `verts: ${countVerts(obj)}`,
         `bbox: ${size.x.toFixed(0)} x ${size.y.toFixed(0)} x ${size.z.toFixed(0)} m`,
+        `area covered: ${size.x.toFixed(0)} x ${size.z.toFixed(0)} m`,
+        `height range: ${box.min.y.toFixed(1)} - ${box.max.y.toFixed(1)} m`,
       ];
       if (SCENE_META) {
         // Single-image builds (build_city_image.py) carry no tile/view/
@@ -1572,7 +1609,12 @@ renderer.domElement.addEventListener("click", (event) => {
     return;
   }
 
-  const h = Math.max(0, p.y - groundY);
+  // p and groundY are both raycast against whatever is currently on screen,
+  // so both are scaled by the same live height-boost factor -- their
+  // difference is too, and dividing it back out here (the one place a real
+  // height gets derived from a click) is cheaper and safer than resetting
+  // scale around every raycast that could ever be added later.
+  const h = Math.max(0, (p.y - groundY) / (cityRoot ? cityRoot.scale.y : 1));
 
   if (floodSeedMode) {
     if (setFloodSeedFromPoint(p)) {
@@ -1894,7 +1936,7 @@ function gcpSolve(points) {
 // height scale means.
 function gcpApplyFactor(factor) {
   if (!groundMesh || !isFinite(factor) || factor <= 0) return false;
-  const datum = new THREE.Box3().setFromObject(groundMesh).min.y;
+  const datum = withTrueScale(() => new THREE.Box3().setFromObject(groundMesh)).min.y;
   const rel = gcpApplied ? factor / gcpApplied : factor;
 
   scene.traverse((o) => {
@@ -2097,7 +2139,7 @@ function buildBands() {
   if (!SCENE_META.height_is_metric) return null;
 
   const ox = SCENE_META.origin_x || 0, oy = SCENE_META.origin_y || 0;
-  const datum = new THREE.Box3().setFromObject(groundMesh).min.y;
+  const datum = withTrueScale(() => new THREE.Box3().setFromObject(groundMesh)).min.y;
   bandGroup = new THREE.Group();
   bandGroup.name = "conformal-bands";
 
@@ -2234,7 +2276,7 @@ async function loadDamage() {
 function buildDamage() {
   if (damageGroup || !damageData || !BUILDING_RECORDS || !SCENE_META) return damageGroup;
   const ox = SCENE_META.origin_x || 0, oy = SCENE_META.origin_y || 0;
-  const datum = new THREE.Box3().setFromObject(groundMesh).min.y;
+  const datum = withTrueScale(() => new THREE.Box3().setFromObject(groundMesh)).min.y;
   damageGroup = new THREE.Group();
   damageGroup.name = "damage";
 
@@ -2583,7 +2625,7 @@ function floodUpdate(rise) {
     return;
   }
 
-  const datum = new THREE.Box3().setFromObject(groundMesh).min.y;
+  const datum = withTrueScale(() => new THREE.Box3().setFromObject(groundMesh)).min.y;
   const levelY = datum + rise;
   const res = floodFill(levelY);
   if (!res) return;
@@ -2960,10 +3002,17 @@ document.getElementById("flood").addEventListener("input", (e) => {
 document.getElementById("sunhr").addEventListener("input", (e) => {
   applySunHour(parseFloat(e.target.value));
 });
+document.getElementById("vexag").addEventListener("input", (e) => {
+  const v = parseFloat(e.target.value);
+  heightBoostFactor = v;
+  if (cityRoot) cityRoot.scale.y = v;
+  document.getElementById("vexag-readout").textContent =
+    v === 1 ? "1.0× (true scale)" : `${v.toFixed(1)}×`;
+});
 
 function calibrateFloodRange() {
   if (!groundMesh) return;
-  const box = new THREE.Box3().setFromObject(groundMesh);
+  const box = withTrueScale(() => new THREE.Box3().setFromObject(groundMesh));
   const relief = Math.max(6, box.max.y - box.min.y);
   const el = document.getElementById("flood");
   el.max = (relief * 1.1).toFixed(1);
@@ -3651,7 +3700,7 @@ function highlightMatches(matches) {
   clearQueryHighlights();
   if (!matches.length || !groundMesh) return;
   const ox = SCENE_META.origin_x || 0, oy = SCENE_META.origin_y || 0;
-  const datum = new THREE.Box3().setFromObject(groundMesh).min.y;
+  const datum = withTrueScale(() => new THREE.Box3().setFromObject(groundMesh)).min.y;
   queryHighlightGroup = new THREE.Group();
   queryHighlightGroup.name = "query-highlights";
 

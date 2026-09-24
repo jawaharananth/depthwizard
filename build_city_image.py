@@ -40,7 +40,6 @@ import argparse
 import json
 import math
 import os
-import re
 import shutil
 import time
 
@@ -107,10 +106,6 @@ def fuse_open_buildings_heights(dsm: np.ndarray, ground: np.ndarray,
     """
     if src_transform is None or src_crs is None:
         return 0
-    m = re.search(r"\d+", src_crs)
-    if m is None:
-        return 0
-    epsg = int(m.group())
 
     H, W = dsm.shape
     corners_px = [(0, 0), (W, 0), (0, H), (W, H)]
@@ -119,6 +114,22 @@ def fuse_open_buildings_heights(dsm: np.ndarray, ground: np.ndarray,
     ys = [c[1] for c in corners_crs]
     tf_to_ll = Transformer.from_crs(src_crs, "EPSG:4326", always_xy=True)
     lons, lats = tf_to_ll.transform(xs, ys)
+
+    # Open Buildings tiles are indexed by their OWN real UTM zone, which has
+    # nothing to do with whatever CRS the source image happens to carry.
+    # A prior version of this function extracted the EPSG digits straight
+    # out of src_crs and used those -- silently correct only by coincidence
+    # whenever the source already happened to be in the right UTM zone
+    # (true for every scene built so far), and a real, confirmed false
+    # negative otherwise: a Web Mercator (EPSG:3857) source for Varanasi
+    # reported "no tile covers this extent" even though the real UTM-44N
+    # tile for that exact location was independently confirmed to exist.
+    # The scene's own centre longitude/latitude determines the real UTM
+    # zone regardless of the source's CRS.
+    _clon = (min(lons) + max(lons)) / 2
+    _clat = (min(lats) + max(lats)) / 2
+    _zone = int((_clon + 180) // 6) + 1
+    epsg = (32600 if _clat >= 0 else 32700) + _zone
 
     r = obs.sample_height_grid(min(lons), min(lats), max(lons), max(lats), epsg=epsg)
     print(f"      Open Buildings height fusion: {r['note']}")
@@ -461,7 +472,12 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
           use_metric: bool = True, gt_building_mask: np.ndarray = None,
           gt_building_polygons: list = None,
           gt_building_heights: list = None,
-          skip_canopy: bool = False) -> dict:
+          skip_canopy: bool = False,
+          canopy_height_map: np.ndarray = None,
+          vlm_judge: bool = False,
+          organic_roofs: bool = False,
+          multiscale_fusion: bool = False,
+          continuous_vegetation: bool = False) -> dict:
     """
     return_arrays: additive, off by default -- every existing caller (server.py,
     the CLI) is unaffected. When True, meta["_ndsm"] carries the predicted
@@ -552,6 +568,26 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
             pil = Image.open(image_path).convert("RGB")
     else:
         pil = Image.open(image_path).convert("RGB")
+    # Auto-zoom: upsample toward the depth model's own training resolution
+    # when the source is coarser than it. GAMUS/DFC2019, the real datasets
+    # this project's checkpoint is tuned on, are 0.3 m/px; ISRO's own imagery
+    # is typically 0.5-1.0 m/px, and a token at that scale already averages a
+    # building with its surroundings before the head ever sees it -- a real,
+    # measured effect elsewhere (a real competitor's own probe: per-building
+    # RMSE 1.35->2.26 m and bias -0.16->-1.67 m at 0.6 m vs 0.3 m, recovered
+    # to 1.40 m by upsampling back to the trained scale first). Capped at 3x:
+    # beyond that a pixel is being invented, not recovered, and the model was
+    # never shown ground that coarse to begin with.
+    NATIVE_TRAIN_GSD_M = 0.3
+    if gsd_m is not None and gsd_m > NATIVE_TRAIN_GSD_M * 1.15:
+        _zoom = min(3.0, gsd_m / NATIVE_TRAIN_GSD_M)
+        print(f"      auto-zoom: input is {gsd_m*100:.1f} cm/px against the "
+              f"{NATIVE_TRAIN_GSD_M*100:.0f} cm the checkpoint is tuned at "
+              f"-> upsampling x{_zoom:.2f} before inference")
+        gsd_m = gsd_m / _zoom
+        pil = pil.resize((round(pil.size[0] * _zoom), round(pil.size[1] * _zoom)),
+                         Image.BICUBIC)
+
     if max(pil.size) > max_px:
         _sc = max_px / max(pil.size)
         if gsd_m is not None:
@@ -597,10 +633,15 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
     # now-correct real-metres field, and everything downstream that assumes
     # `depth_is_metric => height is already in metres` would be wrong in the
     # specific, silent way this whole fix exists to stop.
-    key = f"plainimg_{name}_{backbone_tag()}" + ("_metric" if _bb.is_metric else "")
+    key = (f"plainimg_{name}_{backbone_tag()}"
+          + ("_metric" if _bb.is_metric else "")
+          + ("_fused" if multiscale_fusion else ""))
     height = height_cache.load(key, "tiled", H) if H == W else None
     if height is None:
-        height = _bb.predict_tiled(pil, raw_metric=_bb.is_metric)
+        if multiscale_fusion:
+            height = _bb.predict_fused(pil, raw_metric=_bb.is_metric)
+        else:
+            height = _bb.predict_tiled(pil, raw_metric=_bb.is_metric)
         if H == W:
             height_cache.save(key, "tiled", H, height)
     print(f"[2/5] height field in {time.time()-t0:.0f}s")
@@ -781,9 +822,32 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
 
     dsm = refined * scale
     terrain = dtm_mod.estimate_dtm(dsm, seg_labels)
+    # roof_dsm: a SEPARATE copy of the surface, captured before buildings are
+    # squared to one value each, kept only for build_prisms's own roof-height
+    # sampling. Everything else below (terrain estimation, ground, footprint
+    # discovery, the model-vs-image audit) keeps using the squared `dsm`
+    # exactly as it always has -- that squaring is real and load-bearing
+    # beyond just roof shape, confirmed directly (DFC2019 JAX_004): skipping
+    # it outright dropped surviving buildings 58->27 and collapsed the
+    # audit's height-agreement correlation 0.928->0.522, because
+    # prismify_buildings also stabilises what the terrain/repair loop sees.
+    # roof_dsm exists so build_prisms can see the UN-squared signal for the
+    # one thing it's actually needed for -- fitting a real per-footprint
+    # roof plane -- without that raw signal ever reaching terrain, ground,
+    # or discovery, where it measurably hurt.
+    roof_dsm = dsm.copy() if organic_roofs else None
     dsm, n_prism = dsm_refine.prismify_buildings(dsm, seg_labels, terrain)
     terrain = dtm_mod.estimate_dtm(dsm, seg_labels)
-    ground = city_model.flatten_ground(terrain, seg_labels, smooth_m=35.0, gsd_m=gsd)
+    # 15 m, not the previous 35 m: flatten_ground's own docstring says the
+    # radius only needs to be WIDER THAN A BUILDING to remove its residue --
+    # Karnataka's median footprint is ~11 m per side (119.5 sq m), so 15 m
+    # already clears that with margin. 35 m was nearly 3x that with no
+    # comment justifying the extra width, and it was smoothing away real,
+    # measured terrain relief along with the residue: the exported ground
+    # mesh at 35 m read as visibly flat next to the buildings even though
+    # real elevation variation (std 1.35 m across the scene) existed in the
+    # unsmoothed terrain underneath it.
+    ground = city_model.flatten_ground(terrain, seg_labels, smooth_m=15.0, gsd_m=gsd)
 
     # TIER A ATTEMPT: anchor the absolute datum to an external DEM.
     #
@@ -958,6 +1022,8 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
                 continue
             _local_ground = float(np.median(ground[_fp_mask]))
             dsm[_fp_mask] = _local_ground + _rec["height"]
+            if roof_dsm is not None:
+                roof_dsm[_fp_mask] = _local_ground + _rec["height"]
             _n_burned += 1
         if _n_burned:
             ndsm = np.maximum(dsm - ground, 0.0)
@@ -1008,6 +1074,13 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
         # skip, when neither exists.
         _n_ob_fused = fuse_open_buildings_heights(
             dsm, ground, footprints, src_transform, src_crs)
+        if roof_dsm is not None and _n_ob_fused:
+            # Same real measured heights, mirrored into the roof-sampling
+            # copy so a real Open Buildings height is never lost behind an
+            # organic-roof fit -- a measured number always wins over a plane
+            # fitted to noise.
+            fuse_open_buildings_heights(roof_dsm, ground, footprints,
+                                        src_transform, src_crs)
         if _n_ob_fused:
             # Same refresh Mumbai's ground-truth fusion already needs (see
             # the gt_building_polygons branch above): dsm was mutated in
@@ -1040,7 +1113,7 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
     _balanced = image_grade.white_balance(image_np)
     _rep = mesh_repair.repair_build(
         footprints, dsm, ground, gsd, image_np=_balanced, min_height_m=1.5,
-        ground_small=_gsmall_pre, cell_m=_cell_pre)
+        ground_small=_gsmall_pre, cell_m=_cell_pre, roof_dsm=roof_dsm)
     bverts, bfaces, binfo = _rep["verts"], _rep["faces"], _rep["binfo"]
     footprints = _rep["footprints"]
     _rr = _rep["report"]
@@ -1057,22 +1130,136 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
           f"{np.median(heights):.1f}  max {heights.max():.1f} "
           f"({'m' if (anchor_height_m or depth_is_metric or not tier.startswith('C')) else 'relative units'})")
 
-    if skip_canopy:
+    if canopy_height_map is not None:
+        # Real per-pixel vegetation height (Meta HighResCanopyHeight / CHMv2,
+        # DINOv2 backbone, US-LiDAR-trained) replaces the scene's own noisy
+        # monocular ndsm for vegetation pixels only. This is why Karnataka's
+        # canopy used to be dropped entirely (skip_canopy): the monocular dsm
+        # had no real depth signal for vegetation, just noise, and no cap
+        # could rescue it. CHM gives an independent, real height estimate --
+        # out-of-domain for Indian vegetation (US-forest-trained, unverified
+        # numerically here, only visually checked against two real crops) but
+        # not noise, so it replaces dsm-ground rather than filtering it.
+        _chm = canopy_height_map
+        if _chm.shape != dsm.shape:
+            _chm = cv2.resize(_chm.astype(np.float32), (dsm.shape[1], dsm.shape[0]),
+                               interpolation=cv2.INTER_LINEAR)
+        _veg = seg_labels == seg.CLASS_IDX["vegetation"]
+        dsm[_veg] = ground[_veg] + np.maximum(_chm[_veg], 0.0)
+        ndsm = np.maximum(dsm - ground, 0.0)
+        if continuous_vegetation:
+            # TESTED AND NOT RECOMMENDED, kept opt-in for the record rather
+            # than deleted. The idea: fold vegetation into the ground mesh's
+            # own displacement instead of separate tree objects, since only
+            # buildings have real vertical walls to smear into a ramp under
+            # continuous displacement. Real per-pixel CHM drives the bump,
+            # smoothed at a real crown-radius sigma (0.32x height, the same
+            # ratio build_trees uses) specifically to fix an early version's
+            # aliased needle-spikes. Even smoothed, a real rendered test
+            # still reads as jagged mountain ridges, not canopy -- a coarse
+            # heightfield mesh cannot fake foliage silhouette the way a
+            # dedicated crown primitive can, and no further smoothing sigma
+            # fixes that; it is the wrong tool for this specific subject, not
+            # a tuning problem. build_trees' individual cone instances are
+            # the one that actually looks right for vegetation. Terrain
+            # itself is a heightfield for the same reason trees should not
+            # be: bare earth has no vertical walls and no crown silhouette to
+            # lose, so nothing here argues against continuous ground -- it
+            # only argues against extending that same technique to trees.
+            # ground_display is a SEPARATE array from `ground`: building base
+            # heights, footprint discovery and the audit all keep reading
+            # the unbumped `ground` regardless of this flag.
+            # Raw per-pixel bumps aliased into needle spikes when downsampled
+            # straight to the coarse mesh grid (confirmed visually: a real
+            # test build rendered as sharp isolated rock-like peaks, not
+            # canopy) -- a narrow real crown compressed to one grid vertex
+            # with flat neighbours a metre or two away is a near-vertical
+            # slope regardless of how fine the grid is. Real terrain
+            # pipelines low-pass filter a heightfield before decimating it
+            # for exactly this reason. The blur radius is the same real
+            # crown-to-height ratio build_trees already uses (0.32x height),
+            # so a bump spreads over roughly the footprint a real crown's
+            # canopy actually covers, not just its single tallest pixel.
+            # A SINGLE blur radius, sized from the scene-median vegetation
+            # height, was the actual bug behind the "jagged mountain" look:
+            # Karnataka's median vegetation pixel is short scrub (1.9 m), so
+            # the one radius it produced (~1 m) was right for scrub and far
+            # too narrow for the real, rare tall trees also in this scene
+            # (15-20 m, ~1.7% of vegetation pixels) -- an isolated tall real
+            # peak under-smoothed relative to its OWN height is exactly what
+            # renders as a narrow spike instead of a proportioned crown.
+            # Fix: bin vegetation by height and blur each band at ITS OWN
+            # real crown radius (still the same 0.32x-height ratio), then
+            # combine by max so a tall band's wider spread is never clipped
+            # by a shorter band's narrower one where they overlap. Same
+            # banding idea build_canopy already used for the blob-prism
+            # path, applied here to a continuous smoothing radius instead of
+            # a discrete extrusion height.
+            _veg_vals = _chm[_veg]
+            _bands_m = [1.0, 3.0, 6.0, 10.0, 15.0, float(np.nanmax(_veg_vals)) + 1.0] \
+                if _veg_vals.size else [1.0]
+            _bump_full = np.zeros(ground.shape, np.float32)
+            _bump_full[_veg] = np.maximum(_veg_vals, 0.0)
+            _bump_smooth = np.zeros(ground.shape, np.float32)
+            _lo = 0.0
+            for _hi in _bands_m:
+                _band_mask = _veg & (_chm >= _lo) & (_chm < _hi)
+                if not _band_mask.any():
+                    _lo = _hi
+                    continue
+                _band_h = float(np.median(_chm[_band_mask]))
+                _radius_m = max(1.0, _band_h * 0.32)
+                _sigma_px = max(1.0, _radius_m / max(gsd, 1e-6))
+                _band_full = np.where(_band_mask, _bump_full, 0.0).astype(np.float32)
+                _band_smooth = cv2.GaussianBlur(_band_full, (0, 0), sigmaX=_sigma_px)
+                _bump_smooth = np.maximum(_bump_smooth, _band_smooth)
+                _lo = _hi
+            _building_mask = seg_labels == seg.CLASS_IDX["building"]
+            ground_display = ground.copy()
+            # Buildings excluded from receiving the bump -- a blurred crown
+            # spilling onto a building's own footprint would visually fuse a
+            # nearby tree into the roof it stands beside. Buildings are
+            # still discrete prisms drawn on top regardless, so this is
+            # about keeping the terrain UNDER them flat, not about their
+            # own geometry.
+            ground_display[~_building_mask] = (
+                ground[~_building_mask] + _bump_smooth[~_building_mask])
+            cverts, cfaces, n_canopy = np.zeros((0, 3), np.float32), np.zeros((0, 3), np.int64), 0
+            _veg_h_med = float(np.nanmedian(_veg_vals)) if _veg_vals.size else 0.0
+            print(f"      vegetation folded into the continuous ground mesh, "
+                  f"height-banded smoothing (median height {_veg_h_med:.1f} m, "
+                  f"max {float(np.nanmax(_veg_vals)) if _veg_vals.size else 0:.1f} m) "
+                  f"-- no separate tree objects")
+        else:
+            ground_display = ground
+            # Individual trees, not a merged blob: a real CHM gives a genuine
+            # per-pixel height raster, so individual local maxima in it are real
+            # tree crowns, not an invented distribution -- the blob-per-patch
+            # path (build_canopy) exists for scenes with no CHM, where per-pixel
+            # height is monocular noise and only a coarse, capped blob is honest.
+            cverts, cfaces, n_canopy = city_model.build_trees(
+                seg_labels, _chm, ground, gsd, gsd)
+            print(f"      {n_canopy} individual trees placed from real CHM local "
+                  f"maxima (median canopy height "
+                  f"{np.nanmedian(_chm[_veg]) if _veg.any() else 0.0:.1f} m)")
+    elif skip_canopy:
         # This scene's canopy depth signal is noise-dominated (measured on
         # Karnataka kn_a: 95th percentile of vegetation height was 23.3 m,
         # contaminated well past any per-patch cap worth applying) and the
         # narrow-footprint taper reads as spikes regardless of height. Rather
         # than ship a wrong-looking canopy, this scene has none -- an honest
         # gap, not a wrong claim.
+        ground_display = ground
         cverts, cfaces, n_canopy = np.zeros((0, 3), np.float32), np.zeros((0, 3), np.int64), 0
     else:
+        ground_display = ground
         cverts, cfaces, n_canopy = city_model.build_canopy(
             seg_labels, dsm, ground, gsd, gsd, min_area_px=120)
     wverts, wfaces, n_water = city_model.build_water(seg_labels, ground, gsd, gsd)
     vverts, vfaces, n_veh = city_model.detect_vehicles(image_np, seg_labels, ground, gsd)
 
-    gsmall, _ = mg._resize_for_mesh(ground, seg_labels, GROUND_GRID)
-    gscale = ground.shape[0] / gsmall.shape[0]
+    gsmall, _ = mg._resize_for_mesh(ground_display, seg_labels, GROUND_GRID)
+    gscale = ground_display.shape[0] / gsmall.shape[0]
     gverts, guvs, gfaces = mg.build_ground_mesh(gsmall, gsd * gscale, gsd * gscale)
 
     # The same checks the benchmark path runs. This path had none, so malformed
@@ -1119,6 +1306,21 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
     except Exception as _e:
         _audit = {"error": str(_e)}
         print(f"      model-vs-image audit failed: {_e}")
+
+    # Layer 2: an independent VLM judge, opt-in (real API cost per call) and
+    # reporting-only -- see vlm_audit.py's module docstring for why it never
+    # writes back into dsm/heights/footprints. Off by default so it never
+    # fires silently on a build that didn't ask for it.
+    if vlm_judge:
+        try:
+            import vlm_audit
+            _vaudit = vlm_audit.audit(
+                footprints, binfo, image_np, ndsm.shape,
+                out_dir=os.path.dirname(stem) or ".",
+                name=os.path.basename(stem))
+            print(vlm_audit.report(_vaudit))
+        except Exception as _e:
+            print(f"      VLM judge audit skipped: {_e}")
 
     # White balance first, then grade. The previous version boosted saturation
     # and applied an explicit cool gain to imagery that was ALREADY blue from

@@ -192,6 +192,88 @@ def _shadow_direction(image_np: np.ndarray, model_mask: np.ndarray,
                     "(measured IoU 0.144 against reference)"}
 
 
+def _per_building(footprints: Sequence[np.ndarray], binfo: Dict,
+                  image_np: np.ndarray, ndsm: np.ndarray,
+                  building_mask: np.ndarray, tol_px: int = 3) -> List[Dict]:
+    """Same three checks as the scene-level audit, scoped to one footprint
+    at a time, so a scene that grades GOOD overall can still surface the
+    specific buildings dragging it there -- an aggregate correlation of
+    0.97 is consistent with one building being wildly wrong if the other
+    thousand are exact.
+
+    Reuses the scene audit's own evidence (segmentation mask, Canny edges,
+    measured ndsm) rather than a second independent source, so this inherits
+    the same "consistency check, not accuracy measurement" caveat as the
+    aggregate numbers -- see the module docstring's WHAT THIS AUDIT CANNOT
+    TELL YOU note.
+    """
+    gray = cv2.cvtColor(image_np, cv2.COLOR_RGB2GRAY)
+    edges = cv2.Canny(gray, 50, 150)
+    near = cv2.dilate(edges, np.ones((2 * tol_px + 1, 2 * tol_px + 1), np.uint8))
+    H, W = ndsm.shape
+    truth = building_mask.astype(bool)
+
+    out: List[Dict] = []
+    for b in (binfo.get("buildings") or []):
+        pi = b.get("poly_index")
+        if pi is None or pi >= len(footprints):
+            continue
+        poly = np.asarray(footprints[pi], np.int32)
+        if len(poly) < 3:
+            continue
+        x, y, w, h = cv2.boundingRect(poly)
+        x0, y0 = max(x - 1, 0), max(y - 1, 0)
+        x1, y1 = min(x + w + 1, W), min(y + h + 1, H)
+        if x1 <= x0 or y1 <= y0:
+            continue
+        local = poly - [x0, y0]
+
+        fill = np.zeros((y1 - y0, x1 - x0), np.uint8)
+        cv2.fillPoly(fill, [local], 1)
+        model_local = fill.astype(bool)
+        truth_local = truth[y0:y1, x0:x1]
+        inter = int((model_local & truth_local).sum())
+        union = int((model_local | truth_local).sum())
+        iou = inter / union if union else 0.0
+
+        outline = np.zeros_like(fill)
+        cv2.polylines(outline, [local], True, 1, 1)
+        ys, xs = np.nonzero(outline)
+        esupp = (float((near[y0:y1, x0:x1][ys, xs] > 0).sum()) / len(ys)
+                 if len(ys) else 0.0)
+
+        ndsm_local = ndsm[y0:y1, x0:x1][model_local]
+        ndsm_local = ndsm_local[np.isfinite(ndsm_local)]
+        measured_h = float(np.median(ndsm_local)) if ndsm_local.size else None
+        assigned_h = float(b.get("height_m", 0.0))
+        height_err = (abs(assigned_h - measured_h)
+                      if measured_h is not None else None)
+
+        out.append({
+            "poly_index": int(pi),
+            "height_m": round(assigned_h, 2),
+            "measured_h": round(measured_h, 2) if measured_h is not None else None,
+            "height_err": round(height_err, 2) if height_err is not None else None,
+            "iou": round(float(iou), 3),
+            "edge_support": round(esupp, 3),
+            "spurious": bool(iou < 0.05),
+        })
+    return out
+
+
+def worst_buildings(per_building: List[Dict], n: int = 10) -> List[Dict]:
+    """Buildings worth a human looking at first: no evidence support at all,
+    then largest height disagreement, then weakest outline placement.
+    Not a single blended score, for the same reason the scene-level audit
+    refuses one -- a bad IoU and a bad height error are different failures
+    calling for different fixes.
+    """
+    spurious = [r for r in per_building if r["spurious"]]
+    rest = [r for r in per_building if not r["spurious"]]
+    rest.sort(key=lambda r: (-(r["height_err"] or 0.0), r["iou"]))
+    return (spurious + rest)[:n]
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -211,6 +293,7 @@ def audit(footprints: Sequence[np.ndarray], binfo: Dict,
     res.update(_shadow_direction(image_np, model_mask, sun_azimuth_deg))
     res["model_footprint_px"] = int(model_mask.sum())
     res["image_building_px"] = int(building_mask.astype(bool).sum())
+    res["per_building"] = _per_building(footprints, binfo, image_np, ndsm, building_mask)
 
     grades = {}
     for key, (marginal, good) in THRESHOLDS.items():
@@ -245,4 +328,16 @@ def report(res: Dict) -> str:
     if sa is not None:
         lines.append(f"  [ -- ] shadow side     {sa:.3f} dark  (advisory only)")
     lines.append(f"      VERDICT: {res['verdict']}")
+
+    pb = res.get("per_building") or []
+    if pb:
+        worst = worst_buildings(pb, n=10)
+        lines.append(f"      per-building: {len(pb)} scored, "
+                     f"{sum(1 for r in pb if r['spurious'])} spurious "
+                     f"(no footprint-mask overlap)")
+        lines.append("      worst offenders (poly_index, height_m vs measured, IoU):")
+        for r in worst:
+            flag = "SPURIOUS" if r["spurious"] else f"err {r['height_err']}m"
+            lines.append(f"        #{r['poly_index']:<5} h={r['height_m']:<6} "
+                         f"measured={r['measured_h']}  IoU={r['iou']:<5} {flag}")
     return "\n".join(lines)

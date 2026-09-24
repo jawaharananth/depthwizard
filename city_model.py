@@ -365,7 +365,7 @@ def _repair_ring(poly, shape):
 def build_prisms(footprints: list, dsm: np.ndarray, dtm: np.ndarray,
                  gsd_x_m: float, gsd_y_m: float, min_height_m: float = 2.5,
                  roof_percentile: float = 70.0, image_np: np.ndarray = None,
-                 flat_roof_indices: set = None):
+                 flat_roof_indices: set = None, roof_dsm: np.ndarray = None):
     """
     One flat-roofed prism per footprint: vertical walls plus a flat roof.
 
@@ -381,6 +381,12 @@ def build_prisms(footprints: list, dsm: np.ndarray, dtm: np.ndarray,
     verts, faces, index, colors, uvs = [], [], [], [], []
     skipped = 0
 
+    # roof_dsm, when given, is sampled for roof height/plane-fit ONLY -- base
+    # height still comes from dtm against the real (possibly squared) dsm's
+    # terrain, and nothing else here changes. See build_city_image.py's
+    # organic_roofs option for why a caller would pass a second surface
+    # instead of just using dsm directly.
+    _roof_src = roof_dsm if roof_dsm is not None else dsm
     H, W = dsm.shape
     for _poly_i, poly in enumerate(footprints):
         if _self_intersects(poly):
@@ -422,8 +428,20 @@ def build_prisms(footprints: list, dsm: np.ndarray, dtm: np.ndarray,
         # Fall back to the full footprint when erosion leaves too little to
         # sample -- a small shed can erode away entirely.
         inside_sample = _er if _er.sum() >= 20 else inside
+        # roof_h, the min-height gate and the roof_lo/roof_hi clamp band all
+        # come from the ROBUST dsm, unconditionally -- these decide whether a
+        # building exists and roughly how tall it is, and that decision must
+        # not move just because a second, noisier surface is also available.
+        # Verified directly (DFC2019 JAX_004): sourcing this gate from the
+        # noisier roof_dsm instead dropped surviving buildings 58->27 purely
+        # from more of them failing min_height_m, an effect that had nothing
+        # to do with roof shape and everything to do with which array a
+        # threshold check happened to read.
         roof_vals = dsm[y0:y1, x0:x1][inside_sample]
         roof_h = float(np.percentile(roof_vals, roof_percentile))
+        # The organic sample, used ONLY below to inform the plane's SHAPE.
+        roof_vals_organic = (_roof_src[y0:y1, x0:x1][inside_sample]
+                             if roof_dsm is not None else roof_vals)
 
         # Base on the LOW end of the terrain under the footprint: a building
         # based at average terrain leaves a visible gap on the downhill side,
@@ -456,8 +474,27 @@ def build_prisms(footprints: list, dsm: np.ndarray, dtm: np.ndarray,
         # coordinates from the full footprint while the heights came from its
         # interior, so the two arrays no longer matched in length.
         ys_i, xs_i = np.nonzero(inside_sample)
-        roof_lo = float(np.percentile(roof_vals, 10))
-        roof_hi = float(np.percentile(roof_vals, 90))
+        # The clamp band's WIDTH must come from whichever sample the plane is
+        # actually fitted against. When roof_dsm is given, dsm has already
+        # been squared to one constant per building by prismify_buildings
+        # (see build_city_image.py) -- robust roof_vals therefore has zero
+        # spread, and a band built from it would clamp every organic vertex
+        # straight back to a single flat value regardless of any real tilt
+        # the plane found, silently discarding the whole point of roof_dsm.
+        # Confirmed directly: this was exactly why an earlier version of this
+        # fix restored building count/audit correlation but produced zero
+        # roof variation in the final mesh. The organic sample's own
+        # percentile band is used instead, shifted by the same amount the
+        # plane itself is recentred by below, so both stay anchored to the
+        # same trusted roof_h.
+        _organic_shift = 0.0
+        if roof_dsm is not None:
+            _organic_shift = roof_h - float(np.mean(roof_vals_organic))
+            roof_lo = float(np.percentile(roof_vals_organic, 10) + _organic_shift)
+            roof_hi = float(np.percentile(roof_vals_organic, 90) + _organic_shift)
+        else:
+            roof_lo = float(np.percentile(roof_vals, 10))
+            roof_hi = float(np.percentile(roof_vals, 90))
         plane = None
         # Footprints the repair loop has flagged get a flat roof at the robust
         # percentile instead of a fitted plane. A runaway plane and a height
@@ -474,15 +511,22 @@ def build_prisms(footprints: list, dsm: np.ndarray, dtm: np.ndarray,
                     (xs_i[keep] + x0).astype(np.float32),
                     (ys_i[keep] + y0).astype(np.float32),
                     np.ones(int(keep.sum()), np.float32)])
+                # Fit z-values come from the organic sample (raw signal when
+                # roof_dsm is given, otherwise identical to roof_vals) so the
+                # plane's SHAPE reflects real per-pixel variation where it
+                # exists. The keep mask above is still chosen from the robust
+                # sample -- which points to trust is a different question
+                # from what height those points report.
+                _fit_z = roof_vals_organic[keep].astype(np.float32)
                 try:
-                    coef, *_ = np.linalg.lstsq(A, roof_vals[keep].astype(np.float32),
-                                               rcond=None)
+                    coef, *_ = np.linalg.lstsq(A, _fit_z, rcond=None)
                     fitted = A @ coef
-                    resid = float(np.std(roof_vals[keep] - fitted))
+                    resid = float(np.std(_fit_z - fitted))
                     # Reject a fit that explains less than the flat value does --
                     # a noisy or occluded roof should stay flat rather than be
-                    # given a slope the data does not support.
-                    if resid < float(np.std(roof_vals[keep])) * 0.98:
+                    # given a slope the data does not support. Compared
+                    # against the SAME sample the fit was done against.
+                    if resid < float(np.std(_fit_z)) * 0.98:
                         # Reject a plane whose predicted tilt across THIS
                         # footprint exceeds what the roof's own height spread
                         # supports. Fitting well in a least-squares sense does
@@ -492,6 +536,26 @@ def build_prisms(footprints: list, dsm: np.ndarray, dtm: np.ndarray,
                                     + coef[2])
                         tilt = float(corner_z.max() - corner_z.min())
                         band = roof_hi - roof_lo
+                        # A second, height-relative cap alongside the absolute
+                        # one: a roof cannot plausibly rise more than about
+                        # half the building's OWN wall height, or it reads as
+                        # a blade rather than a pitch -- a 3 m single-storey
+                        # house does not have a 5 m ridge. This is not the
+                        # "scale the allowance with the band" mistake the
+                        # comment above already rejected (that scaled with a
+                        # NOISE-DERIVED quantity, granting the most freedom
+                        # exactly where data was least trustworthy); roof_h
+                        # and base_h both come from the robust dsm, completely
+                        # independent of the organic sample the plane itself
+                        # was fitted from, so this cap does not loosen with
+                        # bad data the way that one did. Found necessary by
+                        # direct inspection: Karnataka's real per-pixel signal
+                        # (confirmed genuine, std 0.9-1.8 m per building, not
+                        # noise-floor) was passing every existing gate yet
+                        # rendering as visibly jagged, implausible spikes on
+                        # this scene's mostly single-storey building stock.
+                        _height_cap = max(1.0, 0.5 * (roof_h - base_h))
+                        _tilt_cap = min(MAX_ROOF_RELIEF_M, _height_cap)
                         # A plane is only fitted to a roof that is actually ONE
                         # roof. A wide height band inside a footprint means the
                         # polygon spans several structures of different heights,
@@ -505,9 +569,25 @@ def build_prisms(footprints: list, dsm: np.ndarray, dtm: np.ndarray,
                         # absolute cap, so a mixed footprint gets a flat roof at
                         # a robust height instead of a blade.
                         if (not _force_flat
-                                and band <= MAX_ROOF_RELIEF_M
-                                and tilt <= MAX_ROOF_RELIEF_M):
+                                and band <= _tilt_cap
+                                and tilt <= _tilt_cap):
                             plane = coef
+                            if roof_dsm is not None:
+                                # Recentre: shift the plane's constant term so
+                                # its own mean over the fitted sample equals
+                                # the ROBUST roof_h, not whatever absolute
+                                # level the noisier organic sample happened to
+                                # average to. This keeps the real, informative
+                                # part (the fitted SHAPE/tilt) while anchoring
+                                # its absolute height to the same trusted
+                                # value the flat fallback and every gate above
+                                # already agreed on -- a building's average
+                                # roof height must not silently change
+                                # depending on whether its roof turned out
+                                # pitched or flat.
+                                mean_fitted = float(np.mean(A @ plane))
+                                plane = plane.copy()
+                                plane[2] += (roof_h - mean_fitted)
                         else:
                             plane = None
                 except np.linalg.LinAlgError:
@@ -868,6 +948,155 @@ def build_canopy(seg_labels: np.ndarray, dsm: np.ndarray, ground: np.ndarray,
             for (a, bb, c) in _ear_clip(poly):
                 faces.append((off + n + a, off + n + bb, off + n + c))
             count += 1
+
+    if not verts:
+        return np.zeros((0, 3), np.float32), np.zeros((0, 3), np.int64), 0
+    v = np.asarray(verts, np.float32)
+    f = np.asarray(faces, np.int64)
+    return v, f, count
+
+
+def _organic_tree(cx_m: float, base_h: float, crown_h: float, cz_m: float,
+                  radius_m: float, n_sides: int = 8, n_rings: int = 4,
+                  trunk_frac: float = 0.15, seed: int = 0):
+    """One tree: a thin trunk plus a rounded, continuous-mesh crown.
+
+    The crown is several stitched latitude rings, not a single cone ring --
+    a real continuous surface per tree, the same idea a heightfield terrain
+    uses (many small connected faces forming a smooth surface), just scoped
+    to one tree's own footprint instead of the whole ground. That scoping is
+    the actual fix for what a continuous GROUND mesh got wrong for
+    vegetation (tested directly this session): a terrain grid's vertex
+    spacing is metres wide, so a real crown compressed into one or two grid
+    cells has no choice but to look like a spike between flat neighbours.
+    A per-tree mesh sets its own vertex spacing to the crown's own real
+    size, so the same continuous-surface idea can actually round off the
+    way a crown does instead of aliasing.
+
+    Ring radius follows sin(pi*t) for t in [0,1] from the trunk join to the
+    apex -- narrow where it meets the trunk, fullest at mid-height, tapering
+    to a point at top: an ellipsoid-ish silhouette, not a boring cone. Small
+    per-vertex jitter (+-4%, seeded by the tree's own position so it is
+    stable across reloads, not shimmering) breaks up the perfect radial
+    symmetry a bare revolve would otherwise show, since no two real crowns
+    are that regular. Real forestry crown/height ratio sizes the whole
+    shape, same as before this only changes.
+    """
+    rng = np.random.RandomState(seed)
+    verts, faces = [], []
+    trunk_top = base_h + (crown_h - base_h) * trunk_frac
+    trunk_r = max(radius_m * 0.12, 0.05)
+    for px, py in [(cx_m + trunk_r * math.cos(2 * math.pi * i / n_sides),
+                    cz_m + trunk_r * math.sin(2 * math.pi * i / n_sides))
+                   for i in range(n_sides)]:
+        verts.append((px, base_h, py))
+    for px, py in [(cx_m + trunk_r * math.cos(2 * math.pi * i / n_sides),
+                    cz_m + trunk_r * math.sin(2 * math.pi * i / n_sides))
+                   for i in range(n_sides)]:
+        verts.append((px, trunk_top, py))
+    for i in range(n_sides):
+        j = (i + 1) % n_sides
+        faces.append((i, n_sides + i, n_sides + j))
+        faces.append((i, n_sides + j, j))
+
+    crown_span = crown_h - trunk_top
+    ring_start = []
+    ring_is_pole = []
+    for r in range(n_rings + 1):
+        t = r / n_rings
+        y = trunk_top + crown_span * t
+        rad = radius_m * math.sin(math.pi * t)
+        ring_start.append(len(verts))
+        if rad < radius_m * 0.02:
+            verts.append((cx_m, y, cz_m))
+            ring_is_pole.append(True)
+        else:
+            for i in range(n_sides):
+                jitter = 1.0 + 0.04 * (rng.rand() - 0.5) * 2.0
+                px = cx_m + rad * jitter * math.cos(2 * math.pi * i / n_sides)
+                pz = cz_m + rad * jitter * math.sin(2 * math.pi * i / n_sides)
+                verts.append((px, y, pz))
+            ring_is_pole.append(False)
+
+    for r in range(n_rings):
+        i0, i1 = ring_start[r], ring_start[r + 1]
+        if not ring_is_pole[r] and not ring_is_pole[r + 1]:
+            for i in range(n_sides):
+                j = (i + 1) % n_sides
+                faces.append((i0 + i, i1 + i, i1 + j))
+                faces.append((i0 + i, i1 + j, i0 + j))
+        elif ring_is_pole[r + 1]:          # fan up to the apex point
+            for i in range(n_sides):
+                j = (i + 1) % n_sides
+                faces.append((i0 + i, i1, i0 + j))
+        elif ring_is_pole[r]:              # fan down from the base point
+            for i in range(n_sides):
+                j = (i + 1) % n_sides
+                faces.append((i0, i1 + j, i1 + i))
+    return verts, faces
+
+
+def build_trees(seg_labels: np.ndarray, chm: np.ndarray, ground: np.ndarray,
+                gsd_x_m: float, gsd_y_m: float, min_height_m: float = 1.5,
+                min_spacing_m: float = 2.5, max_trees: int = 6000):
+    """Individual tree instances, detected as real local maxima in a real
+    per-pixel canopy height raster (Meta HighResCanopyHeight/CHMv2), not a
+    merged blob per vegetation patch.
+
+    Each tree's position, height and crown radius all come from that same
+    raster at the peak pixel -- nothing here invents a tree where the height
+    map doesn't independently support one. A non-max-suppression window
+    (min_spacing_m) stops one real crown being detected as several adjacent
+    peaks, which monocular height noise would otherwise do freely.
+
+    Capped at max_trees (highest peaks kept) purely for mesh size on a dense
+    scene -- a lower real peak is dropped for budget, never faked to fill
+    a quota, so a sparse scene legitimately returns fewer trees than the cap.
+    """
+    import scipy.ndimage as ndi
+
+    veg = (seg_labels == seg.CLASS_IDX["vegetation"])
+    if not veg.any() or chm is None:
+        return np.zeros((0, 3), np.float32), np.zeros((0, 3), np.int64), 0
+
+    h = np.where(veg, chm, -np.inf).astype(np.float32)
+    if not np.isfinite(h[veg]).any():
+        return np.zeros((0, 3), np.float32), np.zeros((0, 3), np.int64), 0
+
+    px_spacing = max(1, int(round(min_spacing_m / max(gsd_x_m, 1e-6))))
+    footprint = np.ones((2 * px_spacing + 1, 2 * px_spacing + 1), bool)
+    local_max = ndi.maximum_filter(h, footprint=footprint, mode="constant",
+                                   cval=-np.inf)
+    peaks = (h == local_max) & veg & np.isfinite(h) & (h >= min_height_m)
+    ys, xs = np.nonzero(peaks)
+    if not len(ys):
+        return np.zeros((0, 3), np.float32), np.zeros((0, 3), np.int64), 0
+
+    heights = h[ys, xs]
+    if len(ys) > max_trees:
+        keep = np.argsort(-heights)[:max_trees]
+        ys, xs, heights = ys[keep], xs[keep], heights[keep]
+
+    verts, faces = [], []
+    count = 0
+    for y, x, tree_h in zip(ys, xs, heights):
+        base_h = float(ground[y, x])
+        crown_h = base_h + float(tree_h)
+        # Typical broadleaf crown radius is roughly a third of tree height --
+        # a real forestry rule of thumb, not fitted to this scene.
+        radius_m = max(0.5, float(tree_h) * 0.32)
+        cx_m = float(x) * gsd_x_m
+        cz_m = -float(y) * gsd_y_m
+        # Seeded by the tree's own pixel position, not a running counter, so
+        # a given tree's crown jitter is stable across rebuilds rather than
+        # depending on iteration order.
+        _seed = (int(x) * 73856093) ^ (int(y) * 19349663)
+        tv, tf = _organic_tree(cx_m, base_h, crown_h, cz_m, radius_m,
+                               seed=_seed & 0x7fffffff)
+        off = len(verts)
+        verts.extend(tv)
+        faces.extend([(a + off, b + off, c + off) for a, b, c in tf])
+        count += 1
 
     if not verts:
         return np.zeros((0, 3), np.float32), np.zeros((0, 3), np.int64), 0

@@ -52,6 +52,52 @@ MIN_MEASURED = 1.0
 # as likely to be a mistyped height as a bad reconstruction.
 SUSPECT_RESIDUAL_FRAC = 0.25
 
+# Below this many points, or this narrow a height span, a power law and a flat
+# ratio cannot be told apart -- fitting one anyway would report a confident
+# exponent that is really just noise in log-space. A real competitor's own
+# measured result (power law beating affine by -24.9% RMSE vs -15.1% on tall
+# structures, because their error was a height-dependent ratio, not a fixed
+# offset) is the reason this is worth reporting at all -- but only where the
+# data can actually distinguish the two forms.
+MIN_POWER_LAW_POINTS = 4
+MIN_POWER_LAW_SPAN = 3.0   # max(measured)/min(measured) ratio required
+
+
+def _fit_power_law(meas: np.ndarray, known: np.ndarray) -> Optional[Dict]:
+    """known = a * measured**b, fit by log-log least squares.
+
+    Only worth reporting when the points actually span enough of a height
+    range to separate "the error is a ratio" from "the error is an offset" --
+    below MIN_POWER_LAW_POINTS/MIN_POWER_LAW_SPAN the two forms fit log-space
+    data about equally well and the exponent is not a real measurement, just
+    an artefact of which points happened to get clicked.
+    """
+    if len(meas) < MIN_POWER_LAW_POINTS:
+        return None
+    span = float(meas.max() / max(meas.min(), 1e-9))
+    if span < MIN_POWER_LAW_SPAN:
+        return None
+    log_m, log_k = np.log(meas), np.log(known)
+    A = np.column_stack([log_m, np.ones_like(log_m)])
+    coef, *_ = np.linalg.lstsq(A, log_k, rcond=None)
+    b, log_a = float(coef[0]), float(coef[1])
+    a = float(np.exp(log_a))
+    predicted = a * meas ** b
+    resid = predicted - known
+    # Compare against the flat ratio-of-medians prediction on the SAME points,
+    # so "power law helps" is a measured comparison, not an assumption.
+    flat_factor = float(np.median(known) / np.median(meas))
+    flat_resid = meas * flat_factor - known
+    return {
+        "a": round(a, 6), "b": round(b, 4),
+        "rmse_m": round(float(np.sqrt(np.mean(resid ** 2))), 3),
+        "flat_rmse_m": round(float(np.sqrt(np.mean(flat_resid ** 2))), 3),
+        "span": round(span, 2),
+        "note": ("known = a * measured**b. b=1 means a power law found no "
+                 "advantage over a flat ratio -- compare rmse_m against "
+                 "flat_rmse_m before trusting the exponent."),
+    }
+
 
 def solve(points: Sequence[Dict]) -> Dict:
     """Solve a single scale factor from control points.
@@ -102,6 +148,26 @@ def solve(points: Sequence[Dict]) -> Dict:
 
     resid = np.array([p["residual_m"] for p in points_out], dtype=np.float64)
     disagreement = abs(factor - alt) / max(abs(factor), 1e-9)
+    power_law = _fit_power_law(meas, known)
+
+    # Leave-one-out cross-validation: refit the factor with each point held
+    # out in turn, then score that point against the factor it had no part in
+    # choosing. The in-sample residuals above are optimistic by construction
+    # -- a 2-point fit has zero in-sample error on both points regardless of
+    # whether either is trustworthy. LOO is the cheapest real check that a
+    # fixed operator input can't game: a point can only look good here by
+    # agreeing with the OTHER points, not by being included in its own fit.
+    loo_resid = []
+    if len(usable) >= 3:
+        for i in range(len(usable)):
+            held_out = usable[i]
+            rest = usable[:i] + usable[i + 1:]
+            rest_known = np.array([p["known"] for p in rest], dtype=np.float64)
+            rest_meas = np.array([p["measured"] for p in rest], dtype=np.float64)
+            loo_factor = float(np.median(rest_known) / np.median(rest_meas))
+            loo_resid.append(held_out["measured"] * loo_factor - held_out["known"])
+    loo_resid = np.array(loo_resid, dtype=np.float64)
+    loo_rmse = float(np.sqrt(np.mean(loo_resid ** 2))) if loo_resid.size else None
 
     return {
         "ok": True,
@@ -118,6 +184,15 @@ def solve(points: Sequence[Dict]) -> Dict:
         "residual_mae_m": round(float(np.mean(np.abs(resid))), 2),
         "residual_max_m": round(float(np.max(np.abs(resid))), 2),
         "n_suspect": int(sum(1 for p in points_out if p["suspect"])),
+        "loo_rmse_m": round(loo_rmse, 2) if loo_rmse is not None else None,
+        "loo_note": (None if loo_rmse is not None else
+                     "need >=3 points for leave-one-out cross-validation "
+                     "-- in-sample residuals above are optimistic with only 2"),
+        "power_law": power_law,
+        "power_law_note": (None if power_law is not None else
+                           f"need >={MIN_POWER_LAW_POINTS} points spanning "
+                           f">={MIN_POWER_LAW_SPAN:.0f}x in measured height to "
+                           f"tell a power law apart from a flat ratio"),
         "refused": refused,
         "tier": TIER,
     }
@@ -158,14 +233,28 @@ def format_report(res: Dict) -> str:
         f"GCP scale: x{res['factor']:.4f}  ({res['estimator']}, "
         f"{res['n_points']} points)",
         f"  residual MAE {res['residual_mae_m']:.2f} m, "
-        f"max {res['residual_max_m']:.2f} m",
+        f"max {res['residual_max_m']:.2f} m (in-sample, optimistic)",
     ]
+    if res.get("loo_rmse_m") is not None:
+        lines.append(f"  leave-one-out RMSE {res['loo_rmse_m']:.2f} m "
+                     f"(each point scored against a factor it had no part in)")
+    elif res.get("loo_note"):
+        lines.append(f"  {res['loo_note']}")
     if res["estimators_disagree"]:
         lines.append(
             f"  WARNING: median-of-ratios would give x"
             f"{res['alternative_median_of_ratios']:.4f} "
             f"({res['estimator_disagreement_frac']*100:.0f}% apart) -- the "
             f"control points do not agree on one scale")
+    pl = res.get("power_law")
+    if pl is not None:
+        better = pl["rmse_m"] < pl["flat_rmse_m"]
+        lines.append(
+            f"  power-law check: known = {pl['a']:.3f} * measured^{pl['b']:.3f} "
+            f"-> RMSE {pl['rmse_m']:.2f} m vs flat-ratio RMSE {pl['flat_rmse_m']:.2f} m "
+            f"({'power law fits better -- error may be a height-dependent ratio' if better else 'flat ratio already as good, no exponent worth trusting'})")
+    elif res.get("power_law_note"):
+        lines.append(f"  {res['power_law_note']}")
     for p in res["points"]:
         flag = "  SUSPECT" if p["suspect"] else ""
         lines.append(f"  point {p['id']}: measured {p['measured']:.1f} -> "

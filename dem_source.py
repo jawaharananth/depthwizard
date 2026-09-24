@@ -50,6 +50,7 @@ them is exactly the mistake this paragraph exists to prevent.)
 """
 import os
 import math
+import urllib.request
 
 os.environ.setdefault("GDAL_DISABLE_READDIR_ON_OPEN", "EMPTY_DIR")
 
@@ -174,16 +175,9 @@ def sample_grid(utm_x0: float, utm_y_top: float, size_px: int, gsd_m: float,
                 "error": "DEM source circuit open (recent repeated failures) "
                          "-- falling back without a network attempt"}
 
-    try:
-        # Bounded, so a hanging endpoint costs this build seconds, not
-        # minutes -- GDAL's own default has no ceiling at all. 20s/8s is
-        # generous enough not to false-trip on a merely slow (not dead)
-        # venue connection -- this is one step in a pipeline with up to
-        # MAX_JOB_SECONDS=600s total budget (server.py), so a few seconds of
-        # slack here costs little, and the failure mode being guarded
-        # against is "hangs forever," not "takes 15s instead of 3."
+    def _read_block(rio_url):
         with rasterio.Env(GDAL_HTTP_TIMEOUT=20, GDAL_HTTP_CONNECTTIMEOUT=8), \
-             rasterio.open(url) as src:
+             rasterio.open(rio_url) as src:
             # Invert the geotransform arithmetically rather than calling
             # src.index() per coordinate. index() is a Python-level call and a
             # 512x512 grid is 262144 of them -- it does not return in reasonable
@@ -199,13 +193,49 @@ def sample_grid(utm_x0: float, utm_y_top: float, size_px: int, gsd_m: float,
             # One windowed read covering every sample, then index into it. A
             # per-pixel read over HTTP would be millions of range requests.
             block = src.read(1, window=((r0, r1), (c0, c1))).astype(np.float32)
-            dem = block[rows - r0, cols - c0].reshape(lon.shape)
-            nodata = src.nodata
+            return block[rows - r0, cols - c0].reshape(lon.shape), src.nodata
+
+    try:
+        dem, nodata = _read_block(url)
     except Exception as exc:
-        if dem_path is None:
-            _record_failure()
-        return {"dem": None, "source": source, "coverage": 0.0,
-                "error": f"{type(exc).__name__}: {exc}"}
+        # GDAL's bundled cURL validates HTTPS certs against the Windows
+        # "schannel" store for /vsicurl/, a real, seen-in-practice failure
+        # independent of whether Python's own SSL stack reaches the same
+        # host fine (open_buildings_source.py hit and fixed the identical
+        # issue the same way). Only worth a fallback for that specific
+        # class of failure; anything else (a real 404, a timeout) should
+        # still fail exactly as before.
+        if dem_path is None and ("schannel" in str(exc).lower()
+                                 or "curl error" in str(exc).lower()):
+            try:
+                import tempfile
+                # Strip GDAL's own /vsicurl//vsigzip/ prefixes to get the
+                # real HTTPS URL urllib can fetch directly.
+                remote_url = url.replace("/vsigzip/", "").replace("/vsicurl/", "")
+                suffix = ".hgt.gz" if remote_url.endswith(".gz") else ".tif"
+                req = urllib.request.Request(remote_url, headers={"User-Agent": "Mozilla/5.0"})
+                with urllib.request.urlopen(req, timeout=60) as resp:
+                    data = resp.read()
+                with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as f:
+                    f.write(data)
+                    local_path = f.name
+                local_url = f"/vsigzip/{local_path}" if suffix == ".hgt.gz" else local_path
+                dem, nodata = _read_block(local_url)
+                try:
+                    os.remove(local_path)
+                except Exception:
+                    pass
+            except Exception as exc2:
+                if dem_path is None:
+                    _record_failure()
+                return {"dem": None, "source": source, "coverage": 0.0,
+                        "error": f"vsicurl failed ({exc}); local-download "
+                                 f"fallback also failed: {type(exc2).__name__}: {exc2}"}
+        else:
+            if dem_path is None:
+                _record_failure()
+            return {"dem": None, "source": source, "coverage": 0.0,
+                    "error": f"{type(exc).__name__}: {exc}"}
 
     if dem_path is None:
         _record_success()
