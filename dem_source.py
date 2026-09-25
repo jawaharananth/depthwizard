@@ -51,6 +51,7 @@ them is exactly the mistake this paragraph exists to prevent.)
 import os
 import math
 import urllib.request
+import urllib.error
 
 os.environ.setdefault("GDAL_DISABLE_READDIR_ON_OPEN", "EMPTY_DIR")
 
@@ -135,9 +136,15 @@ def _cop30_tile_name(lon: float, lat: float) -> str:
 def sample_grid(utm_x0: float, utm_y_top: float, size_px: int, gsd_m: float,
                 utm_epsg: str, dem_path: str = None,
                 geoid_offset_m: float = None,
-                dem_source: str = "glo30") -> dict:
+                dem_source: str = "glo30", width_px: int = None,
+                gsd_y_m: float = None) -> dict:
     """
     Sample an external DEM onto the scene's UTM grid.
+
+    size_px is the grid HEIGHT (rows); width_px defaults to size_px, so a
+    square-grid caller is unchanged. gsd_m is the column step in the grid
+    CRS's units; gsd_y_m (default gsd_m) the row step. Both are map units of
+    utm_epsg, not necessarily ground metres (e.g. EPSG:3857).
 
     geoid_offset_m is ADDED to the DEM's values to convert them into the target
     vertical datum. For Copernicus (EGM2008 orthometric) against WGS84
@@ -145,10 +152,12 @@ def sample_grid(utm_x0: float, utm_y_top: float, size_px: int, gsd_m: float,
     DEM in its own datum and says so in the result, rather than silently
     assuming a conversion.
 
-    Returns {"dem": HxW metres or None, "source": str, "coverage": float, ...}.
+    Returns {"dem": (size_px x width_px) metres or None, "source": str, "coverage": float, ...}.
     """
-    xs = utm_x0 + (np.arange(size_px) + 0.5) * gsd_m
-    ys = utm_y_top - (np.arange(size_px) + 0.5) * gsd_m
+    width_px = size_px if width_px is None else int(width_px)
+    gsd_y_m = gsd_m if gsd_y_m is None else float(gsd_y_m)
+    xs = utm_x0 + (np.arange(width_px) + 0.5) * gsd_m
+    ys = utm_y_top - (np.arange(size_px) + 0.5) * gsd_y_m
     gx, gy = np.meshgrid(xs, ys)
     lon_f, lat_f = warp_transform(utm_epsg, "EPSG:4326", gx.ravel(), gy.ravel())
     lon = np.array(lon_f).reshape(gx.shape)
@@ -214,8 +223,25 @@ def sample_grid(utm_x0: float, utm_y_top: float, size_px: int, gsd_m: float,
                 remote_url = url.replace("/vsigzip/", "").replace("/vsicurl/", "")
                 suffix = ".hgt.gz" if remote_url.endswith(".gz") else ".tif"
                 req = urllib.request.Request(remote_url, headers={"User-Agent": "Mozilla/5.0"})
-                with urllib.request.urlopen(req, timeout=60) as resp:
-                    data = resp.read()
+                # Connection resets on this path are intermittent: retry
+                # 3 attempts with 2 s / 5 s backoff, 60 s timeout each.
+                import time as _time
+                data = None
+                for _attempt, _wait in enumerate((2, 5, None)):
+                    try:
+                        with urllib.request.urlopen(req, timeout=60) as resp:
+                            data = resp.read()
+                        break
+                    except urllib.error.HTTPError as _he:
+                        if _he.code < 500 or _wait is None:
+                            raise
+                    except (ConnectionError, TimeoutError, OSError,
+                            urllib.error.URLError):
+                        if _wait is None:
+                            raise
+                    print(f"      DEM download attempt {_attempt + 1} failed; "
+                          f"retrying in {_wait} s")
+                    _time.sleep(_wait)
                 with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as f:
                     f.write(data)
                     local_path = f.name

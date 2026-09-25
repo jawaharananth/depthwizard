@@ -5,27 +5,26 @@
 **Metric:** nDSM vs nDSM — object height above local terrain, not absolute elevation
 **Input:** single RPC-orthorectified satellite view per tile, straightest available
 **Scale:** per-tile affine alignment to the reference before scoring — see below
-**Date:** 2026-09-04
+**Date:** 2026-09-19 (validation_results.json)
 
 ---
 
-## Tile-level accuracy — 20 tiles
+## Tile-level accuracy — 18 tiles (current: `dashboard/validation_results.json`)
+
+**Scope: Jacksonville, FL only (DFC2019 Track 3).** No other city has LiDAR truth
+scored this way; the India demo scenes are not benchmarked.
 
 | | value |
 |---|---|
-| **RMSE** | **3.87 m** |
-| **MAE** | **2.01 m** |
-| tiles scored | 18 of 20 |
-| tiles rejected | 2 (registration guard) |
+| **RMSE** | **3.74 m** |
+| **MAE** | **2.02 m** |
+| per-tile correlation with LiDAR nDSM | median 0.675 (range 0.493–0.787, mean 0.658) |
+| tiles scored | 18 (all passed the 0.25 correlation registration floor) |
 
-Two tiles were **excluded, not quietly averaged in**: JAX_149 (correlation 0.229)
-and JAX_156 (0.208), both below the 0.25 floor at which a prediction is not
-describing the ground it came from. That guard exists because this project
-previously published figures computed on misregistered rasters; excluding a tile
-loudly is the point of it.
-
-A 5-tile subset gives RMSE 3.74 m / MAE 2.05 m, so the number is not an artefact
-of which tiles were chosen.
+The earlier 3.87 m / 2.01 m run (2026-09-04, kept in
+`dashboard/validation_results_2026-09-04.json`) scored the same 18 tiles with
+mean correlation 0.591 and rejected JAX_149 (0.229) and JAX_156 (0.208). The file
+records correlation per tile only, not per landscape class.
 
 ### What this number does and does not measure
 
@@ -39,7 +38,7 @@ pred = pred * s
 ```
 
 Zero tiles reached a blind shadow calibration; every one recorded
-`scale_source: "aligned (Tier C)"`. So 3.87 m measures how well the recovered
+`scale_source: "aligned (Tier C)"`. So 3.74 m measures how well the recovered
 height field matches the SHAPE of the true surface, under the most favourable
 scaling available. It is not blind absolute accuracy, and it is not what a
 single uncalibrated image would produce.
@@ -57,26 +56,29 @@ mix, then scored separately.
 
 | landscape | RMSE | MAE | pixels |
 |---|---|---|---|
-| hilly | **1.43 m** | **0.52 m** | 959,958 |
-| sparse | 2.04 m | 0.74 m | 2,115,114 |
-| forest | 5.90 m | 4.58 m | 925,192 |
-| urban | 6.49 m | 4.79 m | 626,263 |
-| **overall** | **3.87 m** | **2.01 m** | 4,626,527 |
+| hilly | **1.82 m** | **0.73 m** | 959,958 |
+| sparse | 2.65 m | 1.12 m | 2,115,114 |
+| urban | 5.40 m | 3.81 m | 626,263 |
+| forest | 5.56 m | 4.22 m | 925,192 |
+| **overall** | **3.74 m** | **2.02 m** | 4,626,527 |
 
-The spread is the useful part, and it is a 4.5x range. Two classes dominate the
+Classes are per-pixel Jacksonville terrain classes, not separate sites (the
+"forest" class is suburban tree cover, not a tropical forest).
+
+The spread is the useful part, about a 3x range. Two classes dominate the
 error and both for structural reasons rather than tuning:
 
-**Urban (6.49 m)** — dense downtown is where monocular depth degrades most.
+**Urban (5.40 m)** — dense downtown is where monocular depth degrades most.
 Measured directly: correlation with LiDAR falls from 0.522 on 37 m buildings to
 0.086 on 161 m ones. Street canyons defeat single-view depth, and no amount of
 parameter work recovers a signal that is not in the image.
 
-**Forest (5.90 m)** — canopy has no crisp upper surface to measure. Shadow
+**Forest (5.56 m)** — canopy has no crisp upper surface to measure. Shadow
 geometry targets hard rooflines; a tree casts a diffuse, overlapping shadow with
 no clean edge, and photometric matching across views is unreliable on foliage
 that moves between captures.
 
-**Hilly (1.43 m) and sparse (2.04 m)** are where the method works best: terrain
+**Hilly (1.82 m) and sparse (2.65 m)** are where the method works best: terrain
 is smooth, widely visible, and well constrained by both the DEM anchor and
 multi-view matching.
 
@@ -198,8 +200,8 @@ same way, which made it meaningless rather than fair. That is the specific
 mistake this section exists to avoid repeating.
 
 A defensible comparison requires re-running the published method on these tiles,
-with this metric. Until that is done, the honest statement is: **RMSE 3.87 m and
-MAE 2.01 m on DFC2019 Track 3, measured, with the method and exclusions above.**
+with this metric. Until that is done, the honest statement is: **RMSE 3.74 m and
+MAE 2.02 m on DFC2019 Track 3 (Jacksonville), GT-scale-aligned per tile, measured, with the method and exclusions above.**
 
 ## Reproducing
 

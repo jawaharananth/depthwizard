@@ -9,18 +9,20 @@ Status legend: **LIVE** reachable on the default path · **OPT-IN** implemented+
 | Claim | Status | Proof | Notes |
 |---|---|---|---|
 | MVS height (mvs_height.compute -> plane_sweep_mvs.plane_sweep_dsm) | **LIVE** | build_city.py:86 calls mvs_height.compute(); mvs_height.py:105 calls plane_sweep_dsm() | on by default; --no-mvs flag (default False) disables it, falling back to monocular depth |
-| DEM anchor / Tier A (dem_source.py, --dem flag, srtm|glo30) | **OPT-IN** | build_city.py:971 defines --dem (action=store_true, default False); build_city.py:973 --dem-source choices=[glo30,srtm], default glo30; build_city.py:241 calls dem_source.sample_grid(); build_city.py:257 calls dem_source.fit_offset() | implemented and wired end-to-end (anchors ground datum, promotes scene to 'A (DEM-anchored absolute elevation)'), but --dem is not passed unless the caller supplies it -- a default run never reaches Tier A |
-| Shadow calibration / Tier B (calibrate_scale call sites) | **LIVE** | called at build_city.py:157, build_city.py:182 (monocular fallback path; runs whenever MVS is unavailable or --no-mvs is passed) | build_city_image.py uses shadow_correction only for detect_shadow_mask() + azimuth estimation, not calibrate_scale -- the plain-image path never reaches Tier B, only C |
+| DEM anchor / Tier A (dem_source.py, --dem flag, srtm|glo30) | **OPT-IN** | build_city.py:971 defines --dem (action=store_true, default False); build_city.py:973 --dem-source choices=[glo30,srtm], default glo30; build_city.py:241 calls dem_source.sample_grid(); build_city.py:257 calls dem_source.fit_offset() | implemented and wired end-to-end (anchors ground datum, promotes scene to 'A (DEM-anchored absolute elevation)'), but --dem is not passed unless the caller supplies it -- a default build_city.py run never reaches Tier A (build_city_image.py differs; see its own rows) |
+| Shadow calibration / Tier B (calibrate_scale call sites) | **LIVE** | called at build_city.py:157, build_city.py:182 (monocular fallback path; runs whenever MVS is unavailable or --no-mvs is passed) | build_city.py only. build_city_image.py reaches Tier B by a different route (Open Buildings calibration row below) |
+| build_city_image.py: DEM anchor / Tier A (use_dem) | **LIVE** | build_city_image.py:669 use_dem defaults True; build_city_image.py:1226 calls dem_source.fit_offset() | on by default, but only for GeoTIFF input in a projected metric CRS and only if the ground-offset spread guard passes; PNG/JPG never reach it. Forest mode (terrain = Copernicus GLO-30, canopy-corrected) is OPT-IN via terrain_from_dem (default False) |
+| build_city_image.py: Tier B via Open Buildings height calibration | **OPT-IN** | build_city_image.py:1430 fuses Open Buildings heights; build_city_image.py:355 scale = exp(median log-ratio) | needs georeferenced input plus supplied footprint polygons and >=20 controls; promotes Tier C to B |
 | Conformal prediction intervals | **LIVE** | imported by entry point(s): ['build_city.py', 'build_city_image.py'] |  |
 | Per-building confidence + reliability tiers | **LIVE** | build_city.py:765 calls confidence.reliability_tier() per building | gated on mvs confidence existing (build_city.py:482); true whenever MVS ran successfully, which is the default path -- absent only if MVS fails and the monocular fallback is used |
-| Self-repair loop (mesh_repair.py) | **LIVE** | repair_build() defined mesh_repair.py:484, called from build_city.py:345, build_city_image.py:903 | runs on every build in both entry points; bounded iterative repair with a terminating strategy (last resort removes the building) |
-| Model-vs-image audit (model_audit.py) | **LIVE** | audit() defined model_audit.py:199, called from build_city.py:696, build_city_image.py:967 | wrapped in try/except in both callers -- failure prints a message and continues rather than aborting the build |
+| Self-repair loop (mesh_repair.py) | **LIVE** | repair_build() defined mesh_repair.py:484, called from build_city.py:345, build_city_image.py:1598 | runs on every build in both entry points; bounded iterative repair with a terminating strategy (last resort removes the building) |
+| Model-vs-image audit (model_audit.py) | **LIVE** | audit() defined model_audit.py:281, called from build_city.py:696, build_city_image.py:1868 | wrapped in try/except in both callers -- failure prints a message and continues rather than aborting the build |
 | Change detection (change_detection.py) | **DORMANT** | imported only by non-entry-point script(s): ['damage.py'] |  |
 | GAMUS fine-tuning (train_height.py) | **DORMANT** | train_height.py has its own `if __name__ == "__main__"` block (runnable as `python train_height.py ...`) but is not imported by any entry point -- a build or upload never touches it |  |
 
 ## Viewer tool inventory
 
-22 `<button id=...>` elements found in `viewer/index.html`. Exact on-screen labels below, as they appear in the markup (not assumed from naming convention).
+23 `<button id=...>` elements found in `viewer/index.html`. Exact on-screen labels below, as they appear in the markup (not assumed from naming convention).
 
 | Claim | Status | Proof | Notes |
 |---|---|---|---|
@@ -39,6 +41,7 @@ Status legend: **LIVE** reachable on the default path · **OPT-IN** implemented+
 
 | id | label | click-wired | hidden by default |
 |---|---|---|---|
+| `btn-collapse` | &#8722; | True | False |
 | `btn-rgb` | RGB | True | False |
 | `btn-heatmap` | HEATMAP | True | False |
 | `btn-conf` | CONFIDENCE | True | False |
@@ -76,4 +79,4 @@ Claims in this manifest that a normal build/upload never reaches, or that do not
 - `AUDIT.md:216` — AUDIT.md claims Tier A never exercised: "Tier C elsewhere. **Tier A has never been exercised** — no DEM ingested."
 - `AUDIT.md:390` — AUDIT.md claims Tier A never exercised: "| Tier A never exercised | no DEM ingested |"
 - `AUDIT.md:420` — AUDIT.md claims Tier A never exercised: "never exercised."
-- `BENCHMARK.md:126` — BENCHMARK.md discusses conformal intervals: "## Statistically guaranteed intervals (conformal prediction)"
+- `BENCHMARK.md:128` — BENCHMARK.md discusses conformal intervals: "## Statistically guaranteed intervals (conformal prediction)"

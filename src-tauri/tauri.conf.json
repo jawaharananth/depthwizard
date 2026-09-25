@@ -1,37 +1,38 @@
 {
-  "$schema": "https://schema.tauri.app/config/2",
-  "productName": "DepthWizard",
-  "version": "0.1.0",
-  "identifier": "in.sih.depthwizard",
-  "build": {
-    "frontendDist": "../dist"
-  },
-  "app": {
-    "windows": [
-      {
-        "title": "DepthWizard",
-        "width": 1440,
-        "height": 900,
-        "resizable": true
-      }
-    ],
-    "security": {
-      "csp": null
-    }
-  },
-  "bundle": {
-    "active": true,
-    "targets": [
-      "msi",
-      "nsis",
-      "deb",
-      "appimage"
-    ],
-    "icon": [
-      "icons/32x32.png",
-      "icons/128x128.png",
-      "icons/128x128@2x.png",
-      "icons/icon.ico"
-    ]
-  }
+    "$schema":  "https://schema.tauri.app/config/2",
+    "productName":  "DepthWizard",
+    "version":  "0.1.0",
+    "identifier":  "in.sih.depthwizard",
+    "build":  {
+                  "frontendDist":  "../dist"
+              },
+    "app":  {
+                "windows":  [
+
+                            ],
+                "security":  {
+                                 "csp":  null
+                             }
+            },
+    "bundle":  {
+                   "active":  true,
+                   "targets":  [
+                                   "msi",
+                                   "nsis"
+                               ],
+                   "icon":  [
+                                "icons/32x32.png",
+                                "icons/128x128.png",
+                                "icons/128x128@2x.png",
+                                "icons/icon.ico"
+                            ],
+                   "resources":  {
+                                     "../scenes/periyar_forest/*":  "scenes/periyar_forest/",
+                                     "../scenes/hitec_2x2/*.json":  "scenes/hitec_2x2/",
+                                     "../scenes/hitec_2x2/*.geojson":  "scenes/hitec_2x2/",
+                                     "../scenes/hitec_2x2/*.glb":  "scenes/hitec_2x2/",
+                                     "../scenes/hitec_2x2/*.jpg":  "scenes/hitec_2x2/",
+                                     "../scenes/hitec_2x2/terrain_[anr]*.png":  "scenes/hitec_2x2/"
+                                 }
+               }
 }

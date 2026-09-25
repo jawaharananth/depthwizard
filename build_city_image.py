@@ -86,10 +86,93 @@ OPEN_BUILDINGS_MIN_FOOTPRINT_COVERAGE = 0.3
 # handful of usable pixels isn't worth it -- report the real "no/low
 # coverage" outcome and move on rather than pretend the attempt helped.
 OPEN_BUILDINGS_MIN_SCENE_COVERAGE = 0.05
+# The metric depth model's output stops growing near this height (measured on
+# HITEC City: 99.9th percentile 11.4 m over 50-77 m towers), so above it the
+# depth estimate says "tall", not "how tall".
+DEPTH_SATURATION_M = 8.0
+
+
+def _poly_crop_mask(poly, H: int, W: int):
+    """(window, mask) for a polygon rasterised over its image-clipped bounding
+    box, or None when that box is empty. mask equals the full-image fillPoly
+    mask restricted to `window`, which holds every pixel it could set."""
+    pts = np.asarray(poly, np.int32)
+    flat = pts.reshape(-1, 2)
+    x0, y0 = max(int(flat[:, 0].min()), 0), max(int(flat[:, 1].min()), 0)
+    x1, y1 = min(int(flat[:, 0].max()) + 1, W), min(int(flat[:, 1].max()) + 1, H)
+    if x1 <= x0 or y1 <= y0:
+        return None
+    mask = np.zeros((y1 - y0, x1 - x0), np.uint8)
+    cv2.fillPoly(mask, [pts - np.array([x0, y0], np.int32)], 1)
+    return (slice(y0, y1), slice(x0, x1)), mask.astype(bool)
+
+
+def _mask_shift(a: np.ndarray, b: np.ndarray, max_shift: int):
+    """(dx, dy, peak): integer shift that best aligns mask b onto mask a."""
+    fa = np.fft.rfft2(a - a.mean())
+    fb = np.fft.rfft2(b - b.mean())
+    xc = np.fft.fftshift(np.fft.irfft2(fa * np.conj(fb), s=a.shape))
+    cy, cx = a.shape[0] // 2, a.shape[1] // 2
+    win = xc[cy - max_shift:cy + max_shift + 1, cx - max_shift:cx + max_shift + 1]
+    iy, ix = np.unravel_index(np.argmax(win), win.shape)
+    return ix - max_shift, iy - max_shift, float(win.max() / (np.abs(xc).mean() + 1e-9))
+
+
+def estimate_ob_alignment(ob_grid: np.ndarray, footprints: list, gsd_m: float):
+    """
+    Per-height pixel shift between where a building's ROOF appears in this
+    image and where its height sits in the Open Buildings raster:
+
+        shift(h) = offset + lean * h        (pixels)
+
+    Two separate real effects, both measured on HITEC City, Hyderabad:
+      * lean -- the image is oblique, so a roof is displaced from its base
+        in proportion to height (~0.5 px north per metre there), while the
+        Open Buildings raster (from near-nadir Sentinel-2) puts height over
+        the base. Polygons traced on the image sit at the roof.
+      * offset -- plain co-registration error between the two sources
+        (~18 px / 11 m east there), independent of height.
+    Without both, a tower's height lands on the sheds at its foot and the
+    tower's own roof samples the empty ground north of it.
+
+    Fit by cross-correlating each Open Buildings height band against the
+    rasterised roof polygons. Returns None when the fit is not trustworthy.
+    """
+    H, W = ob_grid.shape
+    roofs = np.zeros((H, W), np.float32)
+    min_px = 60.0 / max(gsd_m * gsd_m, 1e-6)
+    for p in footprints:
+        a = np.asarray(p, np.int32)
+        if cv2.contourArea(a) >= min_px:
+            cv2.fillPoly(roofs, [a], 1.0)
+    if roofs.sum() < 2000:
+        return None
+    max_shift = int(min(160, 60.0 / max(gsd_m, 1e-6)))
+    hs, dxs, dys, ws = [], [], [], []
+    for lo, hi in [(8, 16), (16, 24), (24, 34), (34, 46), (46, 60), (60, 120)]:
+        band = ((ob_grid >= lo) & (ob_grid < hi)).astype(np.float32)
+        if band.sum() < 1500:
+            continue
+        dx, dy, peak = _mask_shift(roofs, band, max_shift)
+        hs.append(0.5 * (lo + hi)); dxs.append(dx); dys.append(dy); ws.append(peak)
+    if len(hs) < 3:
+        return None
+    A = np.stack([np.ones(len(hs)), np.array(hs)], 1)
+    Wt = np.diag(ws)
+    cx = np.linalg.lstsq(Wt @ A, Wt @ np.array(dxs, float), rcond=None)[0]
+    cy = np.linalg.lstsq(Wt @ A, Wt @ np.array(dys, float), rcond=None)[0]
+    res = np.hypot(np.array(dxs) - A @ cx, np.array(dys) - A @ cy)
+    lean = float(np.hypot(cx[1], cy[1]))
+    if np.median(res) > 10 or lean > 2.0:
+        return None
+    return {"offset_px": (float(cx[0]), float(cy[0])),
+            "lean_px_per_m": (float(cx[1]), float(cy[1])),
+            "residual_px": float(np.median(res)), "bands": len(hs)}
 
 
 def fuse_open_buildings_heights(dsm: np.ndarray, ground: np.ndarray,
-                                footprints: list, src_transform, src_crs: str) -> int:
+                                footprints: list, src_transform, src_crs: str,
+                                info: dict = None) -> int:
     """
     Burns real Google Open Buildings 2.5D per-building heights into the
     surface model -- the same "splice the real signal into dsm before
@@ -146,25 +229,158 @@ def fuse_open_buildings_heights(dsm: np.ndarray, ground: np.ndarray,
         dst_transform=src_transform, dst_crs=src_crs,
         resampling=rasterio.warp.Resampling.bilinear)
 
-    n_fused = 0
+    _gsd = abs(float(src_transform.a))
+    align = estimate_ob_alignment(np.nan_to_num(dst, nan=0.0), footprints, _gsd)
+    if info is not None:
+        info["alignment"] = align
+    if align is not None:
+        print(f"      Open Buildings alignment: offset "
+              f"({align['offset_px'][0]:+.1f}, {align['offset_px'][1]:+.1f}) px, lean "
+              f"({align['lean_px_per_m'][0]:+.3f}, {align['lean_px_per_m'][1]:+.3f}) px/m "
+              f"(fit residual {align['residual_px']:.1f} px over {align['bands']} bands)")
+    h_max = float(np.nanmax(dst)) if np.isfinite(dst).any() else 0.0
+    cand = np.arange(0.0, h_max + 1.0, 1.0)
+
+    n_fused = n_rejected = 0
     for poly in footprints:
-        poly_px = np.asarray(poly, np.int32)
-        mask = np.zeros((H, W), np.uint8)
-        cv2.fillPoly(mask, [poly_px], 1)
-        mask = mask.astype(bool)
+        crop = _poly_crop_mask(poly, H, W)
+        if crop is None:
+            continue
+        win, mask = crop
         if not mask.any():
             continue
-        vals = dst[mask]
-        vals = vals[np.isfinite(vals)]
-        if vals.size < max(4, int(OPEN_BUILDINGS_MIN_FOOTPRINT_COVERAGE * mask.sum())):
-            continue
-        real_h = float(np.median(vals))
+        ys, xs = np.nonzero(mask)
+        ys += win[0].start
+        xs += win[1].start
+        if align is None:
+            vals = dst[win][mask]
+            vals = vals[np.isfinite(vals)]
+            if vals.size < max(4, int(OPEN_BUILDINGS_MIN_FOOTPRINT_COVERAGE * mask.sum())):
+                continue
+            real_h = float(np.median(vals))
+        else:
+            # The height must explain its own sampling location: sample the
+            # raster at where a building of height h, with this roof, would
+            # have its base, and keep the tallest h that reproduces itself.
+            # A shed at a tower's foot has no such h (at its own height the
+            # base sample is the tower; at the tower's height it is empty
+            # ground), so it is left to the depth model rather than
+            # inheriting a neighbour's 70 m.
+            (ox, oy), (vx, vy) = align["offset_px"], align["lean_px_per_m"]
+            consistent = []
+            min_ok = max(4, int(OPEN_BUILDINGS_MIN_FOOTPRINT_COVERAGE * ys.size))
+            # Neighbouring candidate heights usually round to the same pixel
+            # shift, so each shift's sample median is computed once.
+            shift_f = {}
+            for h in cand:
+                sx, sy = int(round(ox + vx * h)), int(round(oy + vy * h))
+                if (sx, sy) not in shift_f:
+                    f = None
+                    yy, xx = ys - sy, xs - sx
+                    ok = (yy >= 0) & (yy < H) & (xx >= 0) & (xx < W)
+                    if ok.sum() >= min_ok:
+                        v = dst[yy[ok], xx[ok]]
+                        v = v[np.isfinite(v)]
+                        if v.size >= 4:
+                            f = float(np.median(v))
+                    shift_f[(sx, sy)] = f
+                f = shift_f[(sx, sy)]
+                if f is not None and abs(f - h) <= max(2.0, 0.12 * h):
+                    consistent.append(f)
+            real_h = None
+            if consistent:
+                # Tie-break with the depth model's own metric height, which is
+                # reliable for low structures but saturates near 10 m: below
+                # that, a coincidental match with a neighbour's base must not
+                # turn a house into a tower.
+                d = float(np.median((dsm[win] - ground[win])[mask]))
+                real_h = (max(consistent) if d >= DEPTH_SATURATION_M
+                          else min(consistent, key=lambda c: abs(c - d)))
+            if real_h is None:
+                n_rejected += 1
+                continue
         if real_h < 1.0:
             continue
-        local_ground = float(np.median(ground[mask]))
-        dsm[mask] = local_ground + real_h
+        local_ground = float(np.median(ground[win][mask]))
+        dsm[win][mask] = local_ground + real_h
         n_fused += 1
+    if align is not None and n_rejected:
+        print(f"      {n_rejected} footprint(s) had no self-consistent Open Buildings "
+              f"height (e.g. a shed at a tower's foot) -- depth-model height kept")
     return n_fused
+
+
+def calibrate_to_reference_heights(dsm: np.ndarray, ground: np.ndarray,
+                                   pre_rel: np.ndarray, footprints: list,
+                                   roof_dsm: np.ndarray = None,
+                                   min_controls: int = 20,
+                                   relative: bool = True):
+    """
+    SCALE CALIBRATION FROM REAL REFERENCE HEIGHTS. Every footprint whose
+    height was replaced by a real one (Open Buildings fusion) is a ground
+    control: its real height against the depth field's own (relative)
+    reading there (`pre_rel` = dsm - ground captured BEFORE fusion). A robust
+    fit of that ratio (median log-ratio over footprint bboxes) converts the
+    relative field to metres for every building WITHOUT a real height -- the
+    "minimal ground control" calibration, with many controls instead of a
+    handful. dsm (and roof_dsm) are modified in place outside the fused
+    footprints. Returns the calibration record, or None when fewer than
+    min_controls usable controls exist (nothing is changed then).
+    """
+    _post = (dsm - ground)
+    _fused_mask = np.zeros(dsm.shape[:2], bool)
+    _ratios = []
+    for _fp in footprints:
+        _pp = np.asarray(_fp, np.int32).reshape(-1, 2)
+        _x0, _y0 = np.maximum(_pp.min(0), 0)
+        _x1, _y1 = np.minimum(_pp.max(0) + 1, [dsm.shape[1], dsm.shape[0]])
+        if _x1 - _x0 < 2 or _y1 - _y0 < 2:
+            continue
+        _m = np.zeros((_y1 - _y0, _x1 - _x0), np.uint8)
+        cv2.fillPoly(_m, [_pp - [_x0, _y0]], 1)
+        _m = _m.astype(bool)
+        if not _m.any():
+            continue
+        _a = float(np.median(pre_rel[_y0:_y1, _x0:_x1][_m]))
+        _b = float(np.median(_post[_y0:_y1, _x0:_x1][_m]))
+        if abs(_b - _a) > 0.25:
+            _fused_mask[_y0:_y1, _x0:_x1] |= _m
+            if _a > 1.0 and _b > 2.0:
+                _ratios.append(_b / _a)
+    if len(_ratios) < min_controls:
+        if _ratios:
+            print(f"      reference-height calibration skipped: {len(_ratios)} usable "
+                  f"control(s) < {min_controls}")
+        return None
+    _lr = np.log(np.asarray(_ratios))
+    _k = float(np.exp(np.median(_lr)))
+    _iqr = float(np.percentile(_lr, 75) - np.percentile(_lr, 25))
+    if not relative:
+        # METRIC DEPTH GATE: the field is already in metres. Only rescale when
+        # the controls agree tightly (IQR < 0.7) that it is badly off
+        # (ratio outside [0.67, 1.5]); a wide-spread x3-4 ratio is noise in
+        # the controls, not a scale error, and must not be applied.
+        _reason = None
+        if 0.67 <= _k <= 1.5:
+            _reason = f"metric depth: ratio x{_k:.3f} within [0.67, 1.5]"
+        elif _iqr >= 0.7:
+            _reason = f"metric depth: log-ratio IQR {_iqr:.2f} >= 0.7 (controls disagree)"
+        if _reason is not None:
+            print(f"      reference-height calibration skipped -- {_reason}")
+            return {"applied": False, "n_controls": len(_ratios),
+                    "scale": round(_k, 4), "log_ratio_iqr": round(_iqr, 3),
+                    "depth": "metric", "skipped_reason": _reason}
+    _rel = dsm - ground
+    _nf = ~_fused_mask
+    dsm[_nf] = ground[_nf] + _rel[_nf] * _k
+    if roof_dsm is not None:
+        roof_dsm[_nf] = ground[_nf] + (roof_dsm - ground)[_nf] * _k
+    print(f"      scale calibrated to {len(_ratios)} real building heights: "
+          f"x{_k:.3f} (log-ratio IQR {_iqr:.2f}) applied to every building "
+          f"without a real height")
+    return {"applied": True, "n_controls": len(_ratios), "scale": round(_k, 4),
+            "log_ratio_iqr": round(_iqr, 3),
+            "depth": "relative" if relative else "metric"}
 
 
 def estimate_sun_azimuth(image_np: np.ndarray, seg_labels: np.ndarray) -> float:
@@ -477,7 +693,27 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
           vlm_judge: bool = False,
           organic_roofs: bool = False,
           multiscale_fusion: bool = False,
-          continuous_vegetation: bool = False) -> dict:
+          continuous_vegetation: bool = False,
+          supplement_discovery: bool = False,
+          ground_grid: int = GROUND_GRID,
+          pbr_maps: bool = False,
+          crown_radius_ratio: float = 0.32,
+          sr_texture: bool = False,
+          display_texture_path: str = None,
+          context_image: str = None,
+          auto_zoom: bool = True,
+          capture_date: str = None,
+          osm_structures: bool = False,
+          context_city_footprints: str = None,
+          depth_image_path: str = None,
+          context_far_image: str = None,
+          require_open_buildings: bool = False,
+          terrain_from_dem: bool = False,
+          dem_canopy_penetration: float = 0.6,
+          canopy_mask_from_chm: bool = False,
+          capture_utc: str = None,
+          canopy_blur_m: float = None,
+          fix_projection_scale: bool = None) -> dict:
     """
     return_arrays: additive, off by default -- every existing caller (server.py,
     the CLI) is unaffected. When True, meta["_ndsm"] carries the predicted
@@ -489,6 +725,7 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
     """
     os.makedirs(OUT_DIR, exist_ok=True)
     stem = os.path.join(OUT_DIR, f"city_{name}")
+    _ob_info = {}
     t0 = time.time()
     # A null tracker when none was supplied, so the five instrumentation
     # points below are bare calls rather than five guarded blocks -- each
@@ -511,21 +748,89 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
     src_is_projected_m = False
     capture_dt_utc = None
     src_lat = src_lon = None
+    # Map units per ground metre of the source CRS at the scene centre: 1 for
+    # UTM, ~1/cos(lat) for Web Mercator (EPSG:3857 overstates distance by
+    # ~5% at Hyderabad, ~32% at New York). World/mesh coordinates are ground
+    # metres; anything expressed as a source-CRS offset (context imagery
+    # placement) is divided by this.
+    _crs_units_per_m = 1.0
+    _gt_grid_bound = (gt_building_mask is not None or gt_building_polygons is not None
+                      or depth_image_path is not None or display_texture_path is not None
+                      or canopy_height_map is not None)
     if image_path.lower().endswith((".tif", ".tiff")):
         try:
             import rasterio
             with rasterio.open(image_path) as _s:
-                if _s.crs is not None and _s.transform is not None:
-                    m = abs(_s.transform.a)
-                    if _s.crs.is_geographic:
-                        lat = _s.transform.f + _s.transform.e * _s.height / 2
+                _band_idx = [1, 2, 3] if _s.count >= 3 else [1]
+                _raw = _s.read(_band_idx)
+                _s_crs, _s_tf = _s.crs, _s.transform
+                _has_geo = (_s_crs is not None and _s_tf is not None
+                            and not _s_tf.is_identity)
+                if _has_geo and _s_crs.is_geographic and not _gt_grid_bound:
+                    # A lat/lon GeoTIFF has no metric grid: reproject it once,
+                    # here, onto its local UTM zone so every downstream step
+                    # (DEM anchor, Open Buildings fusion, DSM export, slope)
+                    # works on real metres with a real geotransform. Skipped
+                    # only when a caller supplies other rasters bound to the
+                    # FILE's pixel grid (GT footprints, CHM, hi-res textures),
+                    # which a reprojection would silently misregister.
+                    from rasterio.warp import (calculate_default_transform as _cdt,
+                                               reproject as _rpj, Resampling as _Rs)
+                    from rasterio.crs import CRS as _CRS
+                    _clon = _s_tf.c + _s_tf.a * _s.width / 2
+                    _clat = _s_tf.f + _s_tf.e * _s.height / 2
+                    _utm = _CRS.from_epsg((32600 if _clat >= 0 else 32700)
+                                          + int((_clon + 180) // 6) + 1)
+                    _res = abs(_s_tf.a) * 111320.0 * math.cos(math.radians(_clat))
+                    _tf2, _w2, _h2 = _cdt(_s_crs, _utm, _s.width, _s.height,
+                                          *_s.bounds, resolution=_res)
+                    _dst = np.zeros((_raw.shape[0], _h2, _w2), _raw.dtype)
+                    for _b in range(_raw.shape[0]):
+                        _rpj(_raw[_b], _dst[_b], src_transform=_s_tf, src_crs=_s_crs,
+                             dst_transform=_tf2, dst_crs=_utm, resampling=_Rs.bilinear,
+                             src_nodata=None, dst_nodata=0)
+                    print(f"      geographic input ({_s_crs}) reprojected to {_utm} "
+                          f"at {_res*100:.1f} cm/px: {_s.width}x{_s.height} -> {_w2}x{_h2}")
+                    _raw, _s_crs, _s_tf = _dst, _utm, _tf2
+                if _has_geo:
+                    m = abs(_s_tf.a)
+                    if _s_crs.is_geographic:
+                        lat = _s_tf.f + _s_tf.e * _s.height / 2
                         m = m * 111320.0 * math.cos(math.radians(lat))
                     else:
-                        src_transform = _s.transform
-                        src_epsg_code = _s.crs.to_epsg()
+                        src_transform = _s_tf
+                        src_epsg_code = _s_crs.to_epsg()
                         src_is_projected_m = src_epsg_code is not None
+                        # Conformal projections other than UTM (Web Mercator
+                        # above all) have a scale factor far from 1: the
+                        # transform's pixel size is map units, not ground
+                        # metres. Only corrected for plain uploads -- the
+                        # showcase GT-footprint builds keep their original
+                        # map-unit behaviour (their context imagery, viewer
+                        # coordinate readout and published numbers assume it);
+                        # opt-in via fix_projection_scale=True.
+                        try:
+                            from pyproj import Proj as _Proj, Transformer as _Tr
+                            _cx = _s_tf.c + _s_tf.a * _raw.shape[2] / 2
+                            _cy = _s_tf.f + _s_tf.e * _raw.shape[1] / 2
+                            _lo, _la = _Tr.from_crs(_s_crs.to_wkt(), "EPSG:4326",
+                                                    always_xy=True).transform(_cx, _cy)
+                            _k = float(_Proj(_s_crs.to_wkt()).get_factors(_lo, _la).meridional_scale)
+                        except Exception:
+                            _k = 1.0
+                        _fix = (fix_projection_scale if fix_projection_scale is not None
+                                else not _gt_grid_bound)
+                        if abs(_k - 1.0) > 0.01:
+                            if _fix:
+                                _crs_units_per_m = _k
+                                m = m / _k
+                                print(f"      projection scale factor {_k:.4f} at scene centre "
+                                      f"({_s_crs}): pixel size corrected to ground metres")
+                            else:
+                                print(f"      NOTE: projection scale factor {_k:.4f} ({_s_crs}) "
+                                      f"not corrected (GT-grid build keeps map-unit metres)")
                     native_gsd = m
-                    src_crs = str(_s.crs)
+                    src_crs = str(_s_crs)
                     print(f"      georeferenced input: {src_crs}, "
                           f"{native_gsd*100:.1f} cm/px measured from the file")
                     if gsd_m is None:
@@ -535,13 +840,13 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
                     # (sun elevation does not vary meaningfully across a few
                     # km), whether the CRS is geographic or projected.
                     try:
-                        cx = _s.transform.c + _s.transform.a * _s.width / 2
-                        cy = _s.transform.f + _s.transform.e * _s.height / 2
-                        if _s.crs.is_geographic:
+                        cx = _s_tf.c + _s_tf.a * _raw.shape[2] / 2
+                        cy = _s_tf.f + _s_tf.e * _raw.shape[1] / 2
+                        if _s_crs.is_geographic:
                             src_lon, src_lat = cx, cy
                         else:
                             from rasterio.warp import transform as _rwt
-                            _lon, _lat = _rwt(_s.crs, "EPSG:4326", [cx], [cy])
+                            _lon, _lat = _rwt(_s_crs, "EPSG:4326", [cx], [cy])
                             src_lon, src_lat = _lon[0], _lat[0]
                     except Exception:
                         src_lat = src_lon = None
@@ -559,15 +864,38 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
                                 _dtstr.strip(), "%Y:%m:%d %H:%M:%S")
                     except Exception:
                         capture_dt_utc = None
-                arr = np.transpose(_s.read([1, 2, 3]), (1, 2, 0))
-                if arr.dtype != np.uint8:
-                    arr = np.clip(arr, 0, 255).astype(np.uint8)
+                if _raw.dtype != np.uint8:
+                    # 16-bit / float imagery (e.g. 11-bit Cartosat/WorldView
+                    # DNs): clipping at 255 blows nearly every pixel to white.
+                    # Stretch each band over its own 2nd-98th percentile of
+                    # valid (non-zero) pixels instead.
+                    _out = np.zeros(_raw.shape, np.uint8)
+                    for _b in range(_raw.shape[0]):
+                        _band = _raw[_b].astype(np.float32)
+                        _v = _band[np.isfinite(_band) & (_band != 0)]
+                        if _v.size == 0:
+                            continue
+                        _lo, _hi = np.percentile(_v, [2, 98])
+                        _out[_b] = np.clip((_band - _lo) / max(_hi - _lo, 1e-6) * 255.0,
+                                           0, 255).astype(np.uint8)
+                    print(f"      {_raw.dtype} input stretched to 8-bit "
+                          f"(per-band 2-98th percentile)")
+                    _raw = _out
+                if _raw.shape[0] == 1:
+                    # Panchromatic: replicate to three channels.
+                    _raw = np.repeat(_raw, 3, axis=0)
+                arr = np.ascontiguousarray(np.transpose(_raw, (1, 2, 0)))
                 pil = Image.fromarray(arr)
         except Exception as e:
             print(f"      (not readable as GeoTIFF: {e}; falling back to PIL)")
             pil = Image.open(image_path).convert("RGB")
     else:
         pil = Image.open(image_path).convert("RGB")
+    # Pixel size the georeference (if any) currently describes; the transform
+    # is rescaled ONCE below to whatever grid auto-zoom/max_px leave, so every
+    # later consumer (Open Buildings warp, DEM grid, DSM/GeoJSON export, OSM
+    # structures) reads src_transform as the WORKING grid's affine.
+    _geo_w, _geo_h = pil.size
     # Auto-zoom: upsample toward the depth model's own training resolution
     # when the source is coarser than it. GAMUS/DFC2019, the real datasets
     # this project's checkpoint is tuned on, are 0.3 m/px; ISRO's own imagery
@@ -579,7 +907,11 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
     # beyond that a pixel is being invented, not recovered, and the model was
     # never shown ground that coarse to begin with.
     NATIVE_TRAIN_GSD_M = 0.3
-    if gsd_m is not None and gsd_m > NATIVE_TRAIN_GSD_M * 1.15:
+    # Skipped when max_px would immediately shrink the upsampled image back
+    # (upsample then downsample is a lossy round trip, not a gain), or when
+    # the caller turns it off.
+    _would_undo = gsd_m is not None and max(pil.size) * min(3.0, gsd_m / NATIVE_TRAIN_GSD_M) > max_px * 1.05
+    if auto_zoom and not _would_undo and gsd_m is not None and gsd_m > NATIVE_TRAIN_GSD_M * 1.15:
         _zoom = min(3.0, gsd_m / NATIVE_TRAIN_GSD_M)
         print(f"      auto-zoom: input is {gsd_m*100:.1f} cm/px against the "
               f"{NATIVE_TRAIN_GSD_M*100:.0f} cm the checkpoint is tuned at "
@@ -593,6 +925,9 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
         if gsd_m is not None:
             gsd_m = gsd_m / _sc     # fewer pixels over the same ground
         pil = pil.resize((int(pil.size[0] * _sc), int(pil.size[1] * _sc)), Image.LANCZOS)
+    if src_transform is not None and pil.size != (_geo_w, _geo_h):
+        from affine import Affine as _Aff
+        src_transform = src_transform * _Aff.scale(_geo_w / pil.size[0], _geo_h / pil.size[1])
     image_np = np.array(pil)
     H, W = image_np.shape[:2]
     print(f"[1/5] {os.path.basename(image_path)}  {W}x{H}")
@@ -635,10 +970,25 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
     # specific, silent way this whole fix exists to stop.
     key = (f"plainimg_{name}_{backbone_tag()}"
           + ("_metric" if _bb.is_metric else "")
-          + ("_fused" if multiscale_fusion else ""))
+          + ("_fused" if multiscale_fusion else "")
+          + ("_hires" if depth_image_path else ""))
     height = height_cache.load(key, "tiled", H) if H == W else None
     if height is None:
-        if multiscale_fusion:
+        if depth_image_path:
+            # Inference on a REAL higher-resolution image of the same bounds
+            # (e.g. zoom-19, ~0.3 m -- the checkpoint's training scale), then
+            # area-averaged onto the working grid. Measured on HITEC City at
+            # native 0.6 m: the metric head's scene p99 was 1.95 m and the
+            # pipeline rightly refused it; the model needs its native scale,
+            # and upsampling 0.6 m pixels does not supply real detail.
+            _hp = Image.open(depth_image_path).convert("RGB")
+            print(f"      depth inference on {_hp.size[0]}x{_hp.size[1]} real imagery "
+                  f"(same bounds), resampled to the {W}x{H} working grid")
+            _hh = _bb.predict_tiled(_hp, raw_metric=_bb.is_metric)
+            del _hp
+            height = cv2.resize(_hh.astype(np.float32), (W, H), interpolation=cv2.INTER_AREA)
+            del _hh
+        elif multiscale_fusion:
             height = _bb.predict_fused(pil, raw_metric=_bb.is_metric)
         else:
             height = _bb.predict_tiled(pil, raw_metric=_bb.is_metric)
@@ -858,11 +1208,20 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
     # projected (metric) CRS: without a real UTM origin there is no grid to
     # sample the DEM onto, and reprojecting a bare JPEG's assumed geometry
     # would anchor a datum to coordinates that were never real.
+    def _sample_dem():
+        # The working grid exactly: origin + per-axis pixel size in the
+        # source CRS's own units, rows x cols (non-square scenes included).
+        return dem_mod.sample_grid(
+            src_transform.c, src_transform.f, ground.shape[0], abs(src_transform.a),
+            f"EPSG:{src_epsg_code}", dem_path=dem_path, dem_source=dem_source,
+            width_px=ground.shape[1], gsd_y_m=abs(src_transform.e))
+
     dem_info = None
+    d = None
+    _datum_fit = None
+    _terrain_datum = None
     if (use_dem or dem_path) and src_is_projected_m:
-        d = dem_mod.sample_grid(
-            src_transform.c, src_transform.f, ground.shape[0], gsd,
-            f"EPSG:{src_epsg_code}", dem_path=dem_path, dem_source=dem_source)
+        d = _sample_dem()
         if d["dem"] is None:
             print(f"      Tier A not usable ({d.get('error')}) -- staying on tier {tier[0]}")
         else:
@@ -882,6 +1241,7 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
             # believes the bare earth to be -- and is what the offset belongs
             # to. The offset is still APPLIED to all three surfaces below.
             fit = dem_mod.fit_offset(terrain, d["dem"], gmask)
+            _datum_fit = fit if fit.get("offset_m") is not None else None
             if fit["offset_m"] is None or not fit.get("spread_ok", False):
                 print(f"      Tier A refused ({fit.get('reason', 'spread too wide')}) "
                       f"-- staying on tier {tier[0]}")
@@ -906,6 +1266,46 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
                      "reason": "source is not a GeoTIFF with a projected metric CRS "
                                "-- no UTM grid to anchor a DEM onto"}
         print(f"      Tier A not attempted: {dem_info['reason']}")
+
+    if terrain_from_dem and (use_dem or dem_path) and src_is_projected_m:
+        # Landscape mode: the terrain IS the DEM. The monocular depth field
+        # has no bare-earth signal under a closed canopy. Copernicus GLO-30 is
+        # an X-band SURFACE model -- over dense forest its phase centre sits
+        # partway into the canopy (~0.4-0.7 of its height in tropical forest
+        # studies) -- so it is corrected by that fraction of the real canopy
+        # height, smoothed to the DEM's own ~30 m scale, before the canopy is
+        # added back on top. An approximation of bare earth, disclosed as such.
+        _d = d if (d is not None and d.get("dem") is not None) else \
+            _sample_dem()
+        if _d.get("dem") is not None:
+            _dem = _d["dem"].astype(np.float32)
+            if _dem.shape != ground.shape:
+                _dem = cv2.resize(_dem, (ground.shape[1], ground.shape[0]),
+                                  interpolation=cv2.INTER_LINEAR)
+            _pen = 0.0
+            if canopy_height_map is not None:
+                _cr = cv2.resize(canopy_height_map.astype(np.float32),
+                                 (ground.shape[1], ground.shape[0]), interpolation=cv2.INTER_LINEAR)
+                _dem = _dem - dem_canopy_penetration * cv2.GaussianBlur(
+                    _cr, (0, 0), sigmaX=max(1.0, 60.0 / gsd))
+                _pen = dem_canopy_penetration
+            _dem = cv2.GaussianBlur(_dem, (0, 0), sigmaX=max(1.0, 12.0 / gsd))
+            # The scene is built with its low point at ~0 (viewer convenience);
+            # the removed datum is added back on DSM export -- elevation, EGM2008.
+            _terrain_datum = float(np.percentile(_dem, 1))
+            _dem = _dem - _terrain_datum
+            ground = _dem
+            terrain = _dem.copy()
+            dsm = _dem.copy()
+            tier = ("A (terrain: Copernicus GLO-30, canopy-corrected x"
+                    f"{_pen:.1f}; canopy: real canopy-height map)")
+            dem_info = {"attempted": True, "accepted": True, "source": _d.get("source"),
+                        "mode": "terrain_from_dem", "canopy_penetration_correction": _pen,
+                        "relief_m": round(float(np.percentile(_dem, 99) - np.percentile(_dem, 1)), 1)}
+            print(f"      terrain from DEM ({_d.get('source')}), canopy-penetration "
+                  f"correction x{_pen:.1f}; relief {dem_info['relief_m']} m")
+        else:
+            print(f"      terrain_from_dem: DEM unavailable ({_d.get('error')})")
 
     ndsm = np.maximum(dsm - ground, 0.0)
 
@@ -1014,21 +1414,109 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
         for _i, _rec in enumerate(_records):
             if _rec.get("height_provenance") != "measured" or _i >= len(footprints):
                 continue
-            _poly_px = np.asarray(footprints[_i], np.int32)
-            _fp_mask = np.zeros(dsm.shape[:2], np.uint8)
-            cv2.fillPoly(_fp_mask, [_poly_px], 1)
-            _fp_mask = _fp_mask.astype(bool)
-            if not _fp_mask.any():
+            _crop = _poly_crop_mask(footprints[_i], *dsm.shape[:2])
+            if _crop is None or not _crop[1].any():
                 continue
-            _local_ground = float(np.median(ground[_fp_mask]))
-            dsm[_fp_mask] = _local_ground + _rec["height"]
+            _win, _fp_mask = _crop
+            _local_ground = float(np.median(ground[_win][_fp_mask]))
+            dsm[_win][_fp_mask] = _local_ground + _rec["height"]
             if roof_dsm is not None:
-                roof_dsm[_fp_mask] = _local_ground + _rec["height"]
+                roof_dsm[_win][_fp_mask] = _local_ground + _rec["height"]
             _n_burned += 1
         if _n_burned:
             ndsm = np.maximum(dsm - ground, 0.0)
             print(f"      {_n_burned} real measured height(s) burned into the surface "
                   f"model -- these now drive the actual geometry, not just the report")
+
+        # Real Open Buildings heights for whichever footprints did NOT already
+        # get a real measured height above. A GT-polygon source can carry real
+        # SHAPES with no height attribute at all (e.g. Microsoft Global ML
+        # Building Footprints -- India ships height=-1 sentinels for every
+        # record), which previously meant this branch never called
+        # fuse_open_buildings_heights at all -- only the fully-automated
+        # discovery branch did. Restricted to the unmeasured subset so a real
+        # municipal measurement from above is never overwritten by a coarser
+        # public-dataset estimate.
+        _measured_idx = {
+            _i for _i, _rec in enumerate(_records)
+            if _rec.get("height_provenance") == "measured"
+        }
+        _unmeasured_fp = [fp for _i, fp in enumerate(footprints) if _i not in _measured_idx]
+        if _unmeasured_fp:
+            _pre_rel = (dsm - ground).astype(np.float32)
+            _n_ob_fused2 = fuse_open_buildings_heights(
+                dsm, ground, _unmeasured_fp, src_transform, src_crs,
+                info=_ob_info)
+            if roof_dsm is not None and _n_ob_fused2:
+                fuse_open_buildings_heights(roof_dsm, ground, _unmeasured_fp,
+                                            src_transform, src_crs)
+            if _n_ob_fused2:
+                ndsm = np.maximum(dsm - ground, 0.0)
+                print(f"      {_n_ob_fused2} real Open Buildings height(s) fused "
+                      f"into the surface model (remaining unmeasured GT footprints)")
+                # SCALE CALIBRATION FROM REAL REFERENCE HEIGHTS. Every fused
+                # footprint is a ground-control height: its real height against
+                # the depth field's own (relative) reading there. A robust fit
+                # of that ratio converts the relative field to metres for every
+                # building WITHOUT a real height -- the "minimal ground control"
+                # calibration, with thousands of controls instead of a handful.
+                _cal_ob = calibrate_to_reference_heights(
+                    dsm, ground, _pre_rel, _unmeasured_fp, roof_dsm=roof_dsm,
+                    relative=not tier.startswith("B (metric depth model"))
+                if _cal_ob is not None:
+                    _ob_info["calibration"] = _cal_ob
+                if _cal_ob is not None and _cal_ob["applied"]:
+                    ndsm = np.maximum(dsm - ground, 0.0)
+                    if tier[0] == "C":
+                        tier = (f"B (relative depth calibrated to {_cal_ob['n_controls']} real "
+                                f"building heights)")
+            elif require_open_buildings:
+                # Refuse rather than stage a scene whose heights silently fell
+                # back to an assumption (e.g. a network outage mid-build).
+                raise SystemExit("require_open_buildings: no real Open Buildings heights "
+                                 "could be fused -- refusing to build/stage")
+
+        if supplement_discovery:
+            # A GT footprint layer is a real source, but not necessarily an
+            # EXHAUSTIVE one -- measured directly on HITEC City, Hyderabad:
+            # Microsoft Global ML Building Footprints supplied 281 real
+            # polygons for a scene where independent image-region discovery
+            # (the same watershed extractor the fully-automated branch uses)
+            # finds 472 candidate shapes from the same real pixels. Run that
+            # same discovery here and add only the regions that land on NO
+            # existing GT footprint, so real GT shapes are never replaced or
+            # duplicated by a coarser discovered one -- this only fills gaps.
+            _drres = region_footprints.extract(
+                image_np, ndsm, gsd, seg_labels=seg_labels,
+                min_area_m2=6.0, min_height_m=1.5)
+            _discovered, _sthr = region_footprints.drop_low_regions(
+                _drres["polygons"], ndsm)
+            _gt_mask_all = np.zeros(dsm.shape[:2], np.uint8)
+            for _fp in footprints:
+                cv2.fillPoly(_gt_mask_all, [np.asarray(_fp, np.int32)], 1)
+            _gt_mask_all = _gt_mask_all.astype(bool)
+            _added_fps = []
+            for _d in _discovered:
+                _crop = _poly_crop_mask(_d, *dsm.shape[:2])
+                if _crop is None or not _crop[1].any():
+                    continue
+                _win, _dm = _crop
+                _overlap = (_gt_mask_all[_win] & _dm).sum() / _dm.sum()
+                if _overlap < 0.1:
+                    _added_fps.append(_d)
+            print(f"      supplemental discovery: {len(_discovered)} candidate region(s) "
+                  f"examined, {len(_added_fps)} added (no existing GT footprint there)")
+            if _added_fps:
+                footprints = footprints + _added_fps
+                _n_ob_fused3 = fuse_open_buildings_heights(
+                    dsm, ground, _added_fps, src_transform, src_crs)
+                if roof_dsm is not None and _n_ob_fused3:
+                    fuse_open_buildings_heights(roof_dsm, ground, _added_fps,
+                                                src_transform, src_crs)
+                ndsm = np.maximum(dsm - ground, 0.0)
+                if _n_ob_fused3:
+                    print(f"      {_n_ob_fused3} real Open Buildings height(s) fused "
+                          f"into the supplemental footprints")
     elif gt_building_mask is not None:
         # Existence and shape are already decided by the annotator -- see
         # extract_from_mask's docstring for why the height/size gates below
@@ -1072,6 +1560,7 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
         # (src_transform/src_crs), which this branch is not guaranteed to
         # have (a plain PNG has neither). Genuinely no-op, not a silent
         # skip, when neither exists.
+        _pre_rel_up = (dsm - ground).astype(np.float32)
         _n_ob_fused = fuse_open_buildings_heights(
             dsm, ground, footprints, src_transform, src_crs)
         if roof_dsm is not None and _n_ob_fused:
@@ -1093,6 +1582,19 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
             ndsm = np.maximum(dsm - ground, 0.0)
             print(f"      {_n_ob_fused} real Open Buildings height(s) fused "
                   f"into the surface model")
+            # Same reference-height calibration as the GT-footprint branch:
+            # every fused footprint is a ground control for the buildings
+            # Open Buildings does not cover.
+            _cal_ob = calibrate_to_reference_heights(
+                dsm, ground, _pre_rel_up, footprints, roof_dsm=roof_dsm,
+                relative=not tier.startswith("B (metric depth model"))
+            if _cal_ob is not None:
+                _ob_info["calibration"] = _cal_ob
+            if _cal_ob is not None and _cal_ob["applied"]:
+                ndsm = np.maximum(dsm - ground, 0.0)
+                if tier[0] == "C":
+                    tier = (f"B (relative depth calibrated to {_cal_ob['n_controls']} real "
+                            f"building heights)")
 
     # Provenance now tracks the tier actually reached: a height is MEASURED
     # only on B/A, where a physical shadow or DEM calibration produced the
@@ -1104,16 +1606,20 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
     # Build, localise defects, repair the offenders, re-check. The loop is
     # bounded: each pass must strictly reduce the defect count or the strategy
     # escalates, and the last strategy removes the building, so it terminates.
-    _gsmall_pre, _ = mg._resize_for_mesh(ground, seg_labels, GROUND_GRID)
+    _gsmall_pre, _ = mg._resize_for_mesh(ground, seg_labels, ground_grid)
     _cell_pre = gsd * (ground.shape[0] / _gsmall_pre.shape[0])
     # Roof colours are sampled from the WHITE-BALANCED image, not the raw one.
     # Correcting the ground texture alone would leave every roof carrying the
     # atmospheric blue cast while the terrain under it reads neutral -- the two
     # would not look like the same scene.
-    _balanced = image_grade.white_balance(image_np)
+    # Same graded image the ground/roof texture is written from, so a wall's
+    # sampled colour matches the textured roof above it.
+    _balanced = image_grade.grade(image_np)
+    _al = _ob_info.get("alignment")
     _rep = mesh_repair.repair_build(
         footprints, dsm, ground, gsd, image_np=_balanced, min_height_m=1.5,
-        ground_small=_gsmall_pre, cell_m=_cell_pre, roof_dsm=roof_dsm)
+        ground_small=_gsmall_pre, cell_m=_cell_pre, roof_dsm=roof_dsm,
+        lean_px_per_m=_al["lean_px_per_m"] if _al else None)
     bverts, bfaces, binfo = _rep["verts"], _rep["faces"], _rep["binfo"]
     footprints = _rep["footprints"]
     _rr = _rep["report"]
@@ -1130,6 +1636,47 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
           f"{np.median(heights):.1f}  max {heights.max():.1f} "
           f"({'m' if (anchor_height_m or depth_is_metric or not tier.startswith('C')) else 'relative units'})")
 
+    # Sun from the photo's own shadows, now that per-building heights and the
+    # lean are known: lights the render the way the image was actually lit,
+    # so rendered shadows fall where the photographed ones already are.
+    _sun_fit = None
+    # Gated on a real height alignment (Open Buildings heights in metres), not
+    # on the depth tier: the tall buildings that constrain the fit carry
+    # fused real heights even when the depth field itself is only relative.
+    if _al and binfo["buildings"]:
+        import sun_from_shadows
+        _polys = [footprints[r["poly_index"]] for r in binfo["buildings"]
+                  if r["poly_index"] < len(footprints)]
+        _hs = [r["height_m"] for r in binfo["buildings"] if r["poly_index"] < len(footprints)]
+        _eph = None
+        if capture_date and src_lat is not None:
+            import datetime as _dtm
+            _eph = (src_lat, src_lon, _dtm.date.fromisoformat(capture_date))
+        _sun_fit = sun_from_shadows.fit_sun(image_np, _polys, _hs,
+                                            _al["lean_px_per_m"], gsd, ephemeris=_eph)
+        if _sun_fit:
+            print(f"      sun from shadows of {_sun_fit['n']} buildings with known heights: "
+                  f"azimuth {_sun_fit['azimuth_deg']:.0f} deg, elevation "
+                  f"{_sun_fit['elevation_deg']:.0f} deg (contrast x{_sun_fit['contrast']})"
+                  + (f", pass {_sun_fit['capture_time_utc']} UTC" if _sun_fit.get('capture_time_utc') else ""))
+        else:
+            print("      sun from shadows: not constrained enough -- left unset")
+
+    if _sun_fit is None and capture_utc and src_lat is not None:
+        # No buildings to fit shadows to (e.g. a forest): real capture DATE
+        # from the imagery's metadata plus an ASSUMED pass time, through the
+        # solar ephemeris. Disclosed as assumed in the scene notes.
+        import datetime as _dtm
+        from shadow_correction import sun_position as _sp
+        _t = _dtm.datetime.fromisoformat(capture_utc)
+        _el, _az = _sp(src_lat, src_lon, _t)
+        _sun_fit = {"azimuth_deg": float(_az), "elevation_deg": float(_el), "n": 0,
+                    "contrast": None, "capture_time_utc": _t.strftime("%Y-%m-%d %H:%M"),
+                    "assumed_time": True}
+        print(f"      sun from ephemeris at {capture_utc} UTC (date from imagery metadata, "
+              f"pass time assumed): azimuth {_az:.0f} deg, elevation {_el:.0f} deg")
+
+    normal_surface = None
     if canopy_height_map is not None:
         # Real per-pixel vegetation height (Meta HighResCanopyHeight / CHMv2,
         # DINOv2 backbone, US-LiDAR-trained) replaces the scene's own noisy
@@ -1145,11 +1692,17 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
             _chm = cv2.resize(_chm.astype(np.float32), (dsm.shape[1], dsm.shape[0]),
                                interpolation=cv2.INTER_LINEAR)
         _veg = seg_labels == seg.CLASS_IDX["vegetation"]
+        if canopy_mask_from_chm:
+            # A validated canopy-height PRODUCT already says where trees are
+            # (0 over water, grass and bare ground); colour segmentation
+            # misses shaded canopy, which would punch holes in a forest.
+            _veg = _chm > 1.0
         dsm[_veg] = ground[_veg] + np.maximum(_chm[_veg], 0.0)
         ndsm = np.maximum(dsm - ground, 0.0)
         if continuous_vegetation:
-            # TESTED AND NOT RECOMMENDED, kept opt-in for the record rather
-            # than deleted. The idea: fold vegetation into the ground mesh's
+            # Opt-in. The first versions of this looked wrong (history below);
+            # the height-banded smoothing further down is what fixed it, and
+            # it is now the preferred look. The idea: fold vegetation into the ground mesh's
             # own displacement instead of separate tree objects, since only
             # buildings have real vertical walls to smear into a ramp under
             # continuous displacement. Real per-pixel CHM drives the bump,
@@ -1202,28 +1755,46 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
             _bump_full[_veg] = np.maximum(_veg_vals, 0.0)
             _bump_smooth = np.zeros(ground.shape, np.float32)
             _lo = 0.0
+            if canopy_blur_m:
+                # Closed canopy (a forest): one continuous surface already;
+                # the per-band max below leaves steps at band boundaries there.
+                _bump_smooth = cv2.GaussianBlur(_bump_full, (0, 0),
+                                                sigmaX=max(0.5, canopy_blur_m / max(gsd, 1e-6)))
+                _bands_m = []
             for _hi in _bands_m:
                 _band_mask = _veg & (_chm >= _lo) & (_chm < _hi)
                 if not _band_mask.any():
                     _lo = _hi
                     continue
                 _band_h = float(np.median(_chm[_band_mask]))
-                _radius_m = max(1.0, _band_h * 0.32)
+                _radius_m = max(1.0, _band_h * crown_radius_ratio)
                 _sigma_px = max(1.0, _radius_m / max(gsd, 1e-6))
                 _band_full = np.where(_band_mask, _bump_full, 0.0).astype(np.float32)
                 _band_smooth = cv2.GaussianBlur(_band_full, (0, 0), sigmaX=_sigma_px)
                 _bump_smooth = np.maximum(_bump_smooth, _band_smooth)
                 _lo = _hi
-            _building_mask = seg_labels == seg.CLASS_IDX["building"]
-            ground_display = ground.copy()
-            # Buildings excluded from receiving the bump -- a blurred crown
-            # spilling onto a building's own footprint would visually fuse a
-            # nearby tree into the roof it stands beside. Buildings are
-            # still discrete prisms drawn on top regardless, so this is
-            # about keeping the terrain UNDER them flat, not about their
-            # own geometry.
-            ground_display[~_building_mask] = (
-                ground[~_building_mask] + _bump_smooth[~_building_mask])
+            # Keep the terrain flat only under the prisms actually built, with
+            # a soft ~1 m falloff. Excluding the SEGMENTATION building class
+            # instead left hard cliffs wherever segmentation said "building"
+            # but no prism exists to hide the step (measured visually on
+            # HITEC City: straight-edged walls cutting through groves).
+            _prism_mask = np.zeros(ground.shape, np.uint8)
+            for _fp in footprints:
+                cv2.fillPoly(_prism_mask, [np.asarray(_fp, np.int32)], 1)
+            _feather_px = max(1.0, 1.0 / max(gsd, 1e-6))
+            _keep = 1.0 - np.clip(cv2.GaussianBlur(
+                _prism_mask.astype(np.float32), (0, 0), sigmaX=_feather_px) * 2.0, 0.0, 1.0)
+            _keep[_prism_mask > 0] = 0.0
+            ground_display = ground + _bump_smooth * _keep
+            # Leaf-clump scale detail for the NORMAL MAP only: the mesh stays
+            # on the smoothed crown surface, but per-texel lighting follows the
+            # real CHM at ~0.6 m, so crowns shade as clumped foliage rather
+            # than a melted blob.
+            _detail = cv2.GaussianBlur(np.where(_veg, np.maximum(_chm, 0.0), 0.0)
+                                       .astype(np.float32), (0, 0),
+                                       sigmaX=max(1.0, 0.6 / max(gsd, 1e-6)))
+            normal_surface = np.maximum(ground_display,
+                                        ground + 0.5 * (_bump_smooth + _detail) * _keep)
             cverts, cfaces, n_canopy = np.zeros((0, 3), np.float32), np.zeros((0, 3), np.int64), 0
             _veg_h_med = float(np.nanmedian(_veg_vals)) if _veg_vals.size else 0.0
             print(f"      vegetation folded into the continuous ground mesh, "
@@ -1255,10 +1826,21 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
         ground_display = ground
         cverts, cfaces, n_canopy = city_model.build_canopy(
             seg_labels, dsm, ground, gsd, gsd, min_area_px=120)
-    wverts, wfaces, n_water = city_model.build_water(seg_labels, ground, gsd, gsd)
-    vverts, vfaces, n_veh = city_model.detect_vehicles(image_np, seg_labels, ground, gsd)
+    if terrain_from_dem:
+        # Landscape mode: water lies in the DEM terrain itself (textured, and
+        # near-mirror via the roughness map); the separate segmentation-driven
+        # water mesh came out blocky and off the real shoreline there.
+        wverts, wfaces, n_water = np.zeros((0, 3), np.float32), np.zeros((0, 3), np.int64), 0
+    else:
+        wverts, wfaces, n_water = city_model.build_water(seg_labels, ground, gsd, gsd)
+    if terrain_from_dem:
+        # Landscape mode: the vehicle detector fires on canopy texture in a
+        # forest (thousands of phantom "cars"), so it is not run there.
+        vverts, vfaces, n_veh = np.zeros((0, 3), np.float32), np.zeros((0, 3), np.int64), 0
+    else:
+        vverts, vfaces, n_veh = city_model.detect_vehicles(image_np, seg_labels, ground, gsd)
 
-    gsmall, _ = mg._resize_for_mesh(ground_display, seg_labels, GROUND_GRID)
+    gsmall, _ = mg._resize_for_mesh(ground_display, seg_labels, ground_grid)
     gscale = ground_display.shape[0] / gsmall.shape[0]
     gverts, guvs, gfaces = mg.build_ground_mesh(gsmall, gsd * gscale, gsd * gscale)
 
@@ -1298,11 +1880,17 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
                     interpolation=cv2.INTER_NEAREST).astype(bool)
         else:
             _audit_truth = seg_labels == seg.CLASS_IDX["building"]
-        _audit = model_audit.audit(
-            footprints, binfo, image_np, ndsm,
-            _audit_truth,
-            sun_azimuth_deg=sun_az)
-        print(model_audit.report(_audit))
+        if not binfo["buildings"] and not _audit_truth.any():
+            # Nothing to audit (a landscape with no buildings): report that,
+            # rather than scoring an empty model as a failed one.
+            _audit = {"verdict": "N/A", "note": "no buildings in scene -- building audit not applicable"}
+            print("      model-vs-image audit: not applicable (no buildings in scene)")
+        else:
+            _audit = model_audit.audit(
+                footprints, binfo, image_np, ndsm,
+                _audit_truth,
+                sun_azimuth_deg=sun_az)
+            print(model_audit.report(_audit))
     except Exception as _e:
         _audit = {"error": str(_e)}
         print(f"      model-vs-image audit failed: {_e}")
@@ -1328,6 +1916,74 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
     # 30.7 to 49.9 -- a grey-blue monochrome scene. See image_grade.py.
     graded = image_grade.grade(image_np)
     Image.fromarray(graded).save(stem + "_texture.png")
+
+    # SLOPE + HEIGHT HEATMAP layers (the viewer's SLOPE / HEATMAP buttons),
+    # same files/meta build_city.py writes. Slope is metric, on the bare-earth
+    # surface (`ground`; in landscape mode that IS the DEM terrain).
+    slope_stats = None
+    try:
+        import terrain_analysis as _terra
+        _slope = _terra.slope_degrees(ground, gsd)
+        slope_stats = _terra.slope_stats(_slope)
+        Image.fromarray(_terra.colourise_slope(_slope)).save(stem + "_slope.png")
+        print(f"      slope: median {slope_stats['median_deg']}deg, "
+              f"{slope_stats['frac_flat']*100:.0f}% flat, "
+              f"{slope_stats['frac_steep']*100:.0f}% steep (>15deg)")
+    except Exception as _e:
+        print(f"      slope layer failed: {_e}")
+    try:
+        mg._save_heatmap_texture(dsm, stem + "_heatmap.png")
+    except Exception as _e:
+        print(f"      heatmap layer failed: {_e}")
+
+    if pbr_maps:
+        # Baked at full texture resolution from the same surface the ground
+        # mesh displaces (vegetation bumps included), so per-texel shading
+        # resolves crown shape far below the mesh's vertex spacing. Normal
+        # strength 1.0: the relief here is real metres, not exaggerated.
+        import terrain_maps as _tm
+        mg._save_normal_map(normal_surface if normal_surface is not None else ground_display,
+                            gsd, gsd, stem + "_normal.png", strength=1.0)
+        # Physical (unstretched) sky-view factor with a light curvature term:
+        # the stretched default maps this mostly-open scene's small occluded
+        # tail to near-black, which painted every tree clump as an ink blot.
+        _ao_surf = ground_display.copy()
+        _pm = np.zeros(ground_display.shape, np.uint8)
+        for _fp in footprints:
+            cv2.fillPoly(_pm, [np.asarray(_fp, np.int32)], 1)
+        _ao_surf[_pm > 0] = dsm[_pm > 0]
+        _pbr = _tm.bake_terrain_maps(_ao_surf, seg_labels, gsd,
+                                     ao_path=stem + "_ao.png",
+                                     roughness_path=stem + "_roughness.png",
+                                     quality="high", stretch=False,
+                                     curvature_weight=0.2)
+        print(f"      PBR maps baked: normal + AO (svf mean "
+              f"{_pbr['svf_mean_physical']:.3f}) + roughness")
+
+    _tex_display = None
+    if display_texture_path:
+        # A higher-resolution REAL image of exactly the same bounds (e.g. the
+        # zoom-19 tiles of the same Web Mercator grid): same grade as the
+        # working texture, used only for rendering -- all measurements keep
+        # the working image.
+        _hi = np.array(Image.open(display_texture_path).convert("RGB"))
+        Image.fromarray(image_grade.grade(_hi)).save(stem + "_texture_display.jpg", quality=92)
+        _tex_display = {"method": f"native higher-resolution imagery "
+                                  f"({_hi.shape[1]}x{_hi.shape[0]}, same bounds)",
+                        "scale": 1, "measurements_use": "working-resolution pixels"}
+        print(f"      display texture: real {_hi.shape[1]}x{_hi.shape[0]} imagery, same bounds")
+    elif sr_texture:
+        # Display-only: synthesised detail for close-range rendering. The GLB,
+        # footprints, colours and audit all keep the original pixels.
+        import sys as _sys
+        _sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "tools"))
+        import sr_texture as _sr
+        _t_sr = time.time()
+        Image.fromarray(_sr.upscale(graded)).save(stem + "_texture_display.jpg", quality=92)
+        _tex_display = {"method": "Real-ESRGAN x2plus (display only)", "scale": 2,
+                        "measurements_use": "original pixels"}
+        print(f"      display texture super-resolved x2 (Real-ESRGAN) in "
+              f"{time.time() - _t_sr:.0f}s -- display only")
     import io
     tex = io.BytesIO(); Image.fromarray(graded).save(tex, format="PNG")
 
@@ -1339,6 +1995,55 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
                    ("water", wverts, wfaces, (0.18, 0.37, 0.53, 1.0)),
                    ("vehicles", vverts, vfaces, (0.65, 0.70, 0.75, 1.0)),
                ])
+
+    _structs = None
+    if osm_structures and src_transform is not None and src_crs:
+        # Flyovers, metro viaducts, skywalks: real OSM centrelines, deck
+        # heights measured from this scene's own surface (see osm_structures).
+        import osm_structures as _osm
+        from glb_export import export_meshes_glb
+        # src_transform already describes the working grid (rescaled at load).
+        _fw, _fh = W, H
+        _sx = _sy = 1.0
+        _inv = ~src_transform
+        _to_src = Transformer.from_crs("EPSG:4326", src_crs, always_xy=True)
+        _to_ll = Transformer.from_crs(src_crs, "EPSG:4326", always_xy=True)
+
+        def _ll2px(lon, lat):
+            X, Y = _to_src.transform(lon, lat)
+            c, r = _inv * (X, Y)
+            return c * _sx, r * _sy
+        _b = [src_transform * p for p in [(0, 0), (_fw, _fh)]]
+        (_lo0, _la1), (_lo1, _la0) = [_to_ll.transform(*p) for p in _b]
+        try:
+            _ways = _osm.fetch_bridges(_lo0, _la0, _lo1, _la1, cache_path=stem + "_osm_bridges.json")
+            _occ = np.zeros(dsm.shape[:2], np.uint8)
+            for _fp in footprints:
+                cv2.fillPoly(_occ, [np.asarray(_fp, np.int32)], 1)
+            _st = _osm.build_structures(
+                _ways, _ll2px, dsm, ground, gsd, graded,
+                sun_az=_sun_fit["azimuth_deg"] if _sun_fit else None,
+                sun_el=_sun_fit["elevation_deg"] if _sun_fit else None,
+                lean_px_per_m=_al["lean_px_per_m"] if _al else None, occupied=_occ)
+            dv_, dn_, duv_, df_ = _st["deck"]
+            bv_, bn_, bc_, bf_ = _st["body"]
+            export_meshes_glb(stem + "_structures.glb",
+                              [("struct_deck", dv_, dn_, "TEXCOORD_0", duv_, df_),
+                               ("struct_body", bv_, bn_, "COLOR_0", bc_, bf_)])
+            _structs = dict(_st["report"], file="structures.glb",
+                            source="OpenStreetMap bridge/viaduct ways (geometry, lanes); deck "
+                                   "heights measured from each deck's own shadow under the "
+                                   "fitted sun where constrained, else class-typical; piers "
+                                   "inferred at class-typical spans")
+            r_ = _st["report"]
+            print(f"      elevated structures: {r_['structures']} ({r_['by_class']}), "
+                  f"{r_['length_m']:.0f} m of deck; height from own shadow on "
+                  f"{r_.get('height_shadow', 0)} ({r_.get('segments_shadow_measured', 0)}/"
+                  f"{r_.get('segments_total', 0)} segments measured), from surface on "
+                  f"{r_['height_measured']}, class-typical on {r_['height_default']}; "
+                  f"{r_['piers']} piers (inferred spacing)")
+        except Exception as _e:
+            print(f"      elevated structures skipped: {_e}")
     # SPEC-LITERAL OUTPUT NAMING: rDSM vs DSM.
     #
     # The problem statement distinguishes a RELATIVE surface (rDSM) from an
@@ -1355,18 +2060,48 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
     # scene built with --anchor-height still has an ASSUMED vertical scale if
     # Tier B was attempted and refused, and must not be tagged as metric.
     _metric = (src_crs is not None) and (tier[0] in ("A", "B"))
-    _suffix = "_DSM.tif" if _metric else "_rDSM.tif"
+    # A DSM (as opposed to an rDSM) must hold ABSOLUTE elevation: a metric
+    # vertical scale alone is not enough if no external datum was reached
+    # (DEM fetch failed / refused, no terrain_from_dem) -- that surface is
+    # height above local ground, i.e. relative to an arbitrary zero.
+    _abs_datum = _metric and (tier[0] == "A" or _terrain_datum is not None
+                              or _datum_fit is not None)
+    _suffix = "_DSM.tif" if _abs_datum else "_rDSM.tif"
+    # Absolute elevation for the exported DSM: Tier A already carries the DEM
+    # datum; otherwise a georeferenced metric scene takes the DEM's median
+    # offset over bare ground as its DATUM (shape agreement not required for
+    # a datum), so the file holds elevation, not height above local ground.
+    _dsm_out, _datum = dsm, ("DEM-anchored (Tier A)" if tier[0] == "A" else "local ground = 0")
+    if _metric and _terrain_datum is not None:
+        _dsm_out = dsm + _terrain_datum
+        _datum = "Copernicus GLO-30 (EGM2008 geoid), terrain_from_dem"
+    elif _metric and tier[0] != "A" and _datum_fit is not None:
+        _dsm_out = dsm + float(_datum_fit["offset_m"])
+        _datum = (f"Copernicus/SRTM median offset {_datum_fit['offset_m']:+.2f} m over "
+                  f"{_datum_fit.get('n', 0)} bare-ground px (datum only)")
+    # The working grid's exact affine. src_transform was rescaled to the
+    # working grid at load, so it is used as-is. The HORIZONTAL georeference
+    # is real whenever the source had one, so it is written for an rDSM too;
+    # only the vertical is relative there. A CRS without a geotransform is a
+    # file no GIS can place, which is what this used to write.
+    _georef = src_transform is not None and src_crs is not None \
+        and dsm.shape == (H, W)
+    _tf_out = src_transform if _georef else None
     try:
         _dx.export_dsm_geotiff_affine(
-            dsm, stem + _suffix,
-            transform=None, crs=src_crs if _metric else None,
+            _dsm_out, stem + _suffix,
+            transform=_tf_out, crs=src_crs if _georef else None,
             tags={"TIER": tier, "HEIGHT_IS_METRIC": str(_metric),
-                  "PRODUCT": "DSM" if _metric else "rDSM",
+                  "PRODUCT": "DSM" if _abs_datum else "rDSM",
+                  "VERTICAL_DATUM": (_datum if _abs_datum else
+                                     "local ground = 0 (no absolute datum reached)"
+                                     if _metric else "relative"),
                   "SOURCE": os.path.basename(image_path),
                   "PIPELINE": "DepthWizard"})
-        print(f"      {'DSM' if _metric else 'rDSM'} written: "
+        print(f"      {'DSM' if _abs_datum else 'rDSM'} written: "
               f"{os.path.basename(stem)}{_suffix}"
-              f"{'' if _metric else '  (relative heights, no CRS)'}")
+              f"{'' if _abs_datum else '  (no absolute datum)'}"
+              f"{'' if _georef else '  (no CRS)'}")
     except Exception as _e:
         print(f"      DSM export failed: {_e}")
 
@@ -1495,13 +2230,31 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
         "tier": tier,
         "scale_source": scale_source,
         "gsd_m": px_m,
-        "sun_azimuth_deg": round(sun_az, 1) if sun_az is not None else None,
-        "sun_elevation_deg": shadow_calib.get("elevation_deg"),
-        "sun_note": ("elevation from " + shadow_calib["elevation_source"]
+        "sun_azimuth_deg": (_sun_fit["azimuth_deg"] if _sun_fit else
+                            round(sun_az, 1) if sun_az is not None else None),
+        "sun_elevation_deg": (_sun_fit["elevation_deg"] if _sun_fit
+                              else shadow_calib.get("elevation_deg")),
+        "capture_time_utc": _sun_fit.get("capture_time_utc") if _sun_fit else None,
+        # Local MEAN solar hour of the pass (UTC + longitude/15), for the
+        # viewer's time-of-day slider to mark where the capture sits.
+        "capture_local_solar_hour": (
+            round((int(_sun_fit["capture_time_utc"][11:13]) + int(_sun_fit["capture_time_utc"][14:16]) / 60
+                   + src_lon / 15.0) % 24, 2)
+            if _sun_fit and _sun_fit.get("capture_time_utc") and src_lon is not None else None),
+        "sun_note": ("solar ephemeris at the capture date with an assumed pass time"
+                     if (_sun_fit and _sun_fit.get("assumed_time")) else
+                     f"fitted to the shadows of {_sun_fit['n']} buildings with known heights"
+                     + (f" (solar ephemeris, capture {_sun_fit['capture_time_utc']} UTC)"
+                        if _sun_fit.get("capture_time_utc") else "") if _sun_fit else
+                     "elevation from " + shadow_calib["elevation_source"]
                     if shadow_calib.get("elevation_source")
                     else "elevation not recoverable from a single image without a "
                          "known height or capture time+location"),
         "crs": src_crs,
+        # Source-CRS map units per ground metre at the scene centre (1 for
+        # UTM; ~1/cos(lat) for Web Mercator when the scale was corrected).
+        # World/mesh x/z are ground metres, so a map offset = world * this.
+        "crs_units_per_m": round(_crs_units_per_m, 6),
         # The affine transform (rasterio's 6-coefficient convention: a,b,c,
         # d,e,f, applied as easting = a*col + b*row + c, northing = d*col +
         # e*row + f) was already used above to place building footprints in
@@ -1514,6 +2267,7 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
             [src_transform.a, src_transform.b, src_transform.c,
              src_transform.d, src_transform.e, src_transform.f]
             if src_transform is not None else None),
+        "slope": slope_stats,
         "ground_truth": "NONE -- no LiDAR available for this image; no accuracy "
                         "figure can be quoted for this scene",
         "nadir_check": nad,
@@ -1538,6 +2292,16 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
         }),
         "discovery": disc["report"],
         "build_seconds": round(time.time() - t0, 1),
+        # World-space roof displacement per metre of height (x, z), measured
+        # from the image's own relief displacement. The viewer uses it to find
+        # each sensor-facing wall's real facade pixels in the texture.
+        "texture_display": _tex_display,
+        "lean_m_per_m": (None if not _ob_info.get("alignment") else [
+            _ob_info["alignment"]["lean_px_per_m"][0] * gsd,
+            -_ob_info["alignment"]["lean_px_per_m"][1] * gsd]),
+        # Reference-height (Open Buildings) scale calibration: applied, or
+        # skipped with the gate's reason (metric depth, see the helper).
+        "height_calibration": _ob_info.get("calibration"),
     }
     if return_arrays:
         assert not stage, "return_arrays=True requires stage=False (meta is not JSON-safe with an array in it)"
@@ -1555,12 +2319,80 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
     if stage:
         os.makedirs(VIEWER_DIR, exist_ok=True)
         for stale in ("terrain_ao.png", "terrain_normal.png", "terrain_roughness.png",
-                      "terrain_metalness.png", "terrain_heatmap.png"):
+                      "terrain_metalness.png", "terrain_heatmap.png", "terrain_slope.png"):
             p = os.path.join(VIEWER_DIR, stale)
             if os.path.exists(p):
                 os.remove(p)
+        for _suf, _dst in (("_slope.png", "terrain_slope.png"),
+                           ("_heatmap.png", "terrain_heatmap.png")):
+            if os.path.exists(stem + _suf):
+                shutil.copy2(stem + _suf, os.path.join(VIEWER_DIR, _dst))
         shutil.copy2(stem + ".glb", os.path.join(VIEWER_DIR, "terrain.glb"))
+        # The PNG texture is always staged (other tools read it); a display
+        # texture ships as JPEG -- photographic content, ~10x smaller -- and
+        # scene.json names it so the viewer loads that instead.
         shutil.copy2(stem + "_texture.png", os.path.join(VIEWER_DIR, "terrain_texture.png"))
+        _disp_dst = os.path.join(VIEWER_DIR, "terrain_texture_display.jpg")
+        if os.path.exists(_disp_dst):
+            os.remove(_disp_dst)
+        if _tex_display:
+            shutil.copy2(stem + "_texture_display.jpg", _disp_dst)
+            meta["texture_file"] = "terrain_texture_display.jpg"
+        _ctx_dst = os.path.join(VIEWER_DIR, "terrain_context.jpg")
+        if os.path.exists(_ctx_dst):
+            os.remove(_ctx_dst)
+        if context_image and src_transform is not None:
+            # REAL surrounding imagery (flat, not modelled), placed by its true
+            # map coordinates. World x/z are metres from this tile's top-left
+            # corner in the source CRS (x east, z = northing - top).
+            _cm = json.load(open(context_image + ".json"))
+            _ctx = np.array(Image.open(context_image + ".png").convert("RGB"))
+            Image.fromarray(image_grade.grade(_ctx)).save(_ctx_dst, quality=90)
+            _ox, _oy = src_transform.c, src_transform.f
+            _k = _crs_units_per_m   # source-CRS offsets -> ground metres
+            meta["context"] = {
+                "x0": (_cm["left"] - _ox) / _k, "x1": (_cm["right"] - _ox) / _k,
+                "z0": (_cm["bottom"] - _oy) / _k, "z1": (_cm["top"] - _oy) / _k,
+                "source": f"Esri World Imagery zoom {_cm['zoom']} -- real "
+                          f"surroundings, flat, not modelled in 3D"}
+        _far_dst = os.path.join(VIEWER_DIR, "terrain_context_far.jpg")
+        if os.path.exists(_far_dst):
+            os.remove(_far_dst)
+        if context_far_image and src_transform is not None:
+            _fm = json.load(open(context_far_image + ".json"))
+            _far = np.array(Image.open(context_far_image + ".png").convert("RGB"))
+            Image.fromarray(image_grade.grade(_far)).save(_far_dst, quality=88)
+            meta["context_far"] = {
+                "x0": (_fm["left"] - src_transform.c) / _crs_units_per_m,
+                "x1": (_fm["right"] - src_transform.c) / _crs_units_per_m,
+                "z0": (_fm["bottom"] - src_transform.f) / _crs_units_per_m,
+                "z1": (_fm["top"] - src_transform.f) / _crs_units_per_m,
+                "source": f"Esri World Imagery zoom {_fm['zoom']} -- real, flat, horizon context"}
+        for _stale in ("structures.glb", "context_city.glb"):
+            if os.path.exists(os.path.join(VIEWER_DIR, _stale)):
+                os.remove(os.path.join(VIEWER_DIR, _stale))
+        if _structs:
+            shutil.copy2(stem + "_structures.glb", os.path.join(VIEWER_DIR, "structures.glb"))
+            meta["structures"] = _structs
+        if context_city_footprints and context_image and src_transform is not None:
+            # LOD1 real buildings across the surrounding context imagery
+            # (a lower, labelled tier -- see tools/build_context_city.py).
+            import sys as _sys
+            _sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "tools"))
+            import build_context_city as _bcc
+            _cc = stem + "_context_city.glb"
+            try:
+                _bcc.main(image_path, context_image, context_city_footprints, _cc)
+                shutil.copy2(_cc, os.path.join(VIEWER_DIR, "context_city.glb"))
+                meta["context_city"] = dict(json.load(open(_cc.rsplit(".", 1)[0] + ".json")),
+                                            file="context_city.glb")
+            except Exception as _e:
+                print(f"      context city skipped: {_e}")
+        if pbr_maps:
+            for _suf, _dst in (("_normal.png", "terrain_normal.png"),
+                               ("_ao.png", "terrain_ao.png"),
+                               ("_roughness.png", "terrain_roughness.png")):
+                shutil.copy2(stem + _suf, os.path.join(VIEWER_DIR, _dst))
         # This path used to DELETE buildings.geojson here, because it never
         # produced one and a previous scene's file would otherwise be read as
         # this scene's. It produces one now, so it is staged rather than
@@ -1568,6 +2400,10 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
         # on an uploaded image.
         shutil.copy2(stem + "_buildings.geojson",
                      os.path.join(VIEWER_DIR, "buildings.geojson"))
+        # Tell the viewer which elevation product /api/dsm will serve.
+        if os.path.exists(stem + _suffix):
+            meta["dsm_file"] = os.path.basename(stem + _suffix)
+            meta["dsm_product"] = "DSM" if _abs_datum else "rDSM"
         with open(os.path.join(VIEWER_DIR, "scene.json"), "w") as f:
             json.dump(meta, f, indent=2)
         print(f"      staged to {VIEWER_DIR}  ({meta['build_seconds']}s)")

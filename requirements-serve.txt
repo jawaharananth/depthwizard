@@ -25,3 +25,8 @@ scipy==1.18.1
 matplotlib==3.11.1
 safetensors==0.8.0
 huggingface-hub==1.28.0
+# Added after re-tracing the closure including lazy imports:
+# pyproj -- top-level import in build_city_image.py and open_buildings_source.py.
+# shapely -- tools/build_context_city.py (context-city LOD1 layer).
+pyproj==3.7.2
+shapely==2.1.2

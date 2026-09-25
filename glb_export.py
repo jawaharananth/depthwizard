@@ -242,3 +242,42 @@ def export_glb(out_path: str,
         f.write(bin_bytes)
 
     return out_path
+
+
+def export_meshes_glb(out_path: str, meshes: list) -> str:
+    """
+    Minimal multi-mesh GLB, no materials or textures (the viewer assigns
+    those): meshes = [(name, verts Nx3, normals Nx3, attr_name, attr, faces Mx3)],
+    attr_name being "TEXCOORD_0" (Nx2) or "COLOR_0" (Nx3, linear).
+    """
+    buf = _BufferBuilder()
+    gl_meshes, nodes = [], []
+    for name, v, nrm, attr_name, attr, faces in meshes:
+        if faces is None or not len(faces):
+            continue
+        v = np.ascontiguousarray(v, np.float32)
+        attrs = {
+            "POSITION": buf.add_accessor(v, FLOAT, "VEC3", ARRAY_BUFFER, include_bounds=True),
+            "NORMAL": buf.add_accessor(np.ascontiguousarray(nrm, np.float32), FLOAT, "VEC3",
+                                       ARRAY_BUFFER),
+            attr_name: buf.add_accessor(np.ascontiguousarray(attr, np.float32), FLOAT,
+                                        "VEC2" if attr.shape[1] == 2 else "VEC3", ARRAY_BUFFER),
+        }
+        idx = buf.add_accessor(np.ascontiguousarray(faces, np.uint32).reshape(-1),
+                               UNSIGNED_INT, "SCALAR", ELEMENT_ARRAY_BUFFER)
+        gl_meshes.append({"name": name, "primitives": [{"attributes": attrs, "indices": idx}]})
+        nodes.append({"name": name, "mesh": len(gl_meshes) - 1})
+    bin_data = buf.data()
+    gltf = {"asset": {"version": "2.0", "generator": "DepthWizard"}, "scene": 0,
+            "scenes": [{"nodes": list(range(len(nodes)))}], "nodes": nodes,
+            "meshes": gl_meshes, "accessors": buf.accessors,
+            "bufferViews": buf.buffer_views, "buffers": [{"byteLength": len(bin_data)}]}
+    json_bytes = _pad4(json.dumps(gltf, separators=(",", ":")).encode("utf-8"), b" ")
+    bin_bytes = _pad4(bin_data)
+    with open(out_path, "wb") as f:
+        f.write(struct.pack("<III", 0x46546C67, 2, 12 + 8 + len(json_bytes) + 8 + len(bin_bytes)))
+        f.write(struct.pack("<II", len(json_bytes), 0x4E4F534A))
+        f.write(json_bytes)
+        f.write(struct.pack("<II", len(bin_bytes), 0x004E4942))
+        f.write(bin_bytes)
+    return out_path

@@ -31,6 +31,27 @@ python scenes.py show jax165                          # restore a saved scene
 
 Then open `http://localhost:8800/viewer/index.html`.
 
+**Upload dashboard:** `python server.py` serves a drag-and-drop dashboard at
+`http://127.0.0.1:8000/` (defaults `--host 127.0.0.1 --port 8000`; the
+container uses `--host 0.0.0.0 --port 8080`). It is a stdlib
+`ThreadingHTTPServer`, runs one build at a time, and lists pre-built scenes.
+
+**Pre-built scenes** (served at `/scenes/<id>/`):
+
+| scene | landscape | height sources |
+|---|---|---|
+| `scenes/hitec_2x2` | HITEC City, Hyderabad, urban, 2.45 km | real footprints + Google Open Buildings 2.5D heights; OSM flyovers/metro viaducts (deck height from shadow where measurable, else class-typical; piers inferred) |
+| `scenes/periyar_forest` | Periyar Tiger Reserve, Kerala, forest + lake | Meta/WRI canopy-height map; terrain from Copernicus GLO-30 DEM, canopy-penetration corrected (x0.6, an assumed literature fraction); absolute DSM 855–1056 m |
+
+Neither scene is scored against LiDAR; the only benchmark is Jacksonville
+(DFC2019), see `BENCHMARK.md`.
+
+**DSM export:** every build writes a GeoTIFF. For georeferenced input that
+reaches a metric tier with an external datum it is `<name>_DSM.tif`
+(absolute elevation, real geotransform, `VERTICAL_DATUM` tag naming the
+datum). Otherwise (e.g. PNG/JPG input) it is `<name>_rDSM.tif`, relative
+heights, `VERTICAL_DATUM=relative`.
+
 ---
 
 ## Honest status
@@ -64,11 +85,11 @@ assumed and declared, never claimed as metres).
 
 **Height tiers** are labelled in every scene and shown in the viewer HUD:
 
-| Tier | Meaning |
-|------|---------|
-| **A** | DEM-anchored — real metric elevation |
-| **B** | Shadow-calibrated — metres from `h = L · tan(sun elevation)` |
-| **C** | Relative — shape only, vertical scale assumed and declared |
+| Tier | Meaning | Source |
+|------|---------|--------|
+| **A** | DEM-anchored — real metric elevation | Copernicus GLO-30 (or SRTM) offset fitted over bare-ground pixels; on by default in `build_city_image.py` for projected-CRS GeoTIFFs. Forest mode (`terrain_from_dem`, opt-in): terrain = GLO-30, canopy-corrected, plus a real canopy-height map |
+| **B** | Metric heights | shadow calibration `h = L · tan(sun elevation)` (`build_city.py`), a metric checkpoint, or relative depth calibrated to Google Open Buildings heights by robust median log-ratio (`build_city_image.py`, needs >=20 control buildings) |
+| **C** | Relative — shape only, vertical scale assumed and declared | monocular depth alone |
 
 A Tier C scene never claims metres, and exports from an ungeoreferenced source
 never carry a CRS.

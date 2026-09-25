@@ -31,8 +31,12 @@
     max-height: calc(100vh - 24px);
     overflow-y: auto;
   }
-  #ui.collapsed { padding: 8px 10px; }
-  #ui.collapsed > *:not(#btn-collapse) { display: none; }
+  /* Collapsed by default: a slim title pill, so the model -- not the tool
+     panel -- fills the frame. Every tool is one click away. */
+  #ui.collapsed { padding: 7px 36px 7px 12px; min-width: 0; background: rgba(16,18,22,0.55); }
+  #ui.collapsed > *:not(#btn-collapse):not(h3) { display: none; }
+  #ui.collapsed h3 { margin: 0; font-size: 12px; font-weight: 600; letter-spacing: 0.04em; }
+  body.clean #ui, body.clean #hover-readout, body.clean .dw-chrome { display: none !important; }
   #btn-collapse {
     position: absolute; top: 6px; right: 6px; z-index: 11;
     background: rgba(20,20,25,0.75); color: #9ab; border: 1px solid #345;
@@ -101,8 +105,8 @@
 <div id="loading">Loading terrain...</div>
 <div id="canvas-container"></div>
 
-<div id="ui" style="display:none;">
-  <button id="btn-collapse" title="Collapse panel">&#8722;</button>
+<div id="ui" class="collapsed" style="display:none;">
+  <button id="btn-collapse" title="Expand panel (H hides all UI)">&#9633;</button>
   <h3>DepthWizard</h3>
   <div class="row">
     <button id="btn-rgb" class="active">RGB</button>
@@ -115,7 +119,7 @@
     <button id="btn-reset">Reset View</button>
   </div>
   <div class="row">
-    <button id="btn-dof">Tilt-Shift</button>
+    <button id="btn-dof" style="display:none;">Tilt-Shift</button>
     <button id="btn-tour">Flythrough</button>
     <button id="btn-record" style="display:none;">Record Flythrough</button>
   </div>
@@ -233,6 +237,22 @@ try {
   }
 } catch (e) { /* no metadata: keep the defaults above */ }
 
+// CRS units per true metre (e.g. ~1.048 for EPSG:3857 at Hyderabad's latitude).
+// The mesh is built in true metres, so world offsets must be multiplied by this
+// before being added to a CRS origin, and CRS offsets divided by it on the way
+// in. Absent means the CRS is already metric (UTM etc.) and it is a no-op.
+function crsK() {
+  const k = SCENE_META && SCENE_META.crs_units_per_m;
+  return (typeof k === "number" && isFinite(k) && k > 0) ? k : 1;
+}
+
+// Which job/scene this page shows, for the server-side DSM + reference APIs.
+// ?job= is passed by the dashboard; a job id in scene.json is used if present;
+// otherwise a prebuilt ?scene= name.
+const _jobId = _params.get("job") || (SCENE_META && SCENE_META.job_id) || null;
+const API_QS = _scene ? "scene=" + encodeURIComponent(_scene)
+             : (_jobId ? "job=" + encodeURIComponent(_jobId) : null);
+
 // ITEM 6: the evidence trail.
 //
 // The pipeline already records, per building, which channels supported it
@@ -266,7 +286,12 @@ try {
 // this file needs to know which backend actually ran. Needs an async init()
 // before first render, unlike WebGLRenderer.
 const container = document.getElementById("canvas-container");
-const renderer = new THREE.WebGPURenderer({ antialias: true });
+// ?webgl=1 forces the WebGL2 backend -- for headless software-rendered
+// capture, where WebGPU pipeline compilation can stall for many minutes.
+const renderer = new THREE.WebGPURenderer({
+  antialias: true,
+  forceWebGL: new URLSearchParams(location.search).get("webgl") === "1",
+});
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
 // AgX rather than ACES. ACES pushes bright neutrals toward warm cream and
@@ -274,11 +299,15 @@ renderer.setSize(window.innerWidth, window.innerHeight);
 // scene yellow-white and flattens roof-to-roof value differences, which is
 // exactly the information the model is trying to show. AgX holds neutrals
 // neutral and keeps highlight detail, which suits a cool palette.
-renderer.toneMapping = THREE.AgXToneMapping || THREE.ACESFilmicToneMapping;
+// Khronos PBR Neutral where available: it is built so base colours come out
+// as authored under neutral light, hue and saturation intact until near
+// white -- the right curve when the colours on screen are the photograph's
+// real colours. AgX (above rationale) remains the fallback.
+renderer.toneMapping = THREE.NeutralToneMapping || THREE.AgXToneMapping || THREE.ACESFilmicToneMapping;
 // Exposure is set for a mid-grey satellite frame. Brighter sources (a sunlit
 // campus at 25 cm/px) clip to white at 1.45 and lose both the ground texture
 // and the canopy, so this sits lower and lets AgX's highlight rolloff work.
-renderer.toneMappingExposure = 1.05;
+renderer.toneMappingExposure = 1.0;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;  // soft penumbra, not hard-edged stencils
@@ -367,6 +396,17 @@ controls.enableDamping = true;
 controls.dampingFactor = 0.06;
 controls.screenSpacePanning = false;
 controls.maxPolarAngle = Math.PI * 0.495; // don't let camera dip below ground plane
+// Cinematic idle orbit: a slow turn around the city until the viewer first
+// interacts. Skipped when a specific view is requested (?az/?el/?dist) or
+// with ?still=1, so reproducible captures stay reproducible.
+{
+  const q0 = new URLSearchParams(location.search);
+  if (!q0.has("az") && !q0.has("el") && !q0.has("dist") && q0.get("still") !== "1") {
+    controls.autoRotate = true;
+    controls.autoRotateSpeed = 0.35;
+    controls.addEventListener("start", () => { controls.autoRotate = false; });
+  }
+}
 
 // --- Sky: gradient background, not the physically-based Sky.js shader.
 // Sky.js is built on classic THREE.ShaderMaterial + UniformsUtils, which the
@@ -467,45 +507,274 @@ function sunDirectionFromAngles(elevationDeg, azimuthDeg) {
 }
 
 const sunDir = sunDirectionFromAngles(SUN_ELEVATION_DEG, SUN_AZIMUTH_DEG);
-const skyTexture = makeSkyGradient(sunDir);
-scene.background = skyTexture;
-scene.environment = buildEnvironment(skyTexture);
+// The capture sun never moves: it is what lit the photograph. The de-lighting
+// model below divides it back out of every photographed surface.
+const CAPTURE_SUN = sunDir.clone();
+const TSL = await import("three/tsl").catch(() => null);
 
-// --- Lighting: sun matches the Sky + feeds shadow map ---
-// Position/frustum are placeholders here (0,0,0-centered) -- the terrain mesh
-// isn't centered at the world origin (its bounding box can sit anywhere,
-// e.g. X:0-850 Z:0-636), and DirectionalLight's shadow camera looks at
-// light.target, which defaults to (0,0,0). Left unset, the shadow frustum
-// doesn't cover the actual geometry, and out-of-frustum shadow-map sampling
-// renders as solid black -- both get repositioned to the mesh's real
-// bounding-box center once it loads, below.
-// Warm key against cool fill. A neutral sun on a neutral ambient gives a flat
-// grey city; the temperature split is what separates a sunlit roof plane from a
-// shaded wall without touching geometry.
-const sunLight = new THREE.DirectionalLight(0xffeed4, 3.1);
+// ---------------------------------------------------------------------------
+// ONE ATMOSPHERE, used for everything: the visible sky, the image-based light,
+// the sun's colour, and the aerial perspective over the city. Sky, haze and
+// lighting then agree by construction instead of being tuned separately.
+//
+// Sky radiance: Preetham analytic daylight (the same model three's SkyMesh
+// uses), evaluated WITHOUT SkyMesh's trailing display gamma so it is linear
+// radiance like everything else in the frame. Its absolute scale is not
+// guessed: the sky dome is normalised so its cosine-weighted irradiance on a
+// horizontal surface is ATMO.diffuseFrac of the total at the capture sun --
+// the standard clear-sky direct/diffuse split -- so the sky you see and the
+// fill light it throws are the same quantity.
+//
+// Aerial perspective: Rayleigh + aerosol extinction integrated along each view
+// ray through an exponential atmosphere (Rayleigh scale height 8 km, aerosol
+// 1.2 km), in-scattering toward the sky radiance of the same direction. The
+// haze amount is NOT measured from the image; it is the MODTRAN/6S default
+// continental-aerosol atmosphere of 23 km visibility, and the HUD says so.
+// ---------------------------------------------------------------------------
+const ATMO = {
+  turbidity: 3.0, rayleigh: 1.6, mieCoefficient: 0.006, mieG: 0.8,
+  visibilityM: +(new URLSearchParams(location.search).get("vis") || 23000),
+  rayleighH: 8000, aerosolH: 1200,
+  diffuseFrac: 0.22,     // sky share of horizontal irradiance, clear day
+};
+const _TOTAL_RAYLEIGH = [5.804542996261093e-6, 1.3562911419845635e-5, 3.0265902468824876e-5];
+const _MIE_CONST = [1.8399918514433978e14, 2.7798023919660528e14, 4.0790479543861094e14];
+function _atmoBetas() {
+  const bR = _TOTAL_RAYLEIGH.map((v) => v * ATMO.rayleigh);
+  const c = 0.2 * ATMO.turbidity * 1e-17;
+  const bM = _MIE_CONST.map((v) => 0.434 * c * v * ATMO.mieCoefficient);
+  return { bR, bM };
+}
+// Linear Preetham radiance (JS twin of the TSL function below).
+function preethamJS(d, s) {
+  const { bR, bM } = _atmoBetas();
+  const sunE = 1000 * Math.max(0, 1 - Math.exp(-((1.6110731556870734 -
+               Math.acos(THREE.MathUtils.clamp(s.y, -1, 1))) / 1.5)));
+  const za = Math.acos(Math.max(0, d.y));
+  const inv = 1 / (Math.cos(za) + 0.15 * Math.pow(93.885 - za * 180 / Math.PI, -1.253));
+  const sR = 8400 * inv, sM = 1250 * inv;
+  const cosT = d.x * s.x + d.y * s.y + d.z * s.z;
+  const c2 = cosT * 0.5 + 0.5;
+  const rPh = 0.05968310365946075 * (1 + c2 * c2);
+  const g = ATMO.mieG, g2 = g * g;
+  const mPh = 0.07957747154594767 * (1 - g2) / Math.pow(1 - 2 * g * cosT + g2, 1.5);
+  const k5 = THREE.MathUtils.clamp(Math.pow(1 - s.y, 5), 0, 1);
+  const out = [0, 0, 0];
+  const add = [0, 0.0003, 0.00075];
+  for (let i = 0; i < 3; i++) {
+    const fex = Math.exp(-(bR[i] * sR + bM[i] * sM));
+    const ratio = (bR[i] * rPh + bM[i] * mPh) / (bR[i] + bM[i]);
+    let lin = Math.pow(sunE * ratio * (1 - fex), 1.5);
+    lin *= 1 + (Math.pow(sunE * ratio * fex, 0.5) - 1) * k5;
+    out[i] = (lin + 0.1 * fex) * 0.04 + add[i];
+  }
+  return out;
+}
+// Direct-sun transmittance along the sun's own path (its colour at the ground).
+function sunTransmittanceJS(s) {
+  const { bR, bM } = _atmoBetas();
+  const za = Math.acos(Math.max(0.01, s.y));
+  const inv = 1 / (Math.cos(za) + 0.15 * Math.pow(93.885 - za * 180 / Math.PI, -1.253));
+  return [0, 1, 2].map((i) => Math.exp(-(bR[i] * 8400 * inv + bM[i] * 1250 * inv)));
+}
+const _lum = (c) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+// Cosine-weighted sky irradiance on a horizontal surface (raw model units).
+function skyIrradianceJS(s) {
+  const E = [0, 0, 0], NT = 24, NP = 48;
+  const d = new THREE.Vector3();
+  for (let i = 0; i < NT; i++) {
+    const th = (i + 0.5) / NT * Math.PI / 2;
+    for (let j = 0; j < NP; j++) {
+      const ph = (j + 0.5) / NP * Math.PI * 2;
+      d.set(Math.sin(th) * Math.cos(ph), Math.cos(th), Math.sin(th) * Math.sin(ph));
+      const L = preethamJS(d, s);
+      const w = Math.cos(th) * Math.sin(th) * (Math.PI / 2 / NT) * (Math.PI * 2 / NP);
+      for (let k = 0; k < 3; k++) E[k] += L[k] * w;
+    }
+  }
+  return E;
+}
+
+// Calibration at the capture sun. Units: a white Lambertian horizontal surface
+// under the capture sky renders at exactly 1.0 -- the same scale in which a
+// photo pixel value is read, so photographed surfaces reproduce the photo.
+const LIGHT = (() => {
+  const s = CAPTURE_SUN;
+  const Eraw = skyIrradianceJS(s);
+  const skyScale = Math.PI * ATMO.diffuseFrac / Math.max(_lum(Eraw), 1e-9);
+  const Tcap = sunTransmittanceJS(s);
+  const tl = _lum(Tcap);
+  const sunCol = Tcap.map((v) => v / tl);            // luminance-1 colour of the capture sun
+  const sunI = Math.PI * (1 - ATMO.diffuseFrac) / Math.max(s.y, 0.05);
+  return {
+    skyScale, sunI, sunCol, Tcap,
+    skyUp: Eraw.map((v) => v * skyScale),            // irradiance (x pi units)
+    ground: [0.16, 0.16, 0.15].map((v) => v * Math.PI), // replaced by the photo's own mean below
+  };
+})();
+
+// Visible sky: SkyMesh's geometry + far-plane vertex trick, our linear colour.
+let skyMesh = null;
+const skySunU = TSL ? TSL.uniform(sunDir.clone()) : null;
+const skyScaleU = TSL ? TSL.uniform(LIGHT.skyScale) : null;
+// TSL twin of preethamJS: radiance arriving from direction `dir`.
+function preethamNode(dir) {
+  const { float, vec3, exp, acos, cos, pow, max, clamp, dot, mix } = TSL;
+  const bR = vec3(..._atmoBetas().bR), bM = vec3(..._atmoBetas().bM);
+  const s = skySunU;
+  const sunE = float(1000).mul(max(0.0, float(1).sub(exp(float(1.6110731556870734)
+               .sub(acos(clamp(s.y, -1, 1))).div(1.5).negate()))));
+  const za = acos(max(0.0, dir.y));
+  const inv = float(1).div(cos(za).add(float(0.15).mul(pow(float(93.885)
+              .sub(za.mul(180 / Math.PI)), -1.253))));
+  const fex = exp(bR.mul(inv.mul(8400)).add(bM.mul(inv.mul(1250))).negate());
+  const cosT = dot(dir, s);
+  const c2 = cosT.mul(0.5).add(0.5);
+  const rPh = float(0.05968310365946075).mul(c2.mul(c2).add(1));
+  const g = ATMO.mieG, g2 = g * g;
+  const mPh = float(0.07957747154594767 * (1 - g2)).div(pow(float(1 + g2).sub(cosT.mul(2 * g)), 1.5));
+  const ratio = bR.mul(rPh).add(bM.mul(mPh)).div(bR.add(bM));
+  const lin = pow(sunE.mul(ratio).mul(fex.oneMinus()), vec3(1.5))
+    .mul(mix(vec3(1), pow(sunE.mul(ratio).mul(fex), vec3(0.5)),
+             clamp(pow(float(1).sub(s.y), 5.0), 0, 1)));
+  return lin.add(fex.mul(0.1)).mul(0.04).add(vec3(0, 0.0003, 0.00075));
+}
+try {
+  if (!TSL) throw new Error("no TSL");
+  const { SkyMesh } = await import("three/addons/objects/SkyMesh.js");
+  skyMesh = new SkyMesh();
+  skyMesh.scale.setScalar(15000);
+  skyMesh.material.fog = false;
+  skyMesh.frustumCulled = false;
+  const { normalize, positionWorld, cameraPosition, vec4, smoothstep, dot, float } = TSL;
+  const dir = normalize(positionWorld.sub(cameraPosition));
+  // Sun disc: real angular size (0.53 deg), radiance from the direct beam
+  // (sun irradiance / disc solid angle), so it is as bright relative to the
+  // sky as the real one -- bloom, not a painted spot, makes it glow.
+  const sunCos = Math.cos(THREE.MathUtils.degToRad(0.265));
+  const discOmega = 2 * Math.PI * (1 - sunCos);
+  skyMesh.userData.discU = TSL.uniform(new THREE.Color(...LIGHT.sunCol).multiplyScalar(
+    Math.min(LIGHT.sunI / discOmega, 60000)));
+  const disc = smoothstep(float(sunCos), float(sunCos + 0.00002), dot(dir, skySunU));
+  skyMesh.material.colorNode = vec4(
+    preethamNode(dir).mul(skyScaleU).add(skyMesh.userData.discU.mul(disc).mul(0.0005)), 1.0);
+  scene.add(skyMesh);
+  scene.background = null;
+} catch (e) { skyMesh = null; /* keep the gradient backdrop */ }
+
+// Image-based light = the same sky above the horizon + the real ground below
+// it (the photograph's own mean colour, set once the texture loads), so walls
+// get sky fill from above and bounce from the ground they stand on.
+let _envPmrem = null, _envRT = null, _envTimer = null;
+const envGroundMat = new THREE.MeshBasicMaterial({ color: 0x404040, side: THREE.BackSide });
+envGroundMat.color.setRGB(...LIGHT.ground.map((v) => v / Math.PI));
+async function bakeSkyEnvironment() {
+  if (!skyMesh) return;
+  try {
+    const envScene = new THREE.Scene();
+    const skyClone = new THREE.Mesh(skyMesh.geometry, skyMesh.material);
+    skyClone.scale.setScalar(1000);
+    skyClone.frustumCulled = false;
+    envScene.add(skyClone);
+    // Lower hemisphere: a large disc just below the probe = ground radiance.
+    const gnd = new THREE.Mesh(new THREE.CircleGeometry(900, 48), envGroundMat);
+    gnd.rotation.x = Math.PI / 2; gnd.position.y = -2;
+    envScene.add(gnd);
+    _envPmrem = _envPmrem || new THREE.PMREMGenerator(renderer);
+    const rt = await _envPmrem.fromSceneAsync(envScene, 0, 1, 2000);
+    if (_envRT) _envRT.dispose();
+    _envRT = rt;
+    scene.environment = rt.texture;
+  } catch (e) {
+    console.warn("sky environment bake failed; keeping gradient IBL:", e);
+  }
+}
+function scheduleSkyEnvironment() {
+  clearTimeout(_envTimer);
+  _envTimer = setTimeout(bakeSkyEnvironment, 250);
+}
+if (!skyMesh) {
+  const skyTexture = makeSkyGradient(sunDir);
+  scene.background = skyTexture;
+  scene.environment = buildEnvironment(skyTexture);
+}
+await bakeSkyEnvironment();
+
+// --- Sun: colour = the sky model's own transmittance along the sun path;
+// intensity calibrated so direct sun is (1 - diffuseFrac) of horizontal
+// irradiance at capture. Other hours scale by the change in transmittance.
+const sunLight = new THREE.DirectionalLight(0xffffff, LIGHT.sunI);
+sunLight.color.setRGB(...LIGHT.sunCol);
 sunLight.castShadow = true;
-// 2k shadow map: 4k looked marginally crisper but is disproportionately
-// expensive on integrated GPUs, and PCF-soft filtering plus normalBias
-// already removes the stair-stepping that motivated the larger map.
 sunLight.shadow.mapSize.set(4096, 4096);
 sunLight.shadow.bias = -0.0004;
-sunLight.shadow.normalBias = 0.02;   // stops self-shadow acne on the heightfield
-sunLight.shadow.radius = 2;          // softens the penumbra edge
+sunLight.shadow.normalBias = 0.02;
+sunLight.shadow.radius = 2;
 scene.add(sunLight);
 scene.add(sunLight.target);
+// No ambient/hemisphere fill: the image-based light already IS the sky and
+// ground fill, and a second fill double-lights the scene.
 
-// Ambient and hemisphere are now backups only -- scene.environment (PMREM)
-// supplies the sky/ground illumination. Leaving the old flat values in would
-// double-light the scene and wash out exactly the occlusion contrast the
-// baked AO map exists to provide.
-scene.add(new THREE.AmbientLight(0x8fa8c4, 0.10));
-scene.add(new THREE.HemisphereLight(0x9dc0f0, 0x53585e, 0.28));
+// --- De-lighting ------------------------------------------------------------
+// A satellite/aerial pixel is RADIANCE: surface colour x the capture-time
+// illumination (sun + sky), with that moment's shadows baked in. Using it as
+// albedo and lighting it again shades the scene twice -- tree canopy turns into
+// shaded green hills, white roofs clip, shade goes muddy. Instead each
+// photographed texel is divided by the capture illumination of the surface it
+// was photographed on (normal `nSrc`, capture sun, calibrated sky + real ground
+// bounce), giving an albedo estimate; the renderer then relights it with the
+// same model. At the capture sun the two cancel and the photograph comes back
+// exactly; move the sun and it relights physically.
+const capSunU = TSL ? TSL.uniform(CAPTURE_SUN.clone()) : null;
+const capSunColU = TSL ? TSL.uniform(new THREE.Color(...LIGHT.sunCol.map((v) => v * LIGHT.sunI / Math.PI))) : null;
+const capSkyU = TSL ? TSL.uniform(new THREE.Color(...LIGHT.skyUp.map((v) => v / Math.PI))) : null;
+const capGroundU = TSL ? TSL.uniform(new THREE.Color(...LIGHT.ground.map((v) => v / Math.PI))) : null;
+function delitAlbedo(P, nSrc) {
+  const { max, dot, mix, min, vec3 } = TSL;
+  const direct = capSunColU.mul(max(dot(nSrc, capSunU), 0.0));
+  const sky = mix(capGroundU, capSkyU, nSrc.y.mul(0.5).add(0.5));
+  return min(P.div(max(direct.add(sky), vec3(0.03))), vec3(1.0));
+}
+// Photographed surfaces carry the capture's shadows already; letting the
+// shadow map darken them again doubles every shadow. They receive shadows only
+// when the sun is moved away from the capture time.
+const photoSurfaces = new Set();
+let _photoShadowsOn = false;
+function setPhotoSurfaceShadows(on) {
+  if (on === _photoShadowsOn) return;
+  _photoShadowsOn = on;
+  for (const m of photoSurfaces) { m.receiveShadow = on; if (m.material) m.material.needsUpdate = true; }
+}
 
-// Fog: cheap atmospheric depth cue, also gracefully hides the low-poly far
-// edges of the ground mesh instead of a hard silhouette against empty sky.
-// Atmospheric perspective, tinted to the sky it fades into. Distance haze is
-// the strongest depth cue available at city scale and costs nothing.
-scene.fog = new THREE.Fog(0xb9d2e8, 1, 4000);
+// --- Aerial perspective as the scene fog node (runs in every material, so
+// it also works when post-processing is unavailable).
+const apGroundYU = TSL ? TSL.uniform(0) : null;
+function aerialPerspectiveNode() {
+  const { Fn, vec3, vec4, float, exp, abs, max, normalize, length, select,
+          positionWorld, cameraPosition, output } = TSL;
+  const bM0 = 3.912 / ATMO.visibilityM - 1.3e-5;          // aerosol extinction at 550 nm
+  const ang = [Math.pow(680 / 550, -1.3), 1, Math.pow(440 / 550, -1.3)];  // Angstrom 1.3
+  const bR = vec3(5.8e-6, 13.5e-6, 33.1e-6), bM = vec3(...ang.map((a) => a * bM0));
+  return Fn(() => {
+    const toP = positionWorld.sub(cameraPosition);
+    const d = length(toP);
+    const dir = toP.div(max(d, 1e-3));
+    const hc = max(cameraPosition.y.sub(apGroundYU), 0.0);
+    const hp = max(positionWorld.y.sub(apGroundYU), 0.0);
+    const dh = hc.sub(hp);
+    const od = (H) => select(abs(dh).greaterThan(0.5),
+      d.mul(H).mul(exp(hp.div(-H)).sub(exp(hc.div(-H)))).div(dh),
+      d.mul(exp(hp.div(-H))));
+    const T = exp(bR.mul(od(ATMO.rayleighH)).add(bM.mul(od(ATMO.aerosolH))).negate());
+    const hz = normalize(vec3(dir.x, max(dir.y, 0.0), dir.z));
+    const Lin = preethamNode(hz).mul(skyScaleU);
+    return vec4(output.rgb.mul(T).add(Lin.mul(T.oneMinus())), output.a);
+  })();
+}
+if (TSL && TSL.output && TSL.positionWorld) {
+  try { scene.fogNode = aerialPerspectiveNode(); } catch (e) { console.warn("aerial perspective unavailable", e); }
+}
+if (!scene.fogNode) scene.fog = new THREE.Fog(0xb9d2e8, 1, 4000);
 
 // --- Post-processing: ground-truth ambient occlusion ---------------------
 //
@@ -546,14 +815,25 @@ let postChain = [];
 let dofEnabled = false;      // toggled from the UI; see the DOF block below
 let rebuildPostChain = () => {};
 
+// Quality presets. "standard" is sized for a laptop GPU at ~30+ fps;
+// "cinematic" adds full-res AO, screen-space reflections and supersampling for
+// stills and demos on stronger hardware. Neither adds anything to the data.
+const QUALITY = (() => {
+  const q = new URLSearchParams(location.search).get("q");
+  if (q === "cinematic" || q === "standard") return q;
+  try { return localStorage.getItem("dw_quality") || "standard"; } catch (e) { return "standard"; }
+})();
+// Surfaces that are RELIT (not shown as photographed) write relit=1 into the
+// MRT; ambient occlusion is applied to those only. A photographed pixel
+// already contains the real occlusion of the real place, and darkening it
+// again is exactly the "CG crease" look this avoids.
+const relitMRT = TSL && TSL.mrt ? TSL.mrt({ output: TSL.output, relit: TSL.float(1) }) : null;
+function markRelit(mesh) { if (relitMRT && mesh.material && mesh.material.isNodeMaterial) mesh.material.mrtNode = relitMRT; }
+
 async function buildPostChain() {
-  // Chain: GTAO -> denoise -> SSR -> DOF -> bloom -> TRAA
-  //
-  // Each stage is resolved by DYNAMIC import inside try/catch and is
-  // individually optional. A static top-level TSL import cannot be guarded: if
-  // one symbol is missing the module never evaluates and the page renders
-  // nothing at all -- measured once as an 8KB blank screenshot. Degrading to
-  // "fewer effects" must never become "no viewer".
+  // Physical order: scene (MRT: colour, normal, velocity, relit mask) ->
+  // GTAO on relit surfaces only -> [SSR, cinematic] -> TRAA. No bloom, no
+  // vignette, no lens effects: this is meant to read as a photograph.
   postChain = [];
   try {
     const tsl = await import("three/tsl");
@@ -561,75 +841,55 @@ async function buildPostChain() {
     if (!aoFn || !tsl.pass || !tsl.mrt || !THREE.PostProcessing) {
       throw new Error("TSL post-processing nodes unavailable in this three build");
     }
-
+    const cine = QUALITY === "cinematic";
     const scenePass = tsl.pass(scene, camera);
-    // MRT declares every buffer a later stage consumes. SSR needs metalness and
-    // roughness; requesting them here is what makes one render feed several
-    // effects instead of re-rendering the scene per effect.
-    const mrtSpec = { output: tsl.output, normal: (tsl.normalView || tsl.transformedNormalView) };
-    if (tsl.metalness) mrtSpec.metalness = tsl.metalness;
-    if (tsl.roughness) mrtSpec.roughness = tsl.roughness;
+    const mrtSpec = { output: tsl.output, normal: (tsl.normalView || tsl.transformedNormalView),
+                      relit: tsl.float(0) };
+    if (tsl.velocity) mrtSpec.velocity = tsl.velocity;
+    if (cine && tsl.metalness) mrtSpec.metalness = tsl.metalness;
+    if (cine && tsl.roughness) mrtSpec.roughness = tsl.roughness;
     scenePass.setMRT(tsl.mrt(mrtSpec));
     const colorNode = scenePass.getTextureNode("output");
     const normalNode = scenePass.getTextureNode("normal");
     const depthNode = scenePass.getTextureNode("depth");
+    const relitNode = scenePass.getTextureNode("relit");
 
-    // --- ambient occlusion -------------------------------------------------
-    // The largest single gain for near-untextured volumes: without contact
-    // shadows in the crease between a wall and the ground, blocks appear to
-    // hover rather than stand.
     const aoNode = aoFn(depthNode, normalNode, camera);
-    if (aoNode.radius) aoNode.radius.value = 0.4;
-    if (aoNode.scale) aoNode.scale.value = 1.25;
+    aoNode.resolutionScale = cine ? 1.0 : 0.5;
+    if (aoNode.radius) aoNode.radius.value = 2.0;     // metres: wall-ground creases
+    if (aoNode.scale) aoNode.scale.value = 1.0;
     if (aoNode.thickness) aoNode.thickness.value = 1.0;
-    postChain.push("gtao");
-
+    if (aoNode.samples) aoNode.samples.value = cine ? 16 : 8;
+    postChain.push("gtao" + (cine ? "" : "(half)"));
     let aoTex = aoNode.getTextureNode();
     try {
       const { denoise } = await import("three/addons/tsl/display/DenoiseNode.js");
       if (denoise) { aoTex = denoise(aoTex, depthNode, normalNode, camera); postChain.push("denoise"); }
     } catch (e) { /* grain is acceptable; a broken chain is not */ }
+    // AO on relit surfaces only (see relitMRT).
+    const aoMix = tsl.mix(tsl.float(1.0), aoTex.r, relitNode.r.clamp(0, 1));
+    let outNode = colorNode.mul(tsl.vec4(aoMix, aoMix, aoMix, 1.0));
+    postChain.push("ao-relit-only");
 
-    let outNode = aoTex.mul(colorNode);
+    if (cine) {
+      try {
+        const { ssr } = await import("three/addons/tsl/display/SSRNode.js");
+        const metalNode = tsl.metalness ? scenePass.getTextureNode("metalness") : null;
+        const roughNode = tsl.roughness ? scenePass.getTextureNode("roughness") : null;
+        if (ssr && metalNode) {
+          const r = ssr(colorNode, depthNode, normalNode, metalNode, roughNode, camera);
+          if (r.maxDistance) r.maxDistance.value = 260;
+          if (r.opacity) r.opacity.value = 0.45;
+          if (r.thickness) r.thickness.value = 0.15;
+          outNode = outNode.add(r.mul(0.55));
+          postChain.push("ssr");
+        }
+      } catch (e) { /* optional */ }
+    }
 
-    // --- screen-space reflections -----------------------------------------
-    // Water is the one surface in these scenes with a genuinely low roughness,
-    // and an environment map alone only ever gives it the sky. SSR lets the
-    // river actually reflect the buildings standing beside it, which is the
-    // difference between a blue polygon and water.
-    try {
-      const { ssr } = await import("three/addons/tsl/display/SSRNode.js");
-      const metalNode = tsl.metalness ? scenePass.getTextureNode("metalness") : null;
-      const roughNode = tsl.roughness ? scenePass.getTextureNode("roughness") : null;
-      // metalnessNode is REQUIRED by SSRNode -- passing null threw and the whole
-      // stage was silently skipped, which is why the chain came back as
-      // "gtao -> denoise -> bloom" with no reflections at all.
-      if (ssr && metalNode) {
-        // SSR must be fed the raw PASS TEXTURE, not a computed node: it calls
-        // .sample() internally, so handing it `ao.mul(color)` fails with
-        // "this.colorNode.sample is not a function" and kills the render.
-        // Reflections are traced against the unshaded colour buffer and then
-        // added on top of the occluded image.
-        const r = ssr(colorNode, depthNode, normalNode, metalNode, roughNode, camera);
-        if (r.maxDistance) r.maxDistance.value = 260;
-        if (r.opacity) r.opacity.value = 0.45;
-        if (r.thickness) r.thickness.value = 0.15;
-        outNode = outNode.add(r.mul(0.55));
-        postChain.push("ssr");
-      }
-    } catch (e) { /* optional */ }
-
-    // --- tilt-shift depth of field ----------------------------------------
-    // Off by default and user-toggled. A shallow focal plane over a city model
-    // is the classic architectural-maquette look and is genuinely striking, but
-    // it also blurs geometry the viewer may be trying to READ. That is a
-    // presentation choice, so it belongs to the user rather than being imposed.
     if (dofEnabled) {
       try {
         const { dof } = await import("three/addons/tsl/display/DepthOfFieldNode.js");
-        // dof() wants a VIEW-Z node, not the depth texture: the signature is
-        // (node, viewZNode, focusDistance, focalLength, bokehScale). Handing it
-        // the depth texture focuses on nothing.
         if (dof && scenePass.getViewZNode) {
           const focus = camera.position.distanceTo(controls.target);
           outNode = dof(outNode, scenePass.getViewZNode(), focus, 0.12, 3.2);
@@ -638,33 +898,22 @@ async function buildPostChain() {
       } catch (e) { /* optional */ }
     }
 
-    // --- bloom -------------------------------------------------------------
-    // Threshold high, strength low: daylight city, not neon. Only specular hits
-    // on water and the brightest sunlit roofs should register.
-    try {
-      const { bloom } = await import("three/addons/tsl/display/BloomNode.js");
-      if (bloom) { outNode = outNode.add(bloom(outNode, 0.20, 0.7, 0.94)); postChain.push("bloom"); }
-    } catch (e) { /* optional */ }
-
-    // --- antialiasing ------------------------------------------------------
-    // TRAA in preference to FXAA. This scene is almost entirely long straight
-    // roof edges at shallow angles, which is the worst case for a purely
-    // spatial filter -- FXAA softens them but still crawls under camera motion.
-    // Temporal accumulation resolves them properly. FXAA remains the fallback.
-    // SMAA, not TRAA. TRAA needs a per-pixel VELOCITY buffer; handing it null
-    // throws "Invalid value used as weak map key" from inside three and takes
-    // the whole render down -- measured as a 22KB blank page. SMAA is purely
-    // spatial, needs no motion vectors, and resolves long straight roof edges
-    // far better than FXAA, which is the only edge this scene really has.
-    try {
-      const { smaa } = await import("three/addons/tsl/display/SMAANode.js");
-      if (smaa) { outNode = smaa(outNode); postChain.push("smaa"); }
-      else throw new Error("no smaa");
-    } catch (e) {
+    // Temporal AA: long straight roof edges at shallow angles are the worst
+    // case for spatial AA; accumulating jittered frames resolves them and
+    // also super-samples the photo texture. Needs the velocity buffer above.
+    let aa = false;
+    if (tsl.velocity) {
       try {
-        const { fxaa } = await import("three/addons/tsl/display/FXAANode.js");
-        if (fxaa) { outNode = fxaa(outNode); postChain.push("fxaa"); }
-      } catch (e2) { /* optional */ }
+        const { traa } = await import("three/addons/tsl/display/TRAANode.js");
+        outNode = traa(outNode, depthNode, scenePass.getTextureNode("velocity"), camera);
+        postChain.push("traa"); aa = true;
+      } catch (e) { console.warn("TRAA unavailable", e); }
+    }
+    if (!aa) {
+      try {
+        const { smaa } = await import("three/addons/tsl/display/SMAANode.js");
+        outNode = smaa(outNode); postChain.push("smaa");
+      } catch (e) { /* optional */ }
     }
 
     const pp = new THREE.PostProcessing(renderer);
@@ -820,6 +1069,9 @@ function shadeBuildingPrisms(mesh, mat) {
   // measured-median colour: real per-pixel roof detail -- AC units, roof
   // material, staining -- where before every roof was one flat swatch.
   // Falls back to the swatch for any mesh built before this UV existed.
+  // Roofs are matte and non-metallic whatever the building's class: a glass
+  // tower's ROOF is membrane, plant and gravel, and a metallic/low-roughness
+  // roof mirrors the sky over the real photographed roof until it is gone.
   let roof;
   if (roofIdx.length && geom.attributes.uv && rgbTexture) {
     const rg = new THREE.BufferGeometry();
@@ -827,61 +1079,386 @@ function shadeBuildingPrisms(mesh, mat) {
     rg.setAttribute("uv", geom.attributes.uv);
     rg.setIndex(roofIdx);
     rg.computeVertexNormals();
-    roof = new THREE.Mesh(rg, new THREE.MeshStandardMaterial({
-      map: rgbTexture,
-      roughness: Math.min(1, m.roughness * 1.15),
-      metalness: m.metalness || 0.0,
-      envMapIntensity: m.envMapIntensity || 0.5,
-    }));
-    roof.castShadow = roof.receiveShadow = true;
+    roof = new THREE.Mesh(rg, roofMaterial());
+    roof.castShadow = true;
+    roof.receiveShadow = false;        // the photo already holds its shadows
+    photoSurfaces.add(roof);
   } else {
-    roof = mk(roofIdx, m.color, Math.min(1, m.roughness * 1.15), m);
+    roof = mk(roofIdx, 0xffffff, 0.86, { metalness: 0.0, envMapIntensity: 0.32 });
   }
 
-  // WALLS get their own geometry -- a solid tint, no texture, no window
-  // grid. Two things were tried and rejected here: the planar (top-down) UV
-  // the mesh already carries is meaningless on a vertical face (one texel
-  // column stretched down the whole wall); and the per-building measured
-  // colour (real, sampled from the roof) read acceptably there but washed
-  // out pale on a flat wall under this scene's lighting even after shading
-  // it down. The class swatch below is the same measured-material-by-
-  // height-class reasoning the roof material already uses, not an
-  // arbitrary colour, and it is what reads correctly at this surface.
-  let wall = null;
+  // WALLS. The satellite image is oblique (the build measures how far a roof
+  // is displaced from its base per metre of height, scene.json lean_m_per_m),
+  // so every wall facing the sensor WAS photographed: a point h metres below
+  // the roof edge appears lean*h further along in the image. Those walls are
+  // textured with their own real facade pixels. Walls facing away were never
+  // seen; they take the building's measured colour -- its visible facade's
+  // median where it has one, else its roof's -- from COLOR_0, never a palette.
+  const walls = [];
   if (wallIdx.length) {
-    const wp = [], wn = [];
-    const a3 = new THREE.Vector3(), b3 = new THREE.Vector3(), c3 = new THREE.Vector3();
-    const ab3 = new THREE.Vector3(), ac3 = new THREE.Vector3(), n3 = new THREE.Vector3();
-    for (let t = 0; t < wallIdx.length; t += 3) {
-      const i0 = wallIdx[t], i1 = wallIdx[t + 1], i2 = wallIdx[t + 2];
-      a3.fromBufferAttribute(pos, i0);
-      b3.fromBufferAttribute(pos, i1);
-      c3.fromBufferAttribute(pos, i2);
-      ab3.subVectors(b3, a3); ac3.subVectors(c3, a3);
-      n3.crossVectors(ab3, ac3).normalize();
-      for (const v of [a3, b3, c3]) {
-        wp.push(v.x, v.y, v.z);
-        wn.push(n3.x, n3.y, n3.z);
+    const lean = SCENE_META && Array.isArray(SCENE_META.lean_m_per_m)
+      ? SCENE_META.lean_m_per_m : null;
+    const leanLen = lean ? Math.hypot(lean[0], lean[1]) : 0;
+    const uvFit = (geom.attributes.uv && rgbTexture && leanLen > 0.03)
+      ? fitPlanarUV(pos, geom.attributes.uv) : null;
+    // Metres of ground per ORIGINAL image pixel, from the fitted UV map's
+    // scale. A super-resolved display texture has more texels but no more
+    // real facade information, so its upscale factor is divided back out.
+    const srScale = (SCENE_META && SCENE_META.texture_display &&
+                     SCENE_META.texture_display.scale) || 1;
+    const texelM = uvFit && rgbTexture.image
+      ? (() => { const [u0] = uvFit(0, 0), [u1] = uvFit(100, 0);
+                 return srScale * 100 / (Math.abs(u1 - u0) * rgbTexture.image.width || 1); })()
+      : 0;
+
+    // Roof height at each (x, z): both rings of a prism share x/z, so the
+    // top ring's y is the roof above any wall vertex.
+    const topY = new Map();
+    const key = (x, z) => Math.round(x * 50) + "_" + Math.round(z * 50);
+    for (let i = 0; i < pos.count; i++) {
+      const k = key(pos.getX(i), pos.getZ(i));
+      const y = pos.getY(i);
+      if (!(topY.get(k) >= y)) topY.set(k, y);
+    }
+
+    const fp = [], fn = [], fu = [], fc = [], fs = []; // real facade texture, seen by the sensor
+    const rp = [], rn = [], ru = [], rc = [], rs = []; // this building's facade reused on an unseen wall
+    const hp = [], hn = [], hc = [];     // no facade pixels at all: measured colour
+    const toLin = (c) => Math.pow(Math.min(Math.max(c, 0), 1), 2.2);
+
+    // Buildings are the connected components of the indexed prism mesh
+    // (walls and roof share each prism's two vertex rings).
+    const parent = new Int32Array(pos.count);
+    for (let i = 0; i < pos.count; i++) parent[i] = i;
+    const find = (a) => { while (parent[a] !== a) { parent[a] = parent[parent[a]]; a = parent[a]; } return a; };
+    for (const L of [roofIdx, wallIdx]) {
+      for (let t = 0; t < L.length; t += 3) {
+        const r0 = find(L[t]);
+        parent[find(L[t + 1])] = r0; parent[find(L[t + 2])] = r0;
       }
     }
-    const wg = new THREE.BufferGeometry();
-    wg.setAttribute("position", new THREE.Float32BufferAttribute(wp, 3));
-    wg.setAttribute("normal", new THREE.Float32BufferAttribute(wn, 3));
-    wall = new THREE.Mesh(wg, new THREE.MeshStandardMaterial({
-      color: new THREE.Color(m.color).multiplyScalar(0.94),
-      roughness: m.roughness, metalness: m.metalness || 0.0,
-      envMapIntensity: m.envMapIntensity || 0.7,
-    }));
-    wall.castShadow = wall.receiveShadow = true;
+
+    // Footprint centre per building (mean of its vertices' x/z).
+    const compC = new Map();
+    for (let i = 0; i < pos.count; i++) {
+      const r0 = find(i);
+      let c = compC.get(r0);
+      if (!c) { c = [0, 0, 0]; compC.set(r0, c); }
+      c[0] += pos.getX(i); c[1] += pos.getZ(i); c[2]++;
+    }
+    // Pass 1: per wall triangle -- its edge, its facing, how many texels of
+    // real facade the image holds for it (height x lean, foreshortened by how
+    // squarely it faces the sensor; below ~7 texels a stretched strip smears).
+    const tris = [];
+    const photographed = new Map();      // building -> its well-photographed walls
+    const P = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()];
+    const e1 = new THREE.Vector3(), e2 = new THREE.Vector3();
+    for (let t = 0; t < wallIdx.length; t += 3) {
+      const ia = [wallIdx[t], wallIdx[t + 1], wallIdx[t + 2]];
+      for (let k = 0; k < 3; k++) P[k].fromBufferAttribute(pos, ia[k]);
+      e1.subVectors(P[1], P[0]); e2.subVectors(P[2], P[0]);
+      const nn = new THREE.Vector3().crossVectors(e1, e2).normalize();
+      // Wall edge endpoints: the two most distant x/z positions in the tri,
+      // ordered along a fixed reference so both tris of a quad agree.
+      let A = P[0], B = P[1], best = -1;
+      for (const [i, j] of [[0, 1], [0, 2], [1, 2]]) {
+        const d = Math.hypot(P[i].x - P[j].x, P[i].z - P[j].z);
+        if (d > best) { best = d; A = P[i]; B = P[j]; }
+      }
+      let dx = B.x - A.x, dz = B.z - A.z;
+      const len = Math.hypot(dx, dz) || 1e-6;
+      dx /= len; dz /= len;
+      let ax = A.x, az = A.z;
+      if (dx * 0.83 + dz * 0.55 < 0) { ax = B.x; az = B.z; dx = -dx; dz = -dz; }
+      let wallH = 0;
+      for (let k = 0; k < 3; k++) {
+        wallH = Math.max(wallH, (topY.get(key(P[k].x, P[k].z)) ?? P[k].y) - P[k].y);
+      }
+      const facing = uvFit
+        ? -(nn.x * lean[0] + nn.z * lean[1]) / (Math.hypot(nn.x, nn.z) * leanLen + 1e-9)
+        : -1;
+      // Needs >= 4 m of this facade in the image AND >= 7 real pixels of it,
+      // so the rule does not loosen just because the texture got sharper.
+      const facadeImgM = facing * leanLen * wallH;
+      const seen = facing > 0.35 && facadeImgM >= 4.0 && facadeImgM / (texelM || 1) >= 7;
+      const rec = { ia, nn, ax, az, dx, dz, len, wallH, seen, comp: find(ia[0]) };
+      tris.push(rec);
+      if (seen) {
+        if (!photographed.has(rec.comp)) photographed.set(rec.comp, []);
+        photographed.get(rec.comp).push(rec);
+      }
+    }
+
+    // Pass 2. A seen wall samples its own facade: a point `below` metres
+    // under the roof edge appears lean*below along in the image. A wall the
+    // sensor never saw reuses THIS building's own photographed facade -- the
+    // seen wall closest in length, same height below the roof -- an inference
+    // (buildings are usually clad alike all round), but from this building's
+    // real pixels, not a pattern.
+    // An unseen wall shows the SAME building's photographed wall on the
+    // opposite side: its position mirrored across the building centre along
+    // the sensor's lean axis (the back wall of a block maps onto its front
+    // wall), then projected onto the nearest photographed wall segment. One
+    // source segment per triangle, chosen at the triangle's centre, so a face
+    // maps linearly onto one real facade instead of a patchwork of segments
+    // picked by length (which smeared diagonally across tall towers).
+    const lux = lean ? lean[0] / (leanLen || 1) : 0, luz = lean ? lean[1] / (leanLen || 1) : 0;
+    const mirror = (x, z, c) => {
+      const d = (x - c[0]) * lux + (z - c[1]) * luz;
+      return [x - 2 * d * lux, z - 2 * d * luz];
+    };
+    const v = new THREE.Vector3();
+    for (const r of tris) {
+      const cand = r.seen ? null : photographed.get(r.comp);
+      let src = r.seen ? r : null;
+      let cc = null;
+      if (!r.seen && cand) {
+        const c3 = compC.get(r.comp);
+        cc = [c3[0] / c3[2], c3[1] / c3[2]];
+        let mx = 0, mz = 0;
+        for (let k = 0; k < 3; k++) { mx += pos.getX(r.ia[k]) / 3; mz += pos.getZ(r.ia[k]) / 3; }
+        const [px, pz] = mirror(mx, mz, cc);
+        let best = Infinity;
+        for (const sw of cand) {
+          const t = Math.min(Math.max((px - sw.ax) * sw.dx + (pz - sw.az) * sw.dz, 0), sw.len);
+          const dd = Math.hypot(sw.ax + sw.dx * t - px, sw.az + sw.dz * t - pz);
+          if (dd < best) { best = dd; src = sw; }
+        }
+      }
+      for (let k = 0; k < 3; k++) {
+        v.fromBufferAttribute(pos, r.ia[k]);
+        if (src) {
+          const below = Math.min((topY.get(key(v.x, v.z)) ?? v.y) - v.y, src.wallH);
+          let qx, qz;
+          if (r.seen) {
+            const s = (v.x - r.ax) * r.dx + (v.z - r.az) * r.dz;
+            qx = src.ax + src.dx * s; qz = src.az + src.dz * s;
+          } else {
+            const [px, pz] = mirror(v.x, v.z, cc);
+            const t = Math.min(Math.max((px - src.ax) * src.dx + (pz - src.az) * src.dz, 0), src.len);
+            qx = src.ax + src.dx * t; qz = src.az + src.dz * t;
+          }
+          const [u, w] = uvFit(qx - lean[0] * below, qz - lean[1] * below);
+          const [P, N, U, C, S] = r.seen ? [fp, fn, fu, fc, fs] : [rp, rn, ru, rc, rs];
+          P.push(v.x, v.y, v.z); N.push(r.nn.x, r.nn.y, r.nn.z); U.push(u, w);
+          C.push(toLin(colorAttr.getX(r.ia[k])), toLin(colorAttr.getY(r.ia[k])),
+                 toLin(colorAttr.getZ(r.ia[k])));
+          S.push(src.nn.x, src.nn.y, src.nn.z);
+        } else {
+          hp.push(v.x, v.y, v.z); hn.push(r.nn.x, r.nn.y, r.nn.z);
+          hc.push(toLin(colorAttr.getX(r.ia[k])), toLin(colorAttr.getY(r.ia[k])),
+                  toLin(colorAttr.getZ(r.ia[k])));
+        }
+      }
+    }
+    const wallRough = Math.max(0.5, m.roughness);
+    for (const [P, N, U, C, S, seen] of [[fp, fn, fu, fc, fs, true], [rp, rn, ru, rc, rs, false]]) {
+      if (!P.length) continue;
+      const g = new THREE.BufferGeometry();
+      g.setAttribute("position", new THREE.Float32BufferAttribute(P, 3));
+      g.setAttribute("normal", new THREE.Float32BufferAttribute(N, 3));
+      g.setAttribute("uv", new THREE.Float32BufferAttribute(U, 2));
+      g.setAttribute("color", new THREE.Float32BufferAttribute(C, 3));
+      g.setAttribute("srcNormal", new THREE.Float32BufferAttribute(S, 3));
+      const w = new THREE.Mesh(g, facadeMaterial(wallRough));
+      w.castShadow = true;
+      // A photographed wall already shows whatever shadow fell on it at capture.
+      w.receiveShadow = !seen;
+      if (seen) photoSurfaces.add(w); else markRelit(w);
+      walls.push(w);
+    }
+    if (hp.length) {
+      const g = new THREE.BufferGeometry();
+      g.setAttribute("position", new THREE.Float32BufferAttribute(hp, 3));
+      g.setAttribute("normal", new THREE.Float32BufferAttribute(hn, 3));
+      g.setAttribute("color", new THREE.Float32BufferAttribute(hc, 3));
+      const w = new THREE.Mesh(g, measuredColourWallMaterial(wallRough));
+      w.castShadow = w.receiveShadow = true;
+      markRelit(w);
+      walls.push(w);
+    }
   }
 
   if (roof) mesh.parent.add(roof);
-  if (wall) mesh.parent.add(wall);
+  for (const w of walls) mesh.parent.add(w);
   mesh.visible = false;
+}
+
+// Facade material. In an oblique image a tree standing in front of a wall is
+// photographed ON the facade, so sampled facade strips carry green vertical
+// streaks that are not the building. Texels whose chromaticity reads as
+// vegetation are blended to the building's own measured colour (vertex
+// attribute) -- removing a real occluder, not inventing cladding.
+function facadeMaterial(rough) {
+  const opts = { roughness: rough, metalness: 0.0, envMapIntensity: 1.0 };
+  if (!TSL || !THREE.MeshStandardNodeMaterial) {
+    return new THREE.MeshStandardMaterial({ ...opts, map: rgbTexture });
+  }
+  const { texture, uv, attribute, smoothstep, mix, vec3, float } = TSL;
+  const m = new THREE.MeshStandardNodeMaterial(opts);
+  const t = texture(rgbTexture, uv());
+  const sum = t.r.add(t.g).add(t.b).add(1e-3);
+  const veg = smoothstep(0.37, 0.43, t.g.div(sum));
+  const P = mix(vec3(t.rgb), attribute("color", "vec3"), veg);
+  // De-lit against the wall the pixels were photographed ON (srcNormal): a
+  // seen wall is its own source; an unseen wall reusing its building's
+  // photographed facade divides out THAT wall's capture lighting, then is
+  // relit facing its own way.
+  m.colorNode = delitAlbedo(P, attribute("srcNormal", "vec3"));
+  const g = glassiness(t).mul(float(1).sub(veg));
+  m.roughnessNode = mix(float(rough), float(0.07), g);
+  // Modest metalness on glazing only: screen-space reflections are masked by
+  // metalness, so this is what lets a curtain wall mirror the tower beside
+  // it -- tinted by the glass's own real colour, as real tinted glass is.
+  m.metalnessNode = g.mul(0.12);
+  return m;
+}
+
+// Measured-colour walls (no facade pixels anywhere on the building): the
+// colour is a photographed roof/facade median, i.e. radiance under the capture
+// sun from above, so it is de-lit as an upward-facing sample.
+function measuredColourWallMaterial(rough) {
+  const opts = { color: 0xffffff, vertexColors: true, roughness: rough, metalness: 0.0, envMapIntensity: 1.0 };
+  if (!TSL || !THREE.MeshStandardNodeMaterial) return new THREE.MeshStandardMaterial(opts);
+  const m = new THREE.MeshStandardNodeMaterial({ roughness: rough, metalness: 0.0, envMapIntensity: 1.0 });
+  m.colorNode = delitAlbedo(TSL.attribute("color", "vec3"), TSL.vec3(0, 1, 0));
+  return m;
+}
+
+// Ground: the photograph de-lit against the terrain's own surface normal, so
+// canopy and slopes come back exactly as photographed at the capture sun
+// instead of being shaded a second time. Per-class roughness/metalness maps
+// (water near-specular) still drive the view-dependent response.
+function groundPhotoMaterial() {
+  const opts = {
+    roughnessMap: roughnessTexture || null, roughness: roughnessTexture ? 1.0 : 0.92,
+    metalnessMap: metalnessTexture || null, metalness: metalnessTexture ? 1.0 : 0.0,
+    envMapIntensity: 1.0,
+  };
+  if (!TSL || !THREE.MeshStandardNodeMaterial) {
+    return new THREE.MeshStandardMaterial({ ...opts, map: rgbTexture });
+  }
+  const { texture, uv, vec3, normalWorld } = TSL;
+  const m = new THREE.MeshStandardNodeMaterial(opts);
+  const t = texture(rgbTexture, uv());
+  m.colorNode = delitAlbedo(vec3(t.rgb), normalWorld);
+  m.map = rgbTexture;   // informational (probes); colorNode takes precedence
+  return m;
+}
+
+// Per-texel gloss from the real pixels: dark, blue-tinted texels are glazing,
+// windows or solar panels in this imagery, so they get a near-mirror
+// dielectric surface (sky and Fresnel reflections at grazing angles);
+// everything else keeps its matte response. Values are linear-space.
+function glassiness(t) {
+  const { smoothstep } = TSL;
+  const lum = t.r.mul(0.299).add(t.g.mul(0.587)).add(t.b.mul(0.114));
+  return smoothstep(0.30, 0.10, lum).mul(smoothstep(-0.01, 0.03, t.b.sub(t.r)));
+}
+
+function roofMaterial() {
+  const opts = { roughness: 0.86, metalness: 0.0, envMapIntensity: 1.0 };
+  if (!TSL || !THREE.MeshStandardNodeMaterial) {
+    return new THREE.MeshStandardMaterial({ ...opts, map: rgbTexture });
+  }
+  const { texture, uv, mix, vec3, float, normalWorld } = TSL;
+  const m = new THREE.MeshStandardNodeMaterial(opts);
+  const t = texture(rgbTexture, uv());
+  m.colorNode = delitAlbedo(vec3(t.rgb), normalWorld);
+  const g = glassiness(t);
+  m.roughnessNode = mix(float(0.86), float(0.2), g);
+  m.metalnessNode = float(0.0);
+  return m;
+}
+
+// Plinth: closes the cut edge of the modelled tile with solid walls from the
+// terrain's own edge heights down to a flat base, the way a physical
+// architectural model is presented -- instead of a paper-thin sheet ending in
+// mid-air. Presentation only: it adds nothing inside the tile.
+function addTerrainPlinth(mesh, maxDim) {
+  const pos = mesh.geometry.attributes.position;
+  const n = pos.count;
+  // The ground is a row-major grid: find the row length from where x wraps.
+  let w = 0;
+  for (let i = 1; i < n; i++) { if (pos.getX(i) < pos.getX(i - 1)) { w = i; break; } }
+  if (!w || n % w) return;
+  const h = n / w;
+  const ring = [];
+  for (let c = 0; c < w; c++) ring.push(c);                       // first row
+  for (let r = 1; r < h; r++) ring.push(r * w + (w - 1));         // last column
+  for (let c = w - 2; c >= 0; c--) ring.push((h - 1) * w + c);    // last row
+  for (let r = h - 2; r >= 1; r--) ring.push(r * w);              // first column
+  let minY = Infinity, cx = 0, cz = 0;
+  for (const i of ring) { minY = Math.min(minY, pos.getY(i)); cx += pos.getX(i); cz += pos.getZ(i); }
+  cx /= ring.length; cz /= ring.length;
+  const baseY = minY - Math.max(12, 0.018 * maxDim);
+  const v = [], nrm = [], col = [];
+  const top = new THREE.Color(0x4a4640), bot = new THREE.Color(0x1d1c1a);
+  for (let k = 0; k < ring.length; k++) {
+    const a = ring[k], b = ring[(k + 1) % ring.length];
+    const ax = pos.getX(a), az = pos.getZ(a), bx = pos.getX(b), bz = pos.getZ(b);
+    const ay = pos.getY(a), by = pos.getY(b);
+    let nx = bz - az, nz = -(bx - ax);
+    const len = Math.hypot(nx, nz) || 1; nx /= len; nz /= len;
+    if (nx * ((ax + bx) / 2 - cx) + nz * ((az + bz) / 2 - cz) < 0) { nx = -nx; nz = -nz; }
+    const quad = [[ax, ay, az, top], [bx, by, bz, top], [bx, baseY, bz, bot],
+                  [ax, ay, az, top], [bx, baseY, bz, bot], [ax, baseY, az, bot]];
+    for (const [x, y, z, c] of quad) { v.push(x, y, z); nrm.push(nx, 0, nz); col.push(c.r, c.g, c.b); }
+  }
+  // flat base
+  const xs = ring.map((i) => pos.getX(i)), zs = ring.map((i) => pos.getZ(i));
+  const x0 = Math.min(...xs), x1 = Math.max(...xs), z0 = Math.min(...zs), z1 = Math.max(...zs);
+  for (const [x, z] of [[x0, z0], [x1, z0], [x1, z1], [x0, z0], [x1, z1], [x0, z1]]) {
+    v.push(x, baseY, z); nrm.push(0, -1, 0); col.push(bot.r, bot.g, bot.b);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.Float32BufferAttribute(v, 3));
+  g.setAttribute("normal", new THREE.Float32BufferAttribute(nrm, 3));
+  g.setAttribute("color", new THREE.Float32BufferAttribute(col, 3));
+  const m = new THREE.Mesh(g, new THREE.MeshStandardMaterial({
+    vertexColors: true, roughness: 0.92, metalness: 0.0, envMapIntensity: 0.4,
+    side: THREE.DoubleSide,
+  }));
+  m.castShadow = false; m.receiveShadow = true;
+  m.name = "terrain_plinth";
+  (mesh.parent || scene).add(m);
+}
+
+// Least-squares planar map (x, z) -> (u, v) from a mesh's own vertices. The
+// building UVs are the ground's top-down planar projection, so this recovers
+// that projection exactly without assuming the texture size or grid spacing.
+function fitPlanarUV(pos, uv) {
+  const M = [[0, 0, 0], [0, 0, 0], [0, 0, 0]], bu = [0, 0, 0], bv = [0, 0, 0];
+  const step = Math.max(1, Math.floor(pos.count / 4000));
+  for (let i = 0; i < pos.count; i += step) {
+    const r = [pos.getX(i), pos.getZ(i), 1];
+    for (let a = 0; a < 3; a++) {
+      for (let b = 0; b < 3; b++) M[a][b] += r[a] * r[b];
+      bu[a] += r[a] * uv.getX(i); bv[a] += r[a] * uv.getY(i);
+    }
+  }
+  const solve = (A, y) => {
+    const m = A.map((row, i) => [...row, y[i]]);
+    for (let c = 0; c < 3; c++) {
+      let p = c;
+      for (let r = c + 1; r < 3; r++) if (Math.abs(m[r][c]) > Math.abs(m[p][c])) p = r;
+      [m[c], m[p]] = [m[p], m[c]];
+      for (let r = 0; r < 3; r++) {
+        if (r === c) continue;
+        const f = m[r][c] / m[c][c];
+        for (let k = c; k < 4; k++) m[r][k] -= f * m[c][k];
+      }
+    }
+    return [m[0][3] / m[0][0], m[1][3] / m[1][1], m[2][3] / m[2][2]];
+  };
+  const cu = solve(M, bu), cv = solve(M, bv);
+  return (x, z) => [cu[0] * x + cu[1] * z + cu[2], cv[0] * x + cv[1] * z + cv[2]];
 }
 
 // --- Load terrain mesh ---
 let groundMesh = null;
+let groundPhotoMat = null, groundDiagMat = null;
+let vehicleMesh = null;
 // The whole loaded scene (ground + buildings + canopy + vehicles), so a
 // height-boost display slider can scale everything that stands on the
 // terrain together, the same way a GIS vertical-exaggeration control does.
@@ -909,6 +1486,15 @@ function withTrueScale(fn) {
   return result;
 }
 let rgbTexture = null, heatmapTexture = null, confidenceTexture = null, errorTexture = null, normalTexture = null;
+// Read-only state probe for automated capture/diagnostics.
+window.__dwDebug = () => ({
+  rgb: rgbTexture ? [rgbTexture.image?.width, rgbTexture.image?.height] : null,
+  normal: !!normalTexture, ao: !!aoTexture,
+  groundMap: !!(groundMesh && groundMesh.material && groundMesh.material.map),
+  buildingUV: (() => { let n = 0, u = 0; cityRoot?.traverse((c) => {
+    if (c.isMesh && c.name?.startsWith("building_")) { n++; if (c.geometry.attributes.uv) u++; } });
+    return [n, u]; })(),
+});
 let slopeTexture = null;
 let aoTexture = null, roughnessTexture = null, metalnessTexture = null;
 
@@ -916,7 +1502,9 @@ const textureLoader = new THREE.TextureLoader();
 const gltfLoader = new GLTFLoader();
 
 Promise.all([
-  new Promise((res) => textureLoader.load(TEXTURE_RGB_URL, res, undefined, () => res(null))),
+  new Promise((res) => textureLoader.load(
+    SCENE_META && SCENE_META.texture_file ? `${BASE}/${SCENE_META.texture_file}` : TEXTURE_RGB_URL,
+    res, undefined, () => res(null))),
   new Promise((res) => textureLoader.load(TEXTURE_HEATMAP_URL, res, undefined, () => res(null))),
   new Promise((res) => textureLoader.load(TEXTURE_CONF_URL, res, undefined, () => res(null))),
   new Promise((res) => textureLoader.load(TEXTURE_ERR_URL, res, undefined, () => res(null))),
@@ -947,6 +1535,26 @@ Promise.all([
     t.magFilter = THREE.LinearFilter;
   }
   if (rgbTexture) rgbTexture.colorSpace = THREE.SRGBColorSpace;
+  // Ground bounce light = the photograph's own mean colour (linear), not a
+  // chosen grey: it is what the real ground reflected at capture.
+  try {
+    const img = rgbTexture && rgbTexture.image;
+    if (img) {
+      const cv = document.createElement("canvas"); cv.width = cv.height = 64;
+      const c2 = cv.getContext("2d", { willReadFrequently: true });
+      c2.drawImage(img, 0, 0, 64, 64);
+      const px = c2.getImageData(0, 0, 64, 64).data;
+      const acc = [0, 0, 0];
+      const lin = (v) => { v /= 255; return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+      for (let i = 0; i < px.length; i += 4) for (let k = 0; k < 3; k++) acc[k] += lin(px[i + k]);
+      const mean = acc.map((v) => v / (px.length / 4));
+      LIGHT.ground = mean.map((v) => v * Math.PI);
+      LIGHT.photoMean = mean;
+      envGroundMat.color.setRGB(...mean);
+      if (capGroundU) capGroundU.value.setRGB(...mean);
+      scheduleSkyEnvironment();
+    }
+  } catch (e) { /* keep the default bounce */ }
   if (heatmapTexture) heatmapTexture.colorSpace = THREE.SRGBColorSpace;
   // normal maps are NOT color data -- must stay linear, not sRGB, or the
   // lighting math reads distorted (washed-out/inverted-looking) bump response
@@ -969,27 +1577,13 @@ Promise.all([
         // buildings is identified directly rather than guessed from geometry.
         if (child.name === "ground" || child.parent?.name === "ground") {
           groundMesh = child;
-          child.material = new THREE.MeshStandardMaterial({
-            map: rgbTexture || null,
-            normalMap: normalTexture || null,
-            // Occlusion baked from the reconstructed heightfield (sky-view
-            // factor), so contact shadows correspond to real geometry.
-            aoMap: aoTexture || null,
-            aoMapIntensity: 1.0,
-            // Per-class roughness: water near-specular, vegetation fully
-            // diffuse. Without this every surface responds to light identically.
-            roughnessMap: roughnessTexture || null,
-            roughness: roughnessTexture ? 1.0 : 0.92,  // map modulates this value
-            // Water is given partial metalness so it reflects the environment
-            // like a water surface; every other class stays at 0 (dielectric).
-            metalnessMap: metalnessTexture || null,
-            metalness: metalnessTexture ? 1.0 : 0.0,   // map modulates this value
-            // Below 1.0 on purpose: the environment supplies shape and
-            // directional response, but at full strength it also supplies most
-            // of the colour, which washes the satellite texture out.
-            envMapIntensity: 0.62,
-            color: 0xdbe6f2,
-          });
+          // Photographed surface: de-lit photo (see groundPhotoMaterial). The
+          // old normal map and baked sky-view AO are dropped here -- the photo
+          // already contains the real shading and occlusion they imitated.
+          groundPhotoMat = groundPhotoMaterial();
+          child.material = groundPhotoMat;
+          child.receiveShadow = false;
+          photoSurfaces.add(child);
           // aoMap samples the second UV set by convention; this mesh has one
           // UV set shared by every map, so point it at that.
           if (aoTexture && child.geometry.attributes.uv &&
@@ -1056,10 +1650,13 @@ Promise.all([
             });
           } else if (child.name === "vehicles") {
             // Vehicles read as painted metal: smoother and more specular than
-            // masonry, which is what separates them from the tarmac they sit on.
+            // masonry. Colour is each vehicle's own photographed pixels,
+            // projected straight down with the ground's planar UV mapping
+            // (fitted once the ground mesh is known, below) -- not a swatch.
+            vehicleMesh = child;
             child.material = new THREE.MeshStandardMaterial({
-              color: 0xa6b2c0, roughness: 0.32, metalness: 0.40,
-              envMapIntensity: 1.0,
+              color: 0xa6b2c0, roughness: 0.35, metalness: 0.25,
+              envMapIntensity: 0.8,
             });
           } else if (child.name === "water") {
             // Water: smooth and slightly metallic so it reflects the sky
@@ -1085,12 +1682,135 @@ Promise.all([
           }
         }
       });
+      if (vehicleMesh && groundMesh && rgbTexture &&
+          groundMesh.geometry.attributes.uv) {
+        const fit = fitPlanarUV(groundMesh.geometry.attributes.position,
+                                groundMesh.geometry.attributes.uv);
+        const vp = vehicleMesh.geometry.attributes.position;
+        const vu = new Float32Array(vp.count * 2);
+        for (let i = 0; i < vp.count; i++) {
+          const [u, w] = fit(vp.getX(i), vp.getZ(i));
+          vu[i * 2] = u; vu[i * 2 + 1] = w;
+        }
+        vehicleMesh.geometry.setAttribute("uv", new THREE.Float32BufferAttribute(vu, 2));
+        vehicleMesh.material = roofMaterial();
+        vehicleMesh.receiveShadow = false;
+        photoSurfaces.add(vehicleMesh);
+      }
       scene.add(obj);
 
       const box = new THREE.Box3().setFromObject(obj);
       const center = box.getCenter(new THREE.Vector3());
       const size = box.getSize(new THREE.Vector3());
       const maxDim = Math.max(size.x, size.y, size.z);
+
+      // Surroundings: the REAL imagery around the modelled tile (fetched by
+      // the build at a lower zoom, placed by its true map coordinates), laid
+      // flat just under the tile's edge height. It is context, not model --
+      // no buildings are extruded there, and the HUD says so. Nothing is
+      // drawn outside the tile when the build supplied no real context.
+      // Default is the modelled tile ALONE: nothing flat or simplified is
+      // drawn outside it. The real surroundings are opt-in with ?context=1.
+      const SHOW_CONTEXT = new URLSearchParams(location.search).get("context") === "1";
+      if (groundMesh) addTerrainPlinth(groundMesh, maxDim);
+      const ctx = SHOW_CONTEXT && SCENE_META && SCENE_META.context;
+      if (groundMesh && ctx) {
+        // Ground height along the tile's outer edge, so the flat context
+        // meets the real terrain without a step.
+        const gp = groundMesh.geometry.attributes.position;
+        const gb = new THREE.Box3().setFromObject(groundMesh);
+        const ex = (gb.max.x - gb.min.x) * 0.01, ez = (gb.max.z - gb.min.z) * 0.01;
+        const edgeY = [];
+        for (let i = 0; i < gp.count; i += 7) {
+          const x = gp.getX(i), z = gp.getZ(i);
+          if (x < gb.min.x + ex || x > gb.max.x - ex || z < gb.min.z + ez || z > gb.max.z - ez) {
+            edgeY.push(gp.getY(i));
+          }
+        }
+        edgeY.sort((a, b) => a - b);
+        const y0 = edgeY.length ? edgeY[Math.floor(edgeY.length * 0.2)] : gb.min.y;
+        // Far horizon ring (real, lower zoom), just under the near context,
+        // so the ground runs on into the haze instead of ending at an edge.
+        const far = SCENE_META.context_far;
+        if (far) {
+          new THREE.TextureLoader().load(`${BASE}/terrain_context_far.jpg`, (ft) => {
+            ft.colorSpace = THREE.SRGBColorSpace;
+            ft.repeat.set(1, -1); ft.offset.set(0, 1);
+            const fp = new THREE.Mesh(
+              new THREE.PlaneGeometry(far.x1 - far.x0, far.z1 - far.z0),
+              new THREE.MeshStandardMaterial({ map: ft, color: 0xdbe6f2, roughness: 1.0,
+                                               metalness: 0.0, envMapIntensity: 0.62 }));
+            fp.rotation.x = -Math.PI / 2;
+            fp.position.set((far.x0 + far.x1) / 2, y0 - 1.2, (far.z0 + far.z1) / 2);
+            fp.receiveShadow = true;
+            fp.name = "context_far";
+            scene.add(fp);
+          });
+        }
+        new THREE.TextureLoader().load(`${BASE}/terrain_context.jpg`, (tex) => {
+          tex.colorSpace = THREE.SRGBColorSpace;
+          tex.anisotropy = renderer.capabilities?.getMaxAnisotropy?.() ?? 8;
+          // Plane rotated -90 deg about x puts its texture's top edge at -z
+          // (south); world +z is north here, so flip v to keep north up.
+          tex.repeat.set(1, -1);
+          tex.offset.set(0, 1);
+          const skirt = new THREE.Mesh(
+            new THREE.PlaneGeometry(ctx.x1 - ctx.x0, ctx.z1 - ctx.z0),
+            new THREE.MeshStandardMaterial({
+              map: tex, color: 0xdbe6f2,
+              roughness: 1.0, metalness: 0.0, envMapIntensity: 0.62,
+            }));
+          skirt.rotation.x = -Math.PI / 2;
+          skirt.position.set((ctx.x0 + ctx.x1) / 2, y0 - 0.4, (ctx.z0 + ctx.z1) / 2);
+          skirt.receiveShadow = true;
+          skirt.name = "context_ground";
+          scene.add(skirt);
+
+          // LOD1 context city on the same real imagery: roofs sample this
+          // texture by their own UVs, walls carry each building's measured
+          // colour. Same base level as the context ground.
+          if (SCENE_META.context_city) {
+            gltfLoader.load(`${BASE}/${SCENE_META.context_city.file}`, (g2) => {
+              g2.scene.traverse((c) => {
+                if (!c.isMesh) return;
+                c.castShadow = c.receiveShadow = true;
+                c.material = c.name === "ctx_roofs"
+                  ? new THREE.MeshStandardMaterial({ map: tex, color: 0xdbe6f2,
+                      roughness: 0.9, metalness: 0.0, envMapIntensity: 0.4 })
+                  : new THREE.MeshStandardMaterial({ vertexColors: true,
+                      roughness: 0.85, metalness: 0.0, envMapIntensity: 0.35 });
+              });
+              // The roofs' UVs address the unflipped image; undo this
+              // texture's v-flip for them by giving roofs their own copy.
+              const roofTex = tex.clone();
+              roofTex.repeat.set(1, 1); roofTex.offset.set(0, 0); roofTex.needsUpdate = true;
+              g2.scene.traverse((c) => { if (c.isMesh && c.name === "ctx_roofs") c.material.map = roofTex; });
+              g2.scene.position.y = y0 - 0.4;
+              g2.scene.name = "context_city";
+              scene.add(g2.scene);
+            });
+          }
+        });
+      }
+
+      // Elevated structures (flyovers, metro viaduct, skywalks): same world
+      // frame as the terrain; deck tops show the real imagery, bodies carry
+      // the deck's measured colour.
+      if (SCENE_META && SCENE_META.structures && rgbTexture) {
+        gltfLoader.load(`${BASE}/${SCENE_META.structures.file}`, (g3) => {
+          g3.scene.traverse((c) => {
+            if (!c.isMesh) return;
+            c.castShadow = c.receiveShadow = true;
+            c.material = c.name === "struct_deck"
+              ? roofMaterial()
+              : measuredColourWallMaterial(0.8);
+            if (c.name === "struct_deck") { c.receiveShadow = false; photoSurfaces.add(c); }
+            else markRelit(c);
+          });
+          g3.scene.name = "structures";
+          (cityRoot || scene).add(g3.scene);
+        });
+      }
       controls.target.copy(center);
       // Optional camera placement from the query string, so a particular view
       // can be reproduced exactly instead of being found by dragging:
@@ -1111,7 +1831,16 @@ Promise.all([
           center.y + r * Math.sin(el),
           center.z + r * Math.cos(el) * Math.cos(az));
       } else {
-        camera.position.set(center.x, center.y + maxDim * 0.6, center.z + maxDim * 0.8);
+        // Default: a cross-lit oblique -- camera 90 deg around from the sun,
+        // so walls facing it are lit and the far sides fall into shadow,
+        // which is what makes height and massing readable at first glance.
+        const az = THREE.MathUtils.degToRad(SUN_AZIMUTH_DEG + 90);
+        const el = THREE.MathUtils.degToRad(26);
+        const r = maxDim * 0.65;
+        camera.position.set(
+          center.x + r * Math.cos(el) * Math.sin(az),
+          center.y + r * Math.sin(el),
+          center.z + r * Math.cos(el) * Math.cos(az));
       }
       camera.far = Math.max(maxDim * 10, 20000); // must stay beyond the Sky sphere (scale 15000) or it gets clipped
       camera.updateProjectionMatrix();
@@ -1123,8 +1852,15 @@ Promise.all([
       // it -- confirmed on a real build, where the ground texture and most
       // buildings were washed out grey even at the default view. Fog should
       // hide the ground plane's far edge, not the model.
-      scene.fog.near = maxDim * 1.3;
-      scene.fog.far = maxDim * 4.5;
+      // With surroundings the haze hides where the ground ends; a model shown
+      // on its own should stay crisp, so haze only starts well beyond it.
+      const _ctxOn = new URLSearchParams(location.search).get("context") === "1";
+      if (scene.fog) {
+        scene.fog.near = maxDim * (_ctxOn ? 1.3 : 4.0);
+        scene.fog.far = maxDim * (_ctxOn ? 4.5 : 14.0);
+      }
+      // Aerial perspective measures altitude above the terrain's base.
+      if (apGroundYU && groundMesh) apGroundYU.value = new THREE.Box3().setFromObject(groundMesh).min.y;
 
       // Shadow camera: centered on the mesh (not the world origin), frustum
       // sized to the actual scene extent with margin, near/far spanning the
@@ -1170,15 +1906,42 @@ Promise.all([
         }
         if (SCENE_META.sun_elevation_deg != null || SCENE_META.sun_azimuth_deg != null) {
           const bits = [];
-          if (SCENE_META.sun_elevation_deg != null) bits.push(`${SCENE_META.sun_elevation_deg}° el`);
-          if (SCENE_META.sun_azimuth_deg != null) bits.push(`${SCENE_META.sun_azimuth_deg}° az (estimated from shadows)`);
-          lines.push(`sun ${bits.join(" / ")}`);
+          if (SCENE_META.sun_elevation_deg != null) bits.push(`${Number(SCENE_META.sun_elevation_deg).toFixed(1)}° el`);
+          if (SCENE_META.sun_azimuth_deg != null) bits.push(`${Number(SCENE_META.sun_azimuth_deg).toFixed(1)}° az`);
+          lines.push(`sun ${bits.join(" / ")}` +
+                     (SCENE_META.sun_note ? ` (${SCENE_META.sun_note})` : ""));
         }
         lines.push(
           `heights: tier ${SCENE_META.tier}` +
             (SCENE_META.shadow_samples ? ` (${SCENE_META.shadow_samples} shadows)` : ""),
-          `${SCENE_META.buildings_extruded} buildings extruded`,
-          `facades are SYNTHETIC (nadir imagery contains no facade pixels)`);
+          SCENE_META.buildings_extruded
+            ? `${SCENE_META.buildings_extruded} buildings extruded`
+            : `landscape scene: no buildings`,
+          !SCENE_META.buildings_extruded ? `canopy: real canopy-height map as one continuous surface` :
+          Array.isArray(SCENE_META.lean_m_per_m)
+            ? `facades: real image pixels on sensor-facing walls (measured lean ` +
+              `${Math.hypot(...SCENE_META.lean_m_per_m).toFixed(2)} m/m); ` +
+              `unseen walls reuse the same building's photographed facade ` +
+              `(inferred), else its measured colour`
+            : `facades: each building's measured colour (no lean measured, ` +
+              `so no facade pixels located)`,
+          SCENE_META.context && new URLSearchParams(location.search).get("context") === "1"
+            ? `beyond the modelled tile: ${SCENE_META.context.source}`
+            : `nothing is drawn beyond the modelled tile`);
+        if (SCENE_META.texture_display) {
+          lines.push(`display texture: ${SCENE_META.texture_display.method}; ` +
+                     `measurements use ${SCENE_META.texture_display.measurements_use}`);
+        }
+        if (SCENE_META.structures) {
+          const st = SCENE_META.structures;
+          lines.push(`elevated structures: ${st.structures} (${Math.round(st.length_m)} m of deck) ` +
+                     `-- ${st.source}`);
+        }
+        if (SCENE_META.context_city && new URLSearchParams(location.search).get("context") === "1") {
+          const cc = SCENE_META.context_city;
+          lines.push(`context city (LOD1, unaudited): ${cc.buildings} buildings -- ` +
+                     `${cc.footprints}; heights ${cc.heights}; min ${cc.min_height_clamp_m} m`);
+        }
       }
       document.getElementById("stats").textContent = lines.join("\n");
 
@@ -1258,7 +2021,8 @@ function realCoordsAt(worldX, worldZ) {
   if (originX === undefined || originY === undefined || originX === null || originY === null) {
     return null;   // this scene genuinely has no georeferencing -- say nothing, don't guess
   }
-  return { easting: worldX + originX, northing: worldZ + originY };
+  const k = crsK();
+  return { easting: originX + worldX * k, northing: originY + worldZ * k };
 }
 
 function confidenceAt(uv) {
@@ -1331,6 +2095,17 @@ function countVerts(obj) {
 // permanent fixture -- a viewer wanting an unobstructed look at what was
 // just built should be able to get it in one click, not by shrinking the
 // browser window.
+// ?hud=1 opens the full panel on load; H toggles every piece of chrome off for
+// an unobstructed view of the model.
+if (new URLSearchParams(location.search).get("hud") === "1") {
+  document.getElementById("ui").classList.remove("collapsed");
+  document.getElementById("btn-collapse").innerHTML = "&#8722;";
+}
+document.addEventListener("keydown", (e) => {
+  if ((e.key === "h" || e.key === "H") && !/INPUT|TEXTAREA/.test(document.activeElement?.tagName || "")) {
+    document.body.classList.toggle("clean");
+  }
+});
 document.getElementById("btn-collapse").addEventListener("click", () => {
   const el = document.getElementById("ui");
   const nowCollapsed = el.classList.toggle("collapsed");
@@ -1353,8 +2128,16 @@ function setTextureMode(mode) {
   // raster should still leave a usable scene on screen, not a dead button.
   const tex = byMode[mode] || rgbTexture;
   if (!tex) return;
-  groundMesh.material.map = tex;
-  groundMesh.material.needsUpdate = true;
+  // RGB shows the de-lit photograph; the diagnostic rasters are data, not
+  // photographs, and are shown on a plain lit material.
+  if (mode === "rgb" && groundPhotoMat) {
+    groundMesh.material = groundPhotoMat;
+  } else {
+    groundDiagMat = groundDiagMat || new THREE.MeshStandardMaterial({ roughness: 1.0, metalness: 0.0 });
+    groundDiagMat.map = tex;
+    groundDiagMat.needsUpdate = true;
+    groundMesh.material = groundDiagMat;
+  }
   document.getElementById("btn-rgb").classList.toggle("active", mode === "rgb");
   document.getElementById("btn-heatmap").classList.toggle("active", mode === "heatmap");
   const cb = document.getElementById("btn-conf");
@@ -1367,8 +2150,7 @@ function setTextureMode(mode) {
   const sb = document.getElementById("btn-slope");
   if (sb) sb.classList.toggle("active", mode === "slope");
   const diag = (mode === "confidence" || mode === "error" || mode === "slope");
-  groundMesh.material.envMapIntensity = diag ? 0.0 : 0.62;
-  groundMesh.material.roughness = diag ? 1.0 : (roughnessTexture ? 1.0 : 0.92);
+  if (groundMesh.material === groundDiagMat) groundDiagMat.envMapIntensity = diag ? 0.0 : 1.0;
   scene.traverse((o2) => {
     if (o2.isMesh && o2 !== groundMesh) o2.visible = !diag;
   });
@@ -1383,17 +2165,122 @@ function setTextureMode(mode) {
     const v = SCENE_META && SCENE_META.validation;
     if (!errorTexture || !v) {
       note.textContent = "No reference data available for this scene, so no "
-        + "validation overlay can be shown. This view is only available for "
-        + "tiles with LiDAR ground truth.";
+        + "validation overlay can be shown. Upload a reference DSM (GeoTIFF) "
+        + "below, or open a tile with LiDAR ground truth.";
     } else {
-      note.textContent = "Predicted minus LiDAR. Red = built too tall, "
-        + "blue = too short, pale = agreement. Grey border is outside the "
-        + "reference extent. RMSE " + v.rmse_m + " m, bias " + v.bias_m
-        + " m over the central " + v.covers_m + " m. Scale +/-"
-        + v.scale_limit_m + " m.";
+      note.textContent = validationSummary(v);
     }
   }
 }
+
+// Validation text for both shapes of scene.json `validation`: the DFC2019
+// benchmark path (rmse_m, bias_m, covers_m, scale_limit_m) and the uploaded-
+// reference path (rmse, mae, bias, corr, overlap_fraction).
+function _vnum(v, a, b) {
+  const x = (v[a] !== undefined && v[a] !== null) ? v[a] : v[b];
+  return (typeof x === "number" && isFinite(x)) ? x : (typeof x === "string" ? Number(x) : null);
+}
+function validationSummary(v) {
+  const rmse = _vnum(v, "rmse_m", "rmse"), mae = _vnum(v, "mae_m", "mae");
+  const bias = _vnum(v, "bias_m", "bias"), corr = _vnum(v, "corr", "correlation");
+  const ov = _vnum(v, "overlap_fraction", "overlap");
+  const ref = v.covers_m !== undefined ? "LiDAR" : "reference";
+  let s = `Predicted minus ${ref}. Red = built too tall, blue = too short, `
+    + "pale = agreement. Grey is outside the reference extent.";
+  if (rmse !== null) s += ` RMSE ${rmse.toFixed(2)} m`;
+  if (mae !== null) s += `, MAE ${mae.toFixed(2)} m`;
+  if (bias !== null) s += `, bias ${bias >= 0 ? "+" : ""}${bias.toFixed(2)} m`;
+  if (corr !== null) s += `, r ${corr.toFixed(3)}`;
+  if (ov !== null) s += `, overlap ${(ov * 100).toFixed(0)}%`;
+  if (v.covers_m !== undefined) s += ` over the central ${v.covers_m} m`;
+  if (v.scale_limit_m !== undefined) s += `. Scale +/-${v.scale_limit_m} m`;
+  return s + ".";
+}
+
+// VS LiDAR is usable whenever there is a validation record, not only for the
+// benchmark tiles that happened to ship one.
+function refreshErrButton() {
+  const eb = document.getElementById("btn-err");
+  if (!eb) return;
+  const has = !!(SCENE_META && SCENE_META.validation);
+  eb.disabled = !has;
+  eb.style.opacity = has ? "" : "0.45";
+  eb.title = has ? "Prediction minus reference elevation"
+                 : "No reference elevation for this scene yet";
+}
+refreshErrButton();
+
+// --- Server-only: DSM download + reference validation ---
+// Hidden under a static server or offline (Tauri): those have no /api/.
+(async () => {
+  let served = false;
+  try {
+    const r = await fetch("/api/gallery", { cache: "no-store" });
+    served = r.ok && (r.headers.get("content-type") || "").includes("json");
+  } catch (_) { served = false; }
+  if (!served) return;
+
+  const home = document.createElement("a");
+  home.href = "/";
+  home.textContent = "← Home";
+  home.style.cssText = "display:inline-block;font-size:11px;color:#8ab;margin-bottom:6px;text-decoration:none;";
+  const ui = document.getElementById("ui");
+  ui.insertBefore(home, ui.querySelector("h3"));
+
+  if (!API_QS) return;   // cannot address a DSM without a job or scene id
+  const row = document.createElement("div");
+  row.className = "row";
+  row.id = "dsm-row";
+  row.innerHTML =
+    `<a id="btn-dsm" href="/api/dsm?${API_QS}" download><button type="button">Download DSM</button></a>` +
+    '<label style="display:inline-flex;"><button type="button" id="btn-ref">Upload reference DSM</button>' +
+    '<input type="file" id="ref-file" accept=".tif,.tiff" style="display:none;"></label>';
+  const status = document.createElement("div");
+  status.id = "ref-status";
+  status.style.cssText = "font-size:11px;color:#cde;margin:2px 0 6px;line-height:1.45;white-space:pre-line;";
+  const anchor = document.getElementById("dmg-panel");
+  ui.insertBefore(row, anchor);
+  ui.insertBefore(status, anchor);
+  if (SCENE_META && SCENE_META.dsm_product) {
+    row.querySelector("#btn-dsm button").textContent = `Download ${SCENE_META.dsm_product}`;
+  }
+  const file = row.querySelector("#ref-file");
+  row.querySelector("#btn-ref").addEventListener("click", () => file.click());
+  file.addEventListener("change", async () => {
+    const f = file.files[0];
+    if (!f) return;
+    status.style.color = "#cde";
+    status.textContent = `Validating against ${f.name}…`;
+    try {
+      const r = await fetch(`/api/reference?${API_QS}`, { method: "POST", body: f });
+      let d = null;
+      try { d = await r.json(); } catch (_) {}
+      if (!r.ok) {
+        const why = (d && (d.error || d.message)) || r.statusText;
+        throw new Error(`${r.status >= 500 ? "Server error" : "Reference rejected"} (${r.status}): ${why}`);
+      }
+      d = d || {};
+      if (SCENE_META) SCENE_META.validation = Object.assign({}, SCENE_META.validation || {}, d);
+      else SCENE_META = { validation: d };
+      const pngUrl = `${BASE}/${d.error_png || "terrain_error.png"}?t=${Date.now()}`;
+      const tex = await new Promise((res) => textureLoader.load(pngUrl, res, undefined, () => res(null)));
+      if (tex) {
+        if (errorTexture) errorTexture.dispose();
+        errorTexture = tex;
+      }
+      refreshErrButton();
+      status.textContent = "Reference: " + validationSummary(d).replace(/^.*?reference extent\.\s*/, "")
+        + (d.fitted ? "\n(vertical offset fitted before scoring)" : "")
+        + (tex ? "" : "\nError map image could not be loaded.");
+      if (tex) setTextureMode("error");
+    } catch (e) {
+      status.style.color = "#f99";
+      status.textContent = e.message || String(e);
+    } finally {
+      file.value = "";
+    }
+  });
+})();
 
 // --- Click-to-measure ---
 let measureActive = false;
@@ -1681,8 +2568,8 @@ renderer.domElement.addEventListener("click", (event) => {
       // so no evidence panel appeared at all, and 5 matched the WRONG building
       // at a mean 29.6 m. The reliability, provenance and conformal-interval
       // readout was therefore absent or wrong for almost every click.
-      const dx = (r.cx - (originX || 0)) - p.x;
-      const dy = (r.cy - (originY || 0)) - p.z;
+      const dx = (r.cx - (originX || 0)) / crsK() - p.x;
+      const dy = (r.cy - (originY || 0)) / crsK() - p.z;
       const d = dx * dx + dy * dy;
       if (d < bestD) { bestD = d; best = r; }
     }
@@ -2159,7 +3046,7 @@ function buildBands() {
     // the origin, which put the whole band layer in the sky beside the city.
     const pts = [];
     for (const pt of rec.ring) {
-      pts.push(new THREE.Vector2(pt[0] - ox, -(pt[1] - oy)));
+      pts.push(new THREE.Vector2((pt[0] - ox) / crsK(), -(pt[1] - oy) / crsK()));
     }
     if (pts.length < 3) continue;
 
@@ -2172,7 +3059,7 @@ function buildBands() {
     // The ground beneath this footprint, so the cap sits at the roof rather
     // than at a scene-wide datum -- a building on a rise would otherwise wear
     // its band buried in the hillside.
-    const gy = sampleGroundAt(rec.cx - ox, rec.cy - oy, datum);
+    const gy = sampleGroundAt((rec.cx - ox) / crsK(), (rec.cy - oy) / crsK(), datum);
     const roofY = gy + h;
 
     const mesh = new THREE.Mesh(geo, bandMaterial(hw, h));
@@ -2294,7 +3181,7 @@ function buildDamage() {
 
     const style = DAMAGE_STYLE[d.class] || DAMAGE_STYLE.INCONCLUSIVE;
     const pts = [];
-    for (const pt of best.ring) pts.push(new THREE.Vector2(pt[0] - ox, -(pt[1] - oy)));
+    for (const pt of best.ring) pts.push(new THREE.Vector2((pt[0] - ox) / crsK(), -(pt[1] - oy) / crsK()));
     if (pts.length < 3) continue;
     let shape;
     try { shape = new THREE.Shape(pts); } catch (e) { continue; }
@@ -2304,7 +3191,7 @@ function buildDamage() {
     const h = Math.max(1.0, best.props.height_m || 1.0);
     const geo = new THREE.ExtrudeGeometry(shape, { depth: h, bevelEnabled: false });
     geo.rotateX(-Math.PI / 2);
-    const gy = sampleGroundAt(best.cx - ox, best.cy - oy, datum);
+    const gy = sampleGroundAt((best.cx - ox) / crsK(), (best.cy - oy) / crsK(), datum);
     const mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
       color: style.color, transparent: true, opacity: 0.55,
       depthWrite: false, side: THREE.DoubleSide,
@@ -2444,7 +3331,10 @@ function updateTour(dt) {
 // separately loaded height raster could disagree with what the viewer draws;
 // raycasting the actual mesh cannot.
 
-const CAPTURE_HOUR = 10.5;   // typical sun-synchronous overpass, local solar
+// Local mean solar hour of the capture: measured by the build when it could
+// fit the pass time to the image's shadows, else a typical overpass.
+const CAPTURE_HOUR = (SCENE_META && typeof SCENE_META.capture_local_solar_hour === "number")
+  ? SCENE_META.capture_local_solar_hour : 10.5;
 
 function analysisTargets() {
   const t = [];
@@ -2594,9 +3484,9 @@ function floodBuildingsAffected() {
   if (!g || !floodWet || !BUILDING_RECORDS || !SCENE_META) return 0;
   let n = 0;
   for (const rec of BUILDING_RECORDS) {
-    const x = (rec.cx - (SCENE_META.origin_x || 0));
+    const x = (rec.cx - (SCENE_META.origin_x || 0)) / crsK();
     // Same convention as the evidence lookup above: scene z IS (cy - origin_y).
-    const z = (rec.cy - (SCENE_META.origin_y || 0));
+    const z = (rec.cy - (SCENE_META.origin_y || 0)) / crsK();
     const c = Math.round((x - g.x0) / (g.dx || 1));
     const r = Math.round((z - g.z0) / (g.dz || 1));
     if (r < 0 || r >= g.h || c < 0 || c >= g.w) continue;
@@ -2820,6 +3710,7 @@ function sunForHour(hour) {
 function applySunHour(hour) {
   const s = sunForHour(hour);
   const d = sunDirectionFromAngles(s.el, s.az);
+  if (skyMesh) { skyMesh.sunPosition.value.copy(d); if (skySunU) skySunU.value.copy(d); scheduleSkyEnvironment(); }
   if (groundMesh) {
     const box = new THREE.Box3().setFromObject(groundMesh);
     const c = box.getCenter(new THREE.Vector3());
@@ -2829,10 +3720,18 @@ function applySunHour(hour) {
     sunLight.target.position.copy(c);
     sunLight.target.updateMatrixWorld();
   }
-  // Low sun is warmer and dimmer, as real low sun is.
-  const t = Math.max(0, Math.min(1, s.el / 60));
-  sunLight.intensity = 0.9 + 2.4 * t;
-  sunLight.color.setRGB(1.0, 0.86 + 0.10 * t, 0.66 + 0.28 * t);
+  // Same sun, different path through the same atmosphere: colour and
+  // strength follow the model's own transmittance (low sun warmer, dimmer).
+  const Tn = sunTransmittanceJS(d), tl = _lum(Tn);
+  sunLight.intensity = LIGHT.sunI * tl / _lum(LIGHT.Tcap);
+  sunLight.color.setRGB(Tn[0] / tl, Tn[1] / tl, Tn[2] / tl);
+  if (skyMesh && skyMesh.userData.discU) {
+    skyMesh.userData.discU.value.setRGB(Tn[0] / tl, Tn[1] / tl, Tn[2] / tl)
+      .multiplyScalar(Math.min(sunLight.intensity / (2 * Math.PI * (1 - Math.cos(THREE.MathUtils.degToRad(0.265)))), 60000));
+  }
+  // Away from the capture time the photo's baked shadows no longer match the
+  // sun, so the shadow map is let onto photographed surfaces as well.
+  setPhotoSurfaceShadows(Math.abs(hour - CAPTURE_HOUR) > 0.3);
 
   const out = document.getElementById("sun-readout");
   if (!out) return;
@@ -3002,6 +3901,12 @@ document.getElementById("flood").addEventListener("input", (e) => {
 document.getElementById("sunhr").addEventListener("input", (e) => {
   applySunHour(parseFloat(e.target.value));
 });
+{
+  const hh = Math.floor(CAPTURE_HOUR), mm = Math.round((CAPTURE_HOUR - hh) * 60);
+  document.getElementById("sunhr").value = String(CAPTURE_HOUR);
+  document.getElementById("sun-readout").textContent =
+    `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}   (matches capture)`;
+}
 document.getElementById("vexag").addEventListener("input", (e) => {
   const v = parseFloat(e.target.value);
   heightBoostFactor = v;
@@ -3269,11 +4174,12 @@ window.__dw = {
 // atan2(1, 0) = 90 deg.
 const compassEl = document.createElement("div");
 compassEl.id = "compass";
+compassEl.className = "dw-chrome";
 compassEl.style.cssText =
   "position:fixed;top:12px;right:12px;z-index:40;pointer-events:none;" +
-  "background:rgba(10,14,20,0.7);color:#cde;border:1px solid #345;" +
-  "border-radius:50%;width:46px;height:46px;display:flex;align-items:center;" +
-  "justify-content:center;font:bold 13px monospace;";
+  "background:rgba(16,18,22,0.55);color:#cde;border:1px solid rgba(255,255,255,0.12);" +
+  "border-radius:50%;width:38px;height:38px;display:flex;align-items:center;" +
+  "justify-content:center;font:600 11px system-ui,sans-serif;";
 document.body.appendChild(compassEl);
 const CARDINALS = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
 const _fwd = new THREE.Vector3();
@@ -3302,6 +4208,7 @@ function updateCompass() {
 // exactly how many screen pixels that real distance occupies right now.
 const scaleBarEl = document.createElement("div");
 scaleBarEl.id = "scale-bar";
+scaleBarEl.className = "dw-chrome";
 scaleBarEl.style.cssText =
   "position:fixed;bottom:16px;left:16px;z-index:40;pointer-events:none;" +
   "display:flex;flex-direction:column;align-items:center;font:11px monospace;color:#cde;";
@@ -3375,9 +4282,10 @@ function _imageLoads(url) {
 
 const compareToggleBtn = document.createElement("button");
 compareToggleBtn.id = "compare-toggle";
+compareToggleBtn.className = "dw-chrome";
 compareToggleBtn.textContent = "Compare: Prediction vs Ground Truth";
 compareToggleBtn.style.cssText =
-  "position:fixed;bottom:16px;right:16px;z-index:41;display:none;" +
+  "position:fixed;bottom:52px;right:16px;z-index:41;display:none;" +
   "background:rgba(10,14,20,0.8);color:#cde;border:1px solid #345;" +
   "border-radius:6px;padding:8px 12px;font:12px monospace;cursor:pointer;";
 document.body.appendChild(compareToggleBtn);
@@ -3460,11 +4368,13 @@ const _walkUp = new THREE.Vector3(0, 1, 0);
 
 const walkToggleBtn = document.createElement("button");
 walkToggleBtn.id = "walk-toggle";
-walkToggleBtn.textContent = "Walk Mode (click, then WASD + mouse, Esc to exit)";
+walkToggleBtn.textContent = "Walk";
+walkToggleBtn.title = "Walk mode: click, then WASD + mouse, Esc to exit";
+walkToggleBtn.className = "dw-chrome";
 walkToggleBtn.style.cssText =
-  "position:fixed;bottom:16px;left:16px;z-index:41;" +
-  "background:rgba(10,14,20,0.8);color:#cde;border:1px solid #345;" +
-  "border-radius:6px;padding:8px 12px;font:12px monospace;cursor:pointer;";
+  "position:fixed;bottom:16px;right:16px;z-index:41;" +
+  "background:rgba(16,18,22,0.55);color:#cde;border:1px solid rgba(255,255,255,0.12);" +
+  "border-radius:14px;padding:5px 12px;font:11px system-ui,sans-serif;cursor:pointer;";
 document.body.appendChild(walkToggleBtn);
 walkToggleBtn.addEventListener("click", () => {
   renderer.domElement.requestPointerLock();
@@ -3706,13 +4616,13 @@ function highlightMatches(matches) {
 
   for (const rec of matches) {
     if (!rec.ring || rec.ring.length < 3) continue;
-    const pts = rec.ring.map((pt) => new THREE.Vector2(pt[0] - ox, -(pt[1] - oy)));
+    const pts = rec.ring.map((pt) => new THREE.Vector2((pt[0] - ox) / crsK(), -(pt[1] - oy) / crsK()));
     let shape;
     try { shape = new THREE.Shape(pts); } catch (e) { continue; }
     const h = rec.props.height_m || 1.0;
     const geo = new THREE.ExtrudeGeometry(shape, { depth: h + 1.5, bevelEnabled: false });
     geo.rotateX(-Math.PI / 2);
-    const gy = sampleGroundAt(rec.cx - ox, rec.cy - oy, datum);
+    const gy = sampleGroundAt((rec.cx - ox) / crsK(), (rec.cy - oy) / crsK(), datum);
     const mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
       color: 0xffcc33, transparent: true, opacity: 0.35, depthWrite: false,
     }));
@@ -3728,7 +4638,7 @@ function flyToMatches(matches) {
   const ox = SCENE_META.origin_x || 0, oy = SCENE_META.origin_y || 0;
   let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
   for (const rec of matches) {
-    const x = rec.cx - ox, z = rec.cy - oy;
+    const x = (rec.cx - ox) / crsK(), z = (rec.cy - oy) / crsK();
     minX = Math.min(minX, x); maxX = Math.max(maxX, x);
     minZ = Math.min(minZ, z); maxZ = Math.max(maxZ, z);
   }

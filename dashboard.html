@@ -118,7 +118,20 @@
     <div id="flavor"></div>
     <div id="note"></div>
     <ol id="stages"></ol>
-    <div id="result"><a class="btn" href="/viewer/index.html" target="_blank">Open the 3D model</a></div>
+    <div id="conn" style="display:none;margin:8px 0;padding:8px 10px;border-radius:6px;background:rgba(230,160,40,.15);color:#c98a1a;font-size:13px;" role="status"></div>
+    <div id="result">
+      <a class="btn" id="openviewer" href="/viewer/index.html" target="_blank">Open 3D viewer</a>
+      <a class="btn" id="dsmlink" href="/api/dsm" download>Download DSM (GeoTIFF)</a>
+      <label class="btn" style="cursor:pointer;">Validate against reference
+        <input type="file" id="reffile" accept=".tif,.tiff" style="display:none;"></label>
+      <div id="referr" style="margin-top:8px;font-size:13px;color:#d9534f;"></div>
+      <div id="refres" style="display:none;margin-top:10px;padding:10px 12px;border:1px solid rgba(128,128,128,.35);border-radius:8px;font-size:13px;">
+        <b>Validation vs reference</b>
+        <div>RMSE <b id="m_rmse"></b> &middot; MAE <b id="m_mae"></b> &middot; Bias <b id="m_bias"></b></div>
+        <div>Correlation <b id="m_corr"></b> &middot; Overlap <b id="m_ov"></b></div>
+        <div id="m_fit" style="opacity:.7"></div>
+      </div>
+    </div>
     <div id="error"></div>
     <div id="retry"><button class="btn" id="retrybtn">Try another image</button></div>
   </section>
@@ -280,6 +293,9 @@ function reset() {
   overrunning = false;
   currentMessage = "";
   doneStages = {};
+  currentJob = null;
+  sseTries = 0;
+  connNote("");
   $("error").style.display = "none";
   $("error").textContent = "";
   $("retry").style.display = "none";
@@ -292,10 +308,46 @@ function reset() {
   $("file").value = "";
 }
 
-function listen(jobId) {
-  const src = new EventSource("/api/events/" + jobId);
-  src.onmessage = (e) => {
-    const d = JSON.parse(e.data);
+let currentJob = null;
+let sseTries = 0;
+const SSE_MAX_TRIES = 5;
+
+function connNote(msg) {
+  const el = $("conn");
+  el.textContent = msg || "";
+  el.style.display = msg ? "block" : "none";
+}
+
+// No status endpoint exists in server.py today; probe one anyway so a later
+// backend addition is picked up. On 404 we stop and say so plainly.
+function pollStatus(jobId) {
+  connNote("Live progress connection lost. Checking job status…");
+  const tick = () => {
+    if (stopped || jobId !== currentJob) return;
+    fetch("/api/status/" + encodeURIComponent(jobId))
+      .then((r) => {
+        if (r.status === 404) throw new Error("nostatus");
+        return r.json();
+      })
+      .then((d) => {
+        handleEvent(d, null, jobId);
+        if (d.phase !== "done" && d.phase !== "error") setTimeout(tick, 3000);
+        else connNote("");
+      })
+      .catch((e) => {
+        if (String(e.message) === "nostatus") {
+          connNote("Lost the live progress connection to the server. The job may still be running; reload this page or check the server.");
+        } else {
+          setTimeout(tick, 5000);
+        }
+      });
+  };
+  tick();
+}
+
+function handleEvent(d, src, jobId) {
+    connNote("");
+    sseTries = 0;
 
     etaRemaining = (typeof d.eta === "number") ? d.eta : null;
     etaKnown = !!d.eta_known;
@@ -324,17 +376,85 @@ function listen(jobId) {
       $("eta").textContent = "0:00";
       $("stagelabel").textContent = "";
       $("flavor").textContent = d.message;
-      $("result").style.display = "block";
-      src.close();
+      showResult(jobId);
+      if (src) src.close();
+      finished = true;
     } else if (d.phase === "error") {
       fail(d.message);
-      src.close();
+      if (src) src.close();
+      finished = true;
       return;
     }
     paint();
-  };
-  src.onerror = () => { src.close(); };
 }
+
+let finished = false;
+
+function listen(jobId) {
+  currentJob = jobId;
+  finished = false;
+  const src = new EventSource("/api/events/" + jobId);
+  src.onmessage = (e) => {
+    let d;
+    try { d = JSON.parse(e.data); } catch (_) { return; }
+    handleEvent(d, src, jobId);
+  };
+  src.onerror = () => {
+    src.close();
+    if (finished || stopped || jobId !== currentJob) return;
+    sseTries += 1;
+    if (sseTries <= SSE_MAX_TRIES) {
+      const wait = Math.min(1000 * 2 ** (sseTries - 1), 16000);
+      connNote(`Progress connection dropped. Reconnecting (attempt ${sseTries}/${SSE_MAX_TRIES}) in ${Math.round(wait / 1000)}s…`);
+      setTimeout(() => { if (!finished && jobId === currentJob) listen(jobId); }, wait);
+    } else {
+      pollStatus(jobId);
+    }
+  };
+}
+
+function showResult(jobId) {
+  const q = "job=" + encodeURIComponent(jobId);
+  $("openviewer").href = "/viewer/index.html?" + q;
+  $("dsmlink").href = "/api/dsm?" + q;
+  $("refres").style.display = "none";
+  $("referr").textContent = "";
+  $("result").style.display = "block";
+}
+
+function fmtNum(v, dp) {
+  return (typeof v === "number" && isFinite(v)) ? v.toFixed(dp) : "–";
+}
+
+$("reffile").addEventListener("change", () => {
+  const f = $("reffile").files[0];
+  if (!f || !currentJob) return;
+  $("referr").textContent = "Validating against " + f.name + "…";
+  $("refres").style.display = "none";
+  fetch("/api/reference?job=" + encodeURIComponent(currentJob), { method: "POST", body: f })
+    .then(async (r) => {
+      let d = null;
+      try { d = await r.json(); } catch (_) {}
+      if (!r.ok) {
+        const why = (d && (d.error || d.message)) || r.statusText;
+        throw new Error((r.status >= 400 && r.status < 500 ? "Reference rejected (" : "Server error (") + r.status + "): " + why);
+      }
+      return d || {};
+    })
+    .then((d) => {
+      $("referr").textContent = "";
+      $("m_rmse").textContent = fmtNum(d.rmse, 2) + " m";
+      $("m_mae").textContent = fmtNum(d.mae, 2) + " m";
+      $("m_bias").textContent = fmtNum(d.bias, 2) + " m";
+      $("m_corr").textContent = fmtNum(d.corr, 3);
+      $("m_ov").textContent = (typeof d.overlap_fraction === "number" ? (d.overlap_fraction * 100).toFixed(0) + "%" : "–")
+        + (d.n ? " (" + d.n.toLocaleString() + " px)" : "");
+      $("m_fit").textContent = d.fitted ? "Offset fitted to reference before scoring." : "";
+      $("refres").style.display = "block";
+    })
+    .catch((e) => { $("referr").textContent = e.message || String(e); })
+    .finally(() => { $("reffile").value = ""; });
+});
 
 $("retrybtn").addEventListener("click", reset);
 

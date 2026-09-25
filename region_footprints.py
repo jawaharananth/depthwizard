@@ -210,8 +210,21 @@ def extract(image_np: np.ndarray, ndsm: np.ndarray, gsd_m: float,
             continue
 
         if has_colour:
-            green = float(np.mean(exg[y0:y1, x0:x1][sub]))
-            if green > 12.0:
+            region_exg = exg[y0:y1, x0:x1][sub]
+            green = float(np.mean(region_exg))
+            # A region's MEAN greenness is not robust to partial
+            # contamination: a real flat roof with tree canopy overhanging
+            # just its edges (the norm on a tree-lined residential street,
+            # not an edge case) gets its average pulled over threshold by a
+            # minority of pixels, and the whole real building is discarded.
+            # Requiring the region be MAJORITY green as well is the same
+            # "don't let a contaminated tail set the number" fix already
+            # used for canopy height (median over percentile) and the GCP
+            # estimator (ratio-of-medians over median-of-ratios) elsewhere
+            # in this project -- consistent with the existing discipline,
+            # not a one-off tuned to a single scene.
+            frac_green = float((region_exg > 12.0).mean())
+            if green > 12.0 and frac_green > 0.5:
                 rej["vegetation"] += 1
                 continue
         else:

@@ -184,3 +184,17 @@ tune_mvs_seg.py
 
 # Tauri generated sources (icons, platform scaffolding) are build products.
 src-tauri/gen/
+
+# Scene/archive binaries (rebuildable from build_hitec2x2.py / build_periyar.py;
+# 5-130 MB each). Keep only the small descriptors in git.
+scenes/**/*.png
+scenes/**/*.jpg
+scenes/**/*.glb
+scenes/**/*.tif
+scenes/**/*.bin
+archive/*/source/
+archive/*/model/
+nyc_fidi/*.csv
+nyc_fidi/*.png
+*_polygons_px*.json
+*.log

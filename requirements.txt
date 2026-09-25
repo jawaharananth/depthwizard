@@ -26,3 +26,5 @@ playwright==1.58.0
 # OpenVINO accelerates depth inference on Intel integrated graphics. Optional,
 # and pointless on a CUDA machine -- install only if there is no NVIDIA GPU.
 # openvino==2026.3.1
+pyproj==3.7.2
+shapely==2.1.2

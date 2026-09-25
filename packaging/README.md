@@ -41,12 +41,17 @@ being relied on for a live demo.
 ## Structure
 
 ```
-packaging/
+src-tauri/            the project that actually built the MSI/NSIS above
   tauri.conf.json     window, bundle and security config
-  Cargo.toml          Rust manifest (unverified)
-  src/main.rs         entry point (unverified)
+  Cargo.toml          Rust manifest (compiled successfully)
+  src/main.rs         entry point (compiled successfully)
+packaging/            earlier copy of the same files, kept for reference
 dist/                 static build: viewer/ + a built scene in output/
 ```
+
+The Rust sources compiled and produced working installers, so they are no
+longer "unverified". Runtime behaviour on machines other than the build
+machine (WebView2/WebGPU availability) has not been tested.
 
 ## Steps
 
@@ -63,8 +68,8 @@ cargo install tauri-cli
 python build_city.py JAX_165 --extent 640 --px 2560 --views 6 --dem
 mkdir -p dist && cp -r viewer dist/
 
-# 4. Build
-cargo tauri build
+# 4. Build (from src-tauri/)
+cd src-tauri && cargo tauri build
 ```
 
 ## What ships, and what does not
@@ -78,7 +83,8 @@ Two honest options for a standalone that can also *build* scenes:
 
 1. **Viewer-only** (recommended for a demo): ship pre-built scenes. Opens
    instantly, needs no Python, cannot process new imagery.
-2. **Sidecar backend**: bundle the FastAPI upload server as a Tauri sidecar
+2. **Sidecar backend**: bundle the upload server (`server.py`, Python stdlib
+   `ThreadingHTTPServer`, no web framework) as a Tauri sidecar
    binary via PyInstaller. Adds several hundred MB and inherits every CPU-time
    constraint documented in the report — an upload still takes 8–22 minutes.
 

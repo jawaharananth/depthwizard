@@ -84,9 +84,12 @@ def sun_position(lat_deg: float, lon_deg: float, dt_utc) -> tuple:
     else:
         az_cos = (math.sin(lat_rad) * math.cos(zenith_rad) - math.sin(decl_rad)) / az_denom
         az_cos = max(-1.0, min(1.0, az_cos))
-        azimuth_deg = math.degrees(math.acos(az_cos))
-        if hour_angle > 0:
-            azimuth_deg = 360 - azimuth_deg
+        # NOAA's final step: acos() here is measured from SOUTH, so it must be
+        # rotated onto the north-clockwise convention this function promises.
+        # Without it noon read 0 (north) instead of 180 and a morning sun
+        # read north-east instead of south-east.
+        a = math.degrees(math.acos(az_cos))
+        azimuth_deg = (a + 180) % 360 if hour_angle > 0 else (540 - a) % 360
 
     return elevation_deg, azimuth_deg
 

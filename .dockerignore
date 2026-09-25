@@ -27,13 +27,15 @@ checkpoints/height_best_ov.bin
 checkpoints/height_best_ov.xml
 checkpoints/height_htc_best/
 checkpoints/training_report.json
+# sr_texture (tools/) is display-only and opt-in; its weights stay out.
+checkpoints/realesrgan/
 
 # Generated output, caches, scratch data -- reproducible, not source.
 final_out/
 viewer/output/
 cache/
 india/
-scenes/
+scenes/*
 dfc_out/
 demo_out/
 verify_out/
@@ -51,14 +53,12 @@ colab_subset/
 colab/
 colab - Copy/
 buildings/
-calibration/
 dashboard/
 docs/
 dist/
 packaging/
 scripts/
 src-tauri/
-tools/
 tests/
 webapp/
 
@@ -75,3 +75,13 @@ webapp/
 
 *.md
 LICENSE
+
+# Re-include what the image actually needs. These must come last so they
+# override the blanket *.png/*.glb/*.jpg/*.md rules above.
+# calibration/ (package, incl. conformal_quantile.json) and tools/
+# (build_context_city.py, sr_texture.py -- lazy imports in
+# build_city_image.py) are no longer excluded.
+!scenes/hitec_2x2
+!scenes/hitec_2x2/**
+!scenes/periyar_forest
+!scenes/periyar_forest/**

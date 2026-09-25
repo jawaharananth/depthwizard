@@ -365,7 +365,8 @@ def _repair_ring(poly, shape):
 def build_prisms(footprints: list, dsm: np.ndarray, dtm: np.ndarray,
                  gsd_x_m: float, gsd_y_m: float, min_height_m: float = 2.5,
                  roof_percentile: float = 70.0, image_np: np.ndarray = None,
-                 flat_roof_indices: set = None, roof_dsm: np.ndarray = None):
+                 flat_roof_indices: set = None, roof_dsm: np.ndarray = None,
+                 lean_px_per_m: tuple = None):
     """
     One flat-roofed prism per footprint: vertical walls plus a flat roof.
 
@@ -398,7 +399,6 @@ def build_prisms(footprints: list, dsm: np.ndarray, dtm: np.ndarray,
         xs = np.clip(poly[:, 0].astype(int), 0, W - 1)
         ys = np.clip(poly[:, 1].astype(int), 0, H - 1)
 
-        m = np.zeros((H, W), np.uint8)
         x0, y0, w, h = cv2.boundingRect(poly.astype(np.int32))
         x0, y0 = max(x0, 0), max(y0, 0)
         x1, y1 = min(x0 + w, W), min(y0 + h, H)
@@ -602,38 +602,34 @@ def build_prisms(footprints: list, dsm: np.ndarray, dtm: np.ndarray,
         # because a roof seen in a lit 3D scene should not be as dark as its
         # nadir photograph, where it is partly self-shadowed.
         if image_np is not None:
-            patch = image_np[y0:y1, x0:x1][inside]
-            med = np.median(patch, axis=0).astype(np.float32) / 255.0
-            # Keep the roof's real VALUE -- a dark membrane roof should stay
-            # darker than white render, and that variation is most of what the
-            # eye reads as "different buildings".
-            #
-            # Then expand chroma about the patch's own luminance. WorldView
-            # imagery here is near-neutral (R, G and B within a couple of
-            # levels of each other at every percentile), so the genuine colour
-            # differences between brick, painted metal and tar are real but
-            # tiny. Scaling the distance from grey makes them visible without
-            # inventing a hue: the direction is measured, only the magnitude is
-            # amplified, and it is a display choice like the ground grade.
-            lum = float(med @ np.array([0.299, 0.587, 0.114], np.float32))
-            rgb = np.clip(lum + (med - lum) * 2.2, 0.0, 1.0)
-
-            # Steer toward a cool blue-grey, but do not replace the measurement.
-            #
-            # The scene is graded cool overall, and a neutral-white building
-            # stock under a cool sky reads as unfinished CAD rather than a city.
-            # Blending toward a blue-grey anchor keeps each roof's own value and
-            # its own hue direction -- a brick roof stays warmer than a metal one
-            # -- while placing the whole palette in one family. This is a display
-            # grade on the colour channel only; no height, footprint or extent is
-            # touched by it.
-            anchor = np.array([0.62, 0.71, 0.82], np.float32)
-            tint = 0.42
-            rgb = np.clip(rgb * (1.0 - tint) + anchor * tint * (0.55 + 0.9 * lum),
-                          0.0, 1.0)
-            # Lift only the deepest shadows so a roof photographed in shade does
-            # not become a black hole under scene lighting.
-            rgb = np.clip(rgb * 0.90 + 0.13, 0.0, 1.0)
+            # The building's own measured colour, unaltered. Roofs render
+            # from the texture itself; this colour is for the walls, so where
+            # the image is oblique enough to show this building's facade, the
+            # facade's own pixels are sampled -- the swept strip between the
+            # roof outline and where its base appears, lean * height away.
+            # Otherwise the roof's median is the only real sample there is.
+            rgb = None
+            if lean_px_per_m is not None:
+                _h = float(roof_h - base_h)
+                _sx = -lean_px_per_m[0] * _h
+                _sy = -lean_px_per_m[1] * _h
+                if np.hypot(_sx, _sy) >= 3.0:
+                    _pts = np.vstack([poly, poly + [_sx, _sy]]).astype(np.float32)
+                    _hull = cv2.convexHull(_pts).reshape(-1, 2)
+                    _fx0 = int(max(0, np.floor(_hull[:, 0].min())))
+                    _fy0 = int(max(0, np.floor(_hull[:, 1].min())))
+                    _fx1 = int(min(W, np.ceil(_hull[:, 0].max()) + 1))
+                    _fy1 = int(min(H, np.ceil(_hull[:, 1].max()) + 1))
+                    if _fx1 - _fx0 > 1 and _fy1 - _fy0 > 1:
+                        _fm = np.zeros((_fy1 - _fy0, _fx1 - _fx0), np.uint8)
+                        cv2.fillPoly(_fm, [(_hull - [_fx0, _fy0]).astype(np.int32)], 1)
+                        cv2.fillPoly(_fm, [(poly - [_fx0, _fy0]).astype(np.int32)], 0)
+                        _fpix = image_np[_fy0:_fy1, _fx0:_fx1][_fm > 0]
+                        if len(_fpix) >= 12:
+                            rgb = np.median(_fpix, axis=0).astype(np.float32) / 255.0
+            if rgb is None:
+                patch = image_np[y0:y1, x0:x1][inside]
+                rgb = np.median(patch, axis=0).astype(np.float32) / 255.0
         else:
             rgb = np.array([0.82, 0.80, 0.76], np.float32)
 

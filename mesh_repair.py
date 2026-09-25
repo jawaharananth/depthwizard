@@ -488,7 +488,8 @@ def repair_build(footprints: Sequence[np.ndarray], dsm: np.ndarray,
                  ground_small: Optional[np.ndarray] = None,
                  cell_m: Optional[float] = None,
                  verbose: bool = True,
-                 roof_dsm: Optional[np.ndarray] = None) -> Dict:
+                 roof_dsm: Optional[np.ndarray] = None,
+                 lean_px_per_m: Optional[tuple] = None) -> Dict:
     """Repair footprints, then extrude, then repair what only extrusion reveals.
 
     Two phases, because the two defect families cost different amounts to see.
@@ -544,7 +545,8 @@ def repair_build(footprints: Sequence[np.ndarray], dsm: np.ndarray,
         verts, faces, binfo = city_model.build_prisms(
             fps, dsm, ground, gsd, gsd, min_height_m=min_height_m,
             image_np=image_np, roof_percentile=70.0,
-            flat_roof_indices=flat_roof, roof_dsm=roof_dsm)
+            flat_roof_indices=flat_roof, roof_dsm=roof_dsm,
+            lean_px_per_m=lean_px_per_m)
         defects = find_defects(fps, verts, faces, binfo, gsd, shape,
                                ground_small=ground_small, cell_m=cell_m)
         defects = {k: [n for n in v if n not in FOOTPRINT_DEFECTS]

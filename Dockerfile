@@ -1,10 +1,12 @@
-# DepthWizard -- Google Cloud Run serving image.
-# Multi-stage: build stage installs deps once, runtime stage stays lean.
-FROM python:3.13-slim AS base
+# DepthWizard -- serving image (Cloud Run / any container host).
+# Single stage. Not built on the dev machine (no Docker installed there);
+# the COPY list below was checked statically against the tree.
+FROM python:3.13-slim
 
-# rasterio/opencv need these system libs at runtime, not just build time.
+# opencv-python-headless still needs glib at runtime. rasterio and pyproj
+# PyPI wheels bundle their own GDAL/PROJ, so no libgdal package is needed
+# (the old `libgdal32` does not exist on the trixie-based 3.13 image).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libgdal32 \
     libgl1 \
     libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
@@ -14,21 +16,34 @@ WORKDIR /app
 COPY requirements-serve.txt .
 RUN pip install --no-cache-dir -r requirements-serve.txt
 
-# Only what the serving path (server.py's real import graph) touches --
-# training scripts, notebooks, eval reports, dataset loaders for
-# offline-only formats, and the multi-GB dfc2019_data/ directory are
-# deliberately not copied into the image.
-COPY server.py progress.py build_city_image.py depth_model.py htc_bins.py \
-     building_discovery.py calibration.py city_model.py dem_source.py \
-     dfc2019_loader.py dsm_export.py dsm_refine.py dtm.py float_check.py \
-     geometry_validate.py glb_export.py height_cache.py image_grade.py \
-     mesh_generation.py mesh_repair.py model_audit.py \
-     overlay_rejection.py prebuild.py region_footprints.py \
+# Import closure of server.py, found by walking every import statement
+# (top-level and lazy, inside functions) recursively from server.py:
+# server -> prebuild, progress, build_city_image -> everything below.
+# vlm_audit (needs `anthropic`, opt-in) and ov_backend (needs openvino,
+# optional) are copied but their deps are not installed; both degrade
+# gracefully when the dependency is missing.
+COPY server.py prebuild.py progress.py build_city_image.py \
+     adaptive_mesh.py building_discovery.py city_model.py dem_source.py \
+     depth_model.py dfc2019_loader.py dsm_export.py dsm_refine.py dtm.py \
+     float_check.py geometry_validate.py glb_export.py height_cache.py \
+     htc_bins.py image_grade.py mesh_generation.py mesh_repair.py \
+     model_audit.py open_buildings_source.py osm_structures.py \
+     ov_backend.py overlay_rejection.py region_footprints.py \
      roof_structure.py segmentation.py shadow_correction.py \
-     terrain_classify.py terrain_maps.py adaptive_mesh.py ./
+     sun_from_shadows.py terrain_classify.py terrain_maps.py vlm_audit.py \
+     dashboard.html ./
 
+# calibration/ is a package (conformal.py reads conformal_quantile.json).
+COPY calibration/ ./calibration/
+# tools/build_context_city.py and tools/sr_texture.py are lazily imported
+# by build_city_image.py via sys.path.
+COPY tools/ ./tools/
 COPY viewer/ ./viewer/
 COPY checkpoints/height_best/ ./checkpoints/height_best/
+# The two demo scenes served by /scenes/ (~520 MB together). Drop these
+# two lines for a smaller image; the dashboard then lists no scenes.
+COPY scenes/hitec_2x2/ ./scenes/hitec_2x2/
+COPY scenes/periyar_forest/ ./scenes/periyar_forest/
 
 ENV PYTHONUNBUFFERED=1
 EXPOSE 8080

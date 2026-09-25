@@ -64,12 +64,31 @@ OUTPUT_DIR = os.path.join(VIEWER_DIR, "output")
 RESULT_CACHE_DIR = os.path.join(ROOT, "cache", "uploads")
 
 
+CODE_FILES = ("build_city_image.py", "dem_source.py", "depth_model.py", "city_model.py")
+
+
+def _code_version() -> str:
+    """Hash of the pipeline source, so a code change invalidates the result
+    cache instead of serving a build the current code would not produce.
+    Re-computed per job (cheap) so edits while the server runs count too."""
+    h = hashlib.sha256()
+    for name in CODE_FILES:
+        p = os.path.join(ROOT, name)
+        h.update(name.encode())
+        try:
+            with open(p, "rb") as f:
+                h.update(f.read())
+        except OSError:
+            h.update(b"<missing>")
+    return h.hexdigest()[:16]
+
+
 def _upload_hash(path: str) -> str:
     h = hashlib.sha256()
     with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(1 << 20), b""):
             h.update(chunk)
-    return h.hexdigest()
+    return h.hexdigest() + "_" + _code_version()
 
 # Uploads are user-supplied files written to disk, so both the extension and the
 # size are checked before anything touches them. The pipeline itself refuses
@@ -207,17 +226,184 @@ def _copy_cached_result(cache_dir: str) -> None:
             os.remove(dst)   # this build never produced it -- don't leave a stale one
 
 
-def _save_result_to_cache(cache_dir: str) -> None:
+def _save_result_to_cache(cache_dir: str, dsm_path: str | None = None) -> None:
     import prebuild
     os.makedirs(cache_dir, exist_ok=True)
     for name in prebuild.ASSETS:
         src = os.path.join(OUTPUT_DIR, name)
         if os.path.exists(src):
             shutil.copy2(src, os.path.join(cache_dir, name))
+    if dsm_path and os.path.isfile(dsm_path):
+        shutil.copy2(dsm_path, os.path.join(cache_dir, os.path.basename(dsm_path)))
+
+
+# --- DSM lookup / reference validation ---------------------------------------
+
+FINAL_OUT = os.path.join(ROOT, "final_out")
+SCENES_DIR = os.path.join(ROOT, "scenes")
+MAX_REFERENCE_BYTES = 500 * 1024 * 1024
+_current_job: str | None = None     # job whose result is staged in viewer/output
+_loaded_code_version: str | None = None
+
+
+def _find_dsm_in(folder: str, prefix: str = "") -> str | None:
+    if not os.path.isdir(folder):
+        return None
+    for suf in ("_DSM.tif", "_rDSM.tif"):
+        for n in sorted(os.listdir(folder)):
+            if n.startswith(prefix) and n.endswith(suf):
+                return os.path.join(folder, n)
+    return None
+
+
+def _patch_staged_meta(job_id: str, dsm_path: str | None) -> None:
+    """Stamp job_id (and dsm_file/dsm_product) into viewer/output/scene.json."""
+    sj = os.path.join(OUTPUT_DIR, "scene.json")
+    try:
+        with open(sj) as f:
+            meta = json.load(f)
+    except Exception:
+        return
+    meta["job_id"] = job_id
+    if dsm_path:
+        meta["dsm_file"] = os.path.basename(dsm_path)
+        meta["dsm_product"] = "rDSM" if dsm_path.endswith("_rDSM.tif") else "DSM"
+    with open(sj, "w") as f:
+        json.dump(meta, f, indent=2)
+
+
+def _ensure_staged(job_id: str) -> tuple[int, str]:
+    """Make viewer/output hold job_id's scene. Returns (http_code, message);
+    200 means staged. Restages from the result cache when possible."""
+    global _current_job
+    if job_id == _current_job:
+        return 200, "staged"
+    with _jobs_lock:
+        rec = _jobs.get(job_id)
+    if not rec:
+        return 404, "unknown job (the server may have restarted) -- upload the image again"
+    job = rec["job"]
+    if not job.finished or rec.get("state") != "done":
+        return 409, "that job has not finished building yet"
+    cache_dir = rec.get("cache_dir")
+    if not cache_dir or not os.path.isdir(cache_dir):
+        return 409, "that job's result is no longer staged and was not cached -- upload it again"
+    if not _pipeline_lock.acquire(blocking=False):
+        return 409, "another model is building right now -- try again when it finishes"
+    try:
+        _copy_cached_result(cache_dir)
+        _patch_staged_meta(job_id, rec.get("dsm_path"))
+        _current_job = job_id
+    finally:
+        _pipeline_lock.release()
+    return 200, "restaged from cache"
+
+
+def _job_dsm(job_id: str) -> str | None:
+    with _jobs_lock:
+        rec = _jobs.get(job_id)
+    if rec and rec.get("dsm_path") and os.path.isfile(rec["dsm_path"]):
+        return rec["dsm_path"]
+    return _find_dsm_in(FINAL_OUT, f"city_upload_{job_id}_")
+
+
+def _scene_dir(name: str) -> str | None:
+    d = os.path.normpath(os.path.join(SCENES_DIR, name))
+    if not d.startswith(os.path.normpath(SCENES_DIR) + os.sep) or not os.path.isdir(d):
+        return None
+    return d
+
+
+def validate_reference(dsm_path: str, ref_path: str, out_dir: str) -> dict:
+    """Reproject an uploaded reference elevation raster onto the scene DSM's
+    grid and score the DSM against it. Raises ValueError with a user-facing
+    message on anything that makes the comparison meaningless."""
+    import numpy as np
+    import rasterio
+    from rasterio.warp import reproject, Resampling
+    from PIL import Image
+
+    with rasterio.open(dsm_path) as ds:
+        est = ds.read(1).astype(np.float64)
+        dst_crs, dst_tf = ds.crs, ds.transform
+        est_nd = ds.nodata
+        product = (ds.tags().get("PRODUCT")
+                   or ("rDSM" if dsm_path.endswith("_rDSM.tif") else "DSM"))
+    if dst_crs is None or dst_tf is None or dst_tf.is_identity:
+        raise ValueError("the scene's DSM is not georeferenced, so no reference can be aligned to it")
+    try:
+        src = rasterio.open(ref_path)
+    except Exception as e:
+        raise ValueError(f"reference is not a readable GeoTIFF ({type(e).__name__})")
+    with src:
+        if src.crs is None or src.transform.is_identity:
+            raise ValueError("reference GeoTIFF has no CRS/geotransform -- it cannot be placed")
+        ref = np.full(est.shape, np.nan, np.float64)
+        reproject(source=rasterio.band(src, 1), destination=ref,
+                  src_transform=src.transform, src_crs=src.crs, src_nodata=src.nodata,
+                  dst_transform=dst_tf, dst_crs=dst_crs, dst_nodata=np.nan,
+                  resampling=Resampling.bilinear)
+    valid = np.isfinite(ref) & np.isfinite(est)
+    if est_nd is not None:
+        valid &= est != est_nd
+    n = int(valid.sum())
+    if n < 10:
+        raise ValueError("reference and scene DSM do not overlap (after reprojection "
+                         "to the DSM's CRS) -- check the reference covers this area")
+    e, r = est[valid], ref[valid]
+    fitted = None
+    if product == "rDSM":
+        # No absolute datum or trusted scale: fit ref ~ a*est + b first.
+        A = np.vstack([e, np.ones_like(e)]).T
+        (a, b), *_ = np.linalg.lstsq(A, r, rcond=None)
+        e = a * e + b
+        est = a * est + b
+        fitted = {"scale": round(float(a), 5), "offset_m": round(float(b), 3),
+                  "note": "relative: fitted"}
+    d = e - r
+    rmse = float(np.sqrt(np.mean(d * d)))
+    mae = float(np.mean(np.abs(d)))
+    bias = float(np.mean(d))
+    corr = float(np.corrcoef(e, r)[0, 1]) if e.std() > 0 and r.std() > 0 else float("nan")
+
+    # Error PNG on the full scene grid: diverging blue-white-red, +/-10 m clamp.
+    lim = 10.0
+    t = np.clip((est - ref) / lim, -1, 1)
+    t = np.where(valid, t, 0.0)
+    rgba = np.zeros(est.shape + (4,), np.uint8)
+    pos, neg = np.clip(t, 0, 1), np.clip(-t, 0, 1)
+    rgba[..., 0] = (255 * (1 - neg * 0.85)).astype(np.uint8)
+    rgba[..., 1] = (255 * (1 - 0.85 * np.abs(t))).astype(np.uint8)
+    rgba[..., 2] = (255 * (1 - pos * 0.85)).astype(np.uint8)
+    rgba[..., 3] = np.where(valid, 255, 0).astype(np.uint8)
+    os.makedirs(out_dir, exist_ok=True)
+    Image.fromarray(rgba, "RGBA").save(os.path.join(out_dir, "terrain_error.png"))
+
+    px = abs(dst_tf.a)
+    v = {"rmse": round(rmse, 3), "mae": round(mae, 3), "bias": round(bias, 3),
+         "corr": None if corr != corr else round(corr, 4), "n": n, "n_pixels": n,
+         "overlap_fraction": round(n / est.size, 4),
+         "source": "uploaded reference", "product": product,
+         # Aliases the viewer already reads (index.html VS LiDAR / compare).
+         "rmse_m": round(rmse, 2), "mae_m": round(mae, 2), "bias_m": round(bias, 2),
+         "covers_m": round(px * max(est.shape), 1), "scale_limit_m": lim}
+    if fitted:
+        v["fitted"] = fitted
+        v["relative"] = "relative: fitted"
+    sj = os.path.join(out_dir, "scene.json")
+    try:
+        with open(sj) as f:
+            meta = json.load(f)
+    except Exception:
+        meta = {}
+    meta["validation"] = v
+    with open(sj, "w") as f:
+        json.dump(meta, f, indent=2)
+    return v
 
 
 def run_job(job: Job) -> None:
-    global _queue_depth
+    global _queue_depth, _current_job
     import build_city_image as bci
     from PIL import Image
 
@@ -259,6 +445,12 @@ def run_job(job: Job) -> None:
             # needs the same serialisation, just none of the compute.
             try:
                 _copy_cached_result(cache_dir)
+                _current_job = job.id
+                with _jobs_lock:
+                    _jobs[job.id]["dsm_path"] = _find_dsm_in(cache_dir)
+                    _jobs[job.id]["cache_dir"] = cache_dir
+                    _jobs[job.id]["state"] = "done"
+                _patch_staged_meta(job.id, _jobs[job.id]["dsm_path"])
                 job.publish({"job": job.id, "phase": "done", "elapsed_total": 0.0,
                              "message": "Identical image already processed -- served instantly from cache.",
                              "eta": 0, "eta_known": True, "overrunning": False,
@@ -267,15 +459,35 @@ def run_job(job: Job) -> None:
             except Exception:
                 pass   # cache is corrupt/partial -- fall through and rebuild for real
 
+        # The cache key follows the code on disk; make sure the build does
+        # too, or a post-edit key would be filled by the pre-edit pipeline.
+        global _loaded_code_version
+        _cv = _code_version()
+        if _loaded_code_version is None:
+            _loaded_code_version = _cv
+        elif _cv != _loaded_code_version:
+            import importlib, dem_source
+            importlib.reload(dem_source)
+            bci = importlib.reload(bci)
+            _loaded_code_version = _cv
         try:
-            bci.build(job.path, job.name, max_px=2048, tracker=tracker,
+            bci.build(job.path, job.name, max_px=int(os.environ.get("DW_MAX_PX", "2048")),
+                      tracker=tracker,
                       stage=True)
-            tracker.finish(ok=True)
+            _current_job = job.id
+            dsm_path = _find_dsm_in(FINAL_OUT, f"city_{job.name}_")
+            _patch_staged_meta(job.id, dsm_path)
+            with _jobs_lock:
+                _jobs[job.id]["dsm_path"] = dsm_path
+                _jobs[job.id]["state"] = "done"
             if cache_dir:
                 try:
-                    _save_result_to_cache(cache_dir)
+                    _save_result_to_cache(cache_dir, dsm_path)
+                    with _jobs_lock:
+                        _jobs[job.id]["cache_dir"] = cache_dir
                 except Exception:
                     pass   # caching failure must never fail an otherwise-successful build
+            tracker.finish(ok=True)
         except SystemExit as e:
             # The pipeline refuses obliques and undersized images on purpose,
             # and that refusal is a real answer, not a crash. Pass its reasoning
@@ -389,6 +601,75 @@ class Handler(BaseHTTPRequestHandler):
             self._file(safe)
             return
 
+        if route.startswith("/api/status/"):
+            job_id = route.rsplit("/", 1)[-1]
+            with _jobs_lock:
+                rec = _jobs.get(job_id)
+            if not rec:
+                self._json(404, {"error": "unknown job"})
+                return
+            job: Job = rec["job"]
+            with job.lock:
+                last = job.history[-1] if job.history else None
+            phase = last.get("phase") if last else None
+            if phase == "done":
+                state = "done"
+            elif phase == "error":
+                state = "error"
+            elif phase in (None, "queued"):
+                state = "queued" if (phase == "queued" or _pipeline_lock.locked()) else "running"
+            else:
+                state = "running"
+            out = {"state": state, "job": job_id}
+            if last:
+                out["message"] = last.get("message") or last.get("detail")
+                si, sc = last.get("stage_index"), last.get("stage_count")
+                if state == "done":
+                    out["progress"] = 1.0
+                elif isinstance(si, int) and si >= 0 and sc:
+                    out["progress"] = round(si / sc, 3)
+                out["stage"] = last.get("stage_label")
+                out["eta"] = last.get("eta")
+            self._json(200, out)
+            return
+
+        if route in ("/viewer/index.html", "/viewer/", "/viewer") and "job=" in u.query:
+            job_id = (urllib.parse.parse_qs(u.query).get("job") or [""])[0]
+            code, msg = _ensure_staged(job_id)
+            if code != 200:
+                self._json(code, {"error": msg, "job": job_id})
+                return
+            self._file(os.path.join(VIEWER_DIR, "index.html"))
+            return
+
+        if route == "/api/dsm":
+            qs = urllib.parse.parse_qs(u.query)
+            job_id = (qs.get("job") or [None])[0]
+            scene = (qs.get("scene") or [None])[0]
+            path = None
+            if job_id:
+                path = _job_dsm(job_id)
+            elif scene:
+                d = _scene_dir(scene)
+                path = _find_dsm_in(d) if d else None
+            else:
+                self._json(400, {"error": "pass ?job=<id> or ?scene=<name>"})
+                return
+            if not path or not os.path.isfile(path):
+                self._json(404, {"error": "no DSM/rDSM GeoTIFF for that "
+                                          + ("job" if job_id else "scene")})
+                return
+            size = os.path.getsize(path)
+            self.send_response(200)
+            self.send_header("Content-Type", "image/tiff")
+            self.send_header("Content-Length", str(size))
+            self.send_header("Content-Disposition",
+                             f'attachment; filename="{os.path.basename(path)}"')
+            self.end_headers()
+            with open(path, "rb") as f:
+                shutil.copyfileobj(f, self.wfile, 1 << 20)
+            return
+
         if route == "/api/calibration":
             self._json(200, {"summary": prog.calibration_summary()})
             return
@@ -412,6 +693,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         u = urllib.parse.urlparse(self.path)
+        if u.path == "/api/reference":
+            self._reference(u)
+            return
         if u.path != "/api/upload":
             self._json(404, {"error": "no such route"})
             return
@@ -547,6 +831,76 @@ class Handler(BaseHTTPRequestHandler):
             _jobs[job_id] = {"job": job}
         threading.Thread(target=run_job, args=(job,), daemon=True).start()
         self._json(200, {"job": job_id})
+
+    def _reference(self, u) -> None:
+        import tempfile
+        qs = urllib.parse.parse_qs(u.query)
+        job_id = (qs.get("job") or [None])[0]
+        scene = (qs.get("scene") or [None])[0]
+        if job_id:
+            dsm = _job_dsm(job_id)
+            staged = job_id == _current_job
+            if not staged and dsm:
+                # Server restarted since the build: trust the staged meta.
+                try:
+                    with open(os.path.join(OUTPUT_DIR, "scene.json")) as f:
+                        staged = json.load(f).get("dsm_file") == os.path.basename(dsm)
+                except Exception:
+                    staged = False
+            if not staged:
+                self._json(409, {"error": "that job is not the scene currently staged "
+                                          "in the viewer -- re-open it first"})
+                return
+            out_dir, url_base = OUTPUT_DIR, "/viewer/output"
+        elif scene:
+            d = _scene_dir(scene)
+            dsm = _find_dsm_in(d) if d else None
+            out_dir, url_base = d, f"/scenes/{urllib.parse.quote(scene)}"
+        else:
+            self._json(400, {"error": "pass ?job=<id> or ?scene=<name>"})
+            return
+        if not dsm:
+            self._json(404, {"error": "no DSM/rDSM GeoTIFF for that job/scene"})
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            length = 0
+        if length <= 0:
+            self._json(400, {"error": "empty body -- send the reference GeoTIFF as the raw request body"})
+            return
+        if length > MAX_REFERENCE_BYTES:
+            self._json(413, {"error": f"reference is {length/1e6:.0f} MB; limit "
+                                      f"{MAX_REFERENCE_BYTES/1e6:.0f} MB"})
+            return
+        fd, tmp = tempfile.mkstemp(suffix=".tif")
+        try:
+            remaining = length
+            with os.fdopen(fd, "wb") as f:
+                while remaining > 0:
+                    chunk = self.rfile.read(min(1 << 20, remaining))
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    remaining -= len(chunk)
+            if remaining > 0:
+                self._json(400, {"error": "upload incomplete -- try again"})
+                return
+            try:
+                v = validate_reference(dsm, tmp, out_dir)
+            except ValueError as e:
+                self._json(400, {"error": str(e)})
+                return
+            except Exception as e:
+                traceback.print_exc()
+                self._json(500, {"error": f"{type(e).__name__}: {e}"})
+                return
+            self._json(200, dict(v, error_png=f"{url_base}/terrain_error.png"))
+        finally:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
 
     # -- SSE ----------------------------------------------------------------
 

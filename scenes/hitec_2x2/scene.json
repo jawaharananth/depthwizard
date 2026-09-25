@@ -1,0 +1,140 @@
+{
+  "source_image": "C:\\Users\\jawahar\\depthwizard\\hitec2x2.tif",
+  "resolution": [
+    4096,
+    4096
+  ],
+  "tier": "B (relative depth calibrated to 3693 real building heights)",
+  "scale_source": "GSD 0.597 m/px measured from the file -- horizontal distances are real; vertical assumes tallest ~40 m",
+  "gsd_m": 0.5971642834779395,
+  "sun_azimuth_deg": 136.87122548702513,
+  "sun_elevation_deg": 42.01298839990699,
+  "capture_time_utc": "2026-01-27 04:49",
+  "capture_local_solar_hour": 10.04,
+  "sun_note": "fitted to the shadows of 300 buildings with known heights (solar ephemeris, capture 2026-01-27 04:49 UTC)",
+  "crs": "EPSG:3857",
+  "affine_transform": [
+    0.5971642834779395,
+    0.0,
+    8723758.038187165,
+    0.0,
+    -0.5971642834779395,
+    1974368.4406061023
+  ],
+  "ground_truth": "NONE -- no LiDAR available for this image; no accuracy figure can be quoted for this scene",
+  "nadir_check": {
+    "sky_span": 0.054,
+    "sky_holes": 1,
+    "likely_nadir": true
+  },
+  "overlays_removed": 729,
+  "overlay_coverage": 0.01148,
+  "model": "prism city (flat roofs, vertical walls)",
+  "buildings_extruded": 6781,
+  "canopy_volumes": 0,
+  "water_bodies": 6,
+  "vehicles": 1043,
+  "provenance": "MEASURED",
+  "height_is_metric": true,
+  "shadow_calibration": {
+    "attempted": false,
+    "refusal_reason": "no sun elevation source available -- need a GeoTIFF with capture time + CRS, or --anchor-height"
+  },
+  "dem_anchor": {
+    "attempted": true,
+    "accepted": false,
+    "reason": "spread too wide"
+  },
+  "conformal": {
+    "applied": true,
+    "variant": "constant",
+    "coverage_nominal": 0.9,
+    "half_width_m": 4.526630519866947,
+    "fitted_on": "JAX_165",
+    "held_out_coverage": 0.8968253968253969,
+    "omitted_reason": null
+  },
+  "discovery": {
+    "candidates_examined": 12968,
+    "retained": 4587,
+    "by_size": {
+      "tiny": 1552,
+      "small": 1263,
+      "medium": 856,
+      "large": 916
+    },
+    "rejected": {
+      "no_evidence": 27,
+      "duplicate": 7788,
+      "below_min_area": 566,
+      "degenerate": 0
+    },
+    "min_area_m2": 6.0,
+    "scales": [
+      1,
+      2,
+      4
+    ]
+  },
+  "build_seconds": 2230.1,
+  "texture_display": {
+    "method": "native higher-resolution imagery (8192x8192, same bounds)",
+    "scale": 1,
+    "measurements_use": "working-resolution pixels"
+  },
+  "lean_m_per_m": [
+    0.1869919121148139,
+    0.18283009682664128
+  ],
+  "texture_file": "terrain_texture_display.jpg",
+  "context": {
+    "x0": -4433.347640540451,
+    "x1": 7185.080658806488,
+    "z0": -7185.080658806255,
+    "z1": 4433.347640540451,
+    "source": "Esri World Imagery zoom 16 -- real surroundings, flat, not modelled in 3D"
+  },
+  "context_far": {
+    "x0": -20943.745750136673,
+    "x1": 25529.96744725108,
+    "z0": -24918.47122096573,
+    "z1": 21555.241976421326,
+    "source": "Esri World Imagery zoom 14 -- real, flat, horizon context"
+  },
+  "structures": {
+    "structures": 32,
+    "length_m": 9059.5,
+    "height_shadow": 6,
+    "height_group": 24,
+    "height_surface": 1,
+    "height_default": 1,
+    "segments_shadow_measured": 23,
+    "segments_total": 91,
+    "piers": 313,
+    "by_class": {
+      "road": 13,
+      "metro": 13,
+      "foot": 6
+    },
+    "group_heights_m": {
+      "HITEC City Flyover": 5.2,
+      "Hyderabad Metro Line 3 (blue)": 10.5,
+      "Mindspace Junction Flyover": 10.2,
+      "Shilpa Layout Flyover": 8.8,
+      "foot": 6.5,
+      "Kothaguda-Kondapur Flyover": 10.0
+    },
+    "height_measured": 1,
+    "file": "structures.glb",
+    "source": "OpenStreetMap bridge/viaduct ways (geometry, lanes); deck heights measured from each deck's own shadow under the fitted sun where constrained, else class-typical; piers inferred at class-typical spans"
+  },
+  "context_city": {
+    "buildings": 49860,
+    "median_height_m": 3.0,
+    "max_height_m": 95.95172119140625,
+    "min_height_clamp_m": 3.0,
+    "footprints": "Microsoft Global ML Building Footprints",
+    "heights": "Google Open Buildings 2.5D (75th pct in footprint + 4 m)",
+    "file": "context_city.glb"
+  }
+}

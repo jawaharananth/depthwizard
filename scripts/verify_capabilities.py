@@ -192,8 +192,8 @@ def check_dem_anchor(reach: Reachability) -> Claim:
                   "OPT-IN", proof,
                   "implemented and wired end-to-end (anchors ground datum, promotes "
                   "scene to 'A (DEM-anchored absolute elevation)'), but --dem is not "
-                  "passed unless the caller supplies it -- a default run never reaches "
-                  "Tier A")
+                  "passed unless the caller supplies it -- a default build_city.py run "
+                  "never reaches Tier A (build_city_image.py differs; see its own rows)")
 
 
 def check_shadow_calibration(reach: Reachability) -> Claim:
@@ -206,9 +206,37 @@ def check_shadow_calibration(reach: Reachability) -> Claim:
     return Claim("Shadow calibration / Tier B (calibrate_scale call sites)",
                   "LIVE", f"called at {lines} (monocular fallback path; runs whenever "
                           f"MVS is unavailable or --no-mvs is passed)",
-                  "build_city_image.py uses shadow_correction only for "
-                  "detect_shadow_mask() + azimuth estimation, not calibrate_scale -- "
-                  "the plain-image path never reaches Tier B, only C")
+                  "build_city.py only. build_city_image.py reaches Tier B by a "
+                  "different route (Open Buildings calibration row below)")
+
+
+def check_image_dem(reach: Reachability) -> Claim:
+    name = "build_city_image.py: DEM anchor / Tier A (use_dem)"
+    sig = grep_line("build_city_image.py", r"use_dem: bool = True")
+    call = grep_line("build_city_image.py", r"dem_mod\.fit_offset\(")
+    tfd = grep_line("build_city_image.py", r"terrain_from_dem: bool = False")
+    if not (sig and call):
+        return Claim(name, "ABSENT", "no use_dem=True default or no fit_offset call")
+    return Claim(name, "LIVE",
+                 f"build_city_image.py:{sig[0][0]} use_dem defaults True; "
+                 f"build_city_image.py:{call[0][0]} calls dem_source.fit_offset()",
+                 "on by default, but only for GeoTIFF input in a projected metric CRS "
+                 "and only if the ground-offset spread guard passes; PNG/JPG never reach it. "
+                 "Forest mode (terrain = Copernicus GLO-30, canopy-corrected) is "
+                 + ("OPT-IN via terrain_from_dem (default False)" if tfd else "present"))
+
+
+def check_image_ob_calibration(reach: Reachability) -> Claim:
+    name = "build_city_image.py: Tier B via Open Buildings height calibration"
+    fuse = grep_line("build_city_image.py", r"= fuse_open_buildings_heights\(")
+    med = grep_line("build_city_image.py", r"np\.exp\(np\.median\(_lr\)\)")
+    if not (fuse and med):
+        return Claim(name, "ABSENT", "no fuse/median-log-ratio call site")
+    return Claim(name, "OPT-IN",
+                 f"build_city_image.py:{fuse[0][0]} fuses Open Buildings heights; "
+                 f"build_city_image.py:{med[0][0]} scale = exp(median log-ratio)",
+                 "needs georeferenced input plus supplied footprint polygons and >=20 "
+                 "controls; promotes Tier C to B")
 
 
 def check_conformal(reach: Reachability) -> Claim:
@@ -422,6 +450,8 @@ def main():
         check_mvs(reach),
         check_dem_anchor(reach),
         check_shadow_calibration(reach),
+        check_image_dem(reach),
+        check_image_ob_calibration(reach),
         check_conformal(reach),
         check_reliability_tiers(reach),
         check_self_repair(reach),

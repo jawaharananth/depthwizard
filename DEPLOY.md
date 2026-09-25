@@ -1,7 +1,11 @@
 # Deploying DepthWizard to Google Cloud Run
 
-Real, tested command sequence. Not a template — every path here matches
-this repo's actual files.
+**Status: not yet deployed.** These commands have not been run end to end
+against a real GCP project, and the Docker image has not been built (no
+Docker on the dev machine). What has been checked: every `COPY` source in the
+`Dockerfile` exists, and the list matches the recursive import closure of
+`server.py` (including lazy imports). Treat this as a checked plan, not a
+tested recipe.
 
 ## Why Cloud Run
 
@@ -49,8 +53,8 @@ gcloud run deploy depthwizard \
 
 Notes on each flag, since defaults would break this specific app:
 - `--memory 4Gi`: the ViT-based depth model + transformers + torch
-  need headroom past Cloud Run's 512MB default; 4Gi is the safe floor
-  measured from this model's actual load footprint.
+  need headroom past Cloud Run's 512MB default. 4Gi is an estimate, not
+  measured in a container; raise it if the instance is OOM-killed.
 - `--timeout 600`: matches `server.py`'s own `MAX_JOB_SECONDS=600.0` —
   Cloud Run's default 300s timeout would kill a job the app itself
   considers still valid.
@@ -70,7 +74,9 @@ Notes on each flag, since defaults would break this specific app:
 
 `--source .` tells Cloud Run to build the `Dockerfile` in Cloud Build and
 push it to Artifact Registry automatically — no local Docker install
-needed, no manual `docker build`/`docker push` steps. The `.gcloudignore`
+needed, no manual `docker build`/`docker push` steps. The image also bundles the two demo scenes (`scenes/hitec_2x2`,
+`scenes/periyar_forest`, ~520 MB); remove those `COPY` lines for a smaller
+image. The `.gcloudignore`
 already in this repo keeps the ~25GB working tree (dfc2019_data.zip,
 venv/, unused checkpoints, debug logs) out of that upload.
 
@@ -89,7 +95,7 @@ deploy needed.
 ```bash
 curl -I <the-url-from-above>
 ```
-Expect `HTTP/2 200`. Then do one real upload through the browser UI end
+Expect `HTTP/2 200` (expected, not yet observed). Then do one real upload through the browser UI end
 to end to confirm the whole pipeline works — with `--min-instances 1`
 already set, there is no cold start to wait out on this or any later
 request; the instance is warm before the first judge ever clicks.
