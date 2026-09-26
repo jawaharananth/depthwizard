@@ -35,7 +35,7 @@ Legend: [x] done and verified · [~] in progress · [ ] not started · [!] block
 ## Also required for "fully finished" (beyond the 12 beast moves)
 - [x] Projection-accuracy measurement (see above)
 - [!] Real-GPU frame rate (open viewer with &fps=1 in Chrome)
-- [ ] First-person walk: collision + smoothness check
+- [x] First-person walk: ground-following at 1.7 m eye height, 1.2 m step limit, walls block and slide, G toggles flight (self-test: 16.7 m in 3 s, eye 1.5-1.9 m)
 - [ ] Technical report + user manual
 - [ ] Awkward-file smoke test (tiny, huge, 16-bit, lat/lon, corrupt)
 - [ ] Browser matrix: Chrome/Edge, WebGPU and WebGL
