@@ -1035,6 +1035,17 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
     refined = dsm_refine.refine_dsm(height, image_np)
 
     sun_az = estimate_sun_azimuth(image_np, seg_labels)
+    # With a capture time and a location the sun's azimuth is an astronomical
+    # fact; the shadow-direction heuristic above is only a fallback. On
+    # DFC2019 JAX_004 it returned 40 deg against a true 108 deg (the IMD's own
+    # meanSunAz), so every shadow ray was cast the wrong way.
+    if capture_dt_utc is not None and src_lat is not None and src_lon is not None:
+        _el_eph, _az_eph = shadow_correction.sun_position(src_lat, src_lon, capture_dt_utc)
+        if _el_eph > 0:
+            if sun_az is not None and abs((sun_az - _az_eph + 180) % 360 - 180) > 20:
+                print(f"      sun azimuth: ephemeris {_az_eph:.0f} deg replaces the "
+                      f"shadow estimate {sun_az:.0f} deg")
+            sun_az = float(_az_eph)
 
     # ---- scale ----------------------------------------------------------
     rel = np.maximum(refined - dtm_mod.estimate_dtm(refined, seg_labels), 0.0)
