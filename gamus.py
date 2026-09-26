@@ -136,8 +136,12 @@ class GamusHeight:
         if not os.path.isdir(self.dir):
             raise FileNotFoundError(
                 f"{self.dir} not found -- run: python gamus.py download --split {split}")
+        # NYC tiles ship their imagery as *_IMG.h5 rather than *_RGB.h5 (same
+        # 1024x1024x3 uint8 layout, verified aligned with the AGL raster).
         self.stems = sorted(
-            f[:-len("_RGB.h5")] for f in os.listdir(self.dir) if f.endswith("_RGB.h5"))
+            f[:-len("_RGB.h5")] for f in os.listdir(self.dir)
+            if f.endswith(("_RGB.h5", "_IMG.h5"))
+            and os.path.exists(os.path.join(self.dir, f[:-len("_RGB.h5")] + "_AGL.h5")))
         if not self.stems:
             raise RuntimeError(f"no tiles in {self.dir}")
         self.mean = np.array([0.485, 0.456, 0.406], np.float32)
@@ -147,7 +151,10 @@ class GamusHeight:
         return len(self.stems) * self.crops_per_tile
 
     def _load(self, stem: str) -> Tuple[np.ndarray, np.ndarray]:
-        rgb = _read(os.path.join(self.dir, f"{stem}_RGB.h5"))
+        p = os.path.join(self.dir, f"{stem}_RGB.h5")
+        if not os.path.exists(p):
+            p = os.path.join(self.dir, f"{stem}_IMG.h5")
+        rgb = _read(p)
         agl = _read(os.path.join(self.dir, f"{stem}_AGL.h5")).astype(np.float32)
         return rgb, agl
 

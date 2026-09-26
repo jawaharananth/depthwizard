@@ -73,7 +73,9 @@ import depth_model as _dm
 import gamus
 import htc_bins
 
-MODEL = "depth-anything/Depth-Anything-V2-Base-hf"
+# Small is Apache-2.0; Base and Large weights are CC-BY-NC-4.0 and cannot ship
+# in a deliverable. --model overrides it for ablations.
+MODEL = "depth-anything/Depth-Anything-V2-Small-hf"
 CKPT_DIR = "checkpoints"
 
 # Pixels above this are structure; below is ground plus DSM/DTM noise. Used to
@@ -229,7 +231,18 @@ def main() -> None:
                          "independently-collected dataset (different sensor, "
                          "different ground-truth pipeline), not a bigger sample "
                          "of GAMUS's own distribution")
+    ap.add_argument("--model", default="depth-anything/Depth-Anything-V2-Small-hf",
+                    help="HF id of the depth backbone to fine-tune")
+    ap.add_argument("--data-root", default=gamus.DATA_DIR,
+                    help="GAMUS root holding train/ and val/ tile folders")
+    ap.add_argument("--time-budget-h", type=float, default=0.0,
+                    help="stop starting new epochs once another would overrun this "
+                         "many hours (Kaggle sessions end at 12 h); 0 = no limit")
     a = ap.parse_args()
+
+    global MODEL
+    MODEL = a.model
+    t_start = time.time()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     if a.smoke:
@@ -238,11 +251,11 @@ def main() -> None:
     print(f"device: {device}"
           + (f"  ({torch.cuda.get_device_name(0)})" if device == "cuda" else ""))
 
-    gamus_train = gamus.GamusHeight(split="train", crop=a.crop, augment=True,
-                                    crops_per_tile=a.crops_per_tile)
+    gamus_train = gamus.GamusHeight(root=a.data_root, split="train", crop=a.crop,
+                                    augment=True, crops_per_tile=a.crops_per_tile)
     try:
-        gamus_val = gamus.GamusHeight(split="val", crop=a.crop, augment=False,
-                                      crops_per_tile=1)
+        gamus_val = gamus.GamusHeight(root=a.data_root, split="val", crop=a.crop,
+                                      augment=False, crops_per_tile=1)
     except FileNotFoundError:
         print("no val split downloaded -- run: python gamus.py download --split val --limit 40")
         raise SystemExit(1)
@@ -329,7 +342,14 @@ def main() -> None:
     best = float("inf")
     history = []
 
+    last_epoch_s = 0.0
     for ep in range(1, a.epochs + 1):
+        if a.time_budget_h and ep > 1:
+            used = time.time() - t_start
+            if used + last_epoch_s > a.time_budget_h * 3600:
+                print(f"time budget: {used/3600:.2f} h used, next epoch needs "
+                      f"~{last_epoch_s/3600:.2f} h -- stopping before epoch {ep}")
+                break
         model.train()
         t0, run, seen = time.time(), 0.0, 0
         opt.zero_grad(set_to_none=True)
@@ -381,6 +401,7 @@ def main() -> None:
 
         # No affine for the fine-tuned model: it must produce metres unaided.
         m = evaluate(model, dl_val, device, allow_affine=False, htc=a.htc)
+        last_epoch_s = time.time() - t0
         history.append({"epoch": ep, "train_loss": run / max(seen, 1), **m})
         print(f"ep{ep} [{time.time()-t0:.0f}s] train {run/max(seen,1):.3f}   "
               + _fmt("val", m))

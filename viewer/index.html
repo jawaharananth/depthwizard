@@ -1072,11 +1072,41 @@ function shadeBuildingPrisms(mesh, mat) {
   // Roofs are matte and non-metallic whatever the building's class: a glass
   // tower's ROOF is membrane, plant and gravel, and a metallic/low-roughness
   // roof mirrors the sky over the real photographed roof until it is gone.
+  // Footprints sit at the building BASE, but an oblique image photographs a
+  // roof displaced from its base by offset + lean * height
+  // (scripts/measure_image_lean.py). When that measurement exists, roofs and
+  // walls sample the pixels where the image actually shows them; without it
+  // the older convention (footprint = photographed roof outline) applies.
+  const roofLean = SCENE_META && Array.isArray(SCENE_META.roof_lean_m_per_m)
+    ? SCENE_META.roof_lean_m_per_m : null;
+  const roofOff = (SCENE_META && Array.isArray(SCENE_META.roof_offset_m))
+    ? SCENE_META.roof_offset_m : [0, 0];
+  const uvFit0 = (geom.attributes.uv && rgbTexture) ? fitPlanarUV(pos, geom.attributes.uv) : null;
+  const xzKey = (x, z) => Math.round(x * 50) + "_" + Math.round(z * 50);
+  let roofUV = geom.attributes.uv;
+  if (roofLean && uvFit0) {
+    // Both rings of a prism share x/z, so the lowest y at an x/z is the base
+    // under that roof vertex.
+    const baseY = new Map();
+    for (let i = 0; i < pos.count; i++) {
+      const k = xzKey(pos.getX(i), pos.getZ(i)), y = pos.getY(i);
+      if (!(baseY.get(k) <= y)) baseY.set(k, y);
+    }
+    const arr = new Float32Array(pos.count * 2);
+    for (let i = 0; i < pos.count; i++) {
+      const x = pos.getX(i), z = pos.getZ(i);
+      const a = pos.getY(i) - (baseY.get(xzKey(x, z)) ?? pos.getY(i));
+      const [u, w] = uvFit0(x + roofOff[0] + roofLean[0] * a, z + roofOff[1] + roofLean[1] * a);
+      arr[2 * i] = u; arr[2 * i + 1] = w;
+    }
+    roofUV = new THREE.Float32BufferAttribute(arr, 2);
+  }
+
   let roof;
   if (roofIdx.length && geom.attributes.uv && rgbTexture) {
     const rg = new THREE.BufferGeometry();
     rg.setAttribute("position", pos);
-    rg.setAttribute("uv", geom.attributes.uv);
+    rg.setAttribute("uv", roofUV);
     rg.setIndex(roofIdx);
     rg.computeVertexNormals();
     roof = new THREE.Mesh(rg, roofMaterial());
@@ -1096,11 +1126,10 @@ function shadeBuildingPrisms(mesh, mat) {
   // median where it has one, else its roof's -- from COLOR_0, never a palette.
   const walls = [];
   if (wallIdx.length) {
-    const lean = SCENE_META && Array.isArray(SCENE_META.lean_m_per_m)
-      ? SCENE_META.lean_m_per_m : null;
+    const lean = roofLean || (SCENE_META && Array.isArray(SCENE_META.lean_m_per_m)
+      ? SCENE_META.lean_m_per_m : null);
     const leanLen = lean ? Math.hypot(lean[0], lean[1]) : 0;
-    const uvFit = (geom.attributes.uv && rgbTexture && leanLen > 0.03)
-      ? fitPlanarUV(pos, geom.attributes.uv) : null;
+    const uvFit = (uvFit0 && leanLen > 0.03) ? uvFit0 : null;
     // Metres of ground per ORIGINAL image pixel, from the fitted UV map's
     // scale. A super-resolved display texture has more texels but no more
     // real facade information, so its upscale factor is divided back out.
@@ -1238,7 +1267,12 @@ function shadeBuildingPrisms(mesh, mat) {
             const t = Math.min(Math.max((px - src.ax) * src.dx + (pz - src.az) * src.dz, 0), src.len);
             qx = src.ax + src.dx * t; qz = src.az + src.dz * t;
           }
-          const [u, w] = uvFit(qx - lean[0] * below, qz - lean[1] * below);
+          // Base-anchored footprints: a point `a` metres above the base shows
+          // at base + offset + lean*a. Legacy scenes: roof-anchored outline.
+          const a = src.wallH - below;
+          const [u, w] = roofLean
+            ? uvFit(qx + roofOff[0] + lean[0] * a, qz + roofOff[1] + lean[1] * a)
+            : uvFit(qx - lean[0] * below, qz - lean[1] * below);
           const [P, N, U, C, S] = r.seen ? [fp, fn, fu, fc, fs] : [rp, rn, ru, rc, rs];
           P.push(v.x, v.y, v.z); N.push(r.nn.x, r.nn.y, r.nn.z); U.push(u, w);
           C.push(toLin(colorAttr.getX(r.ia[k])), toLin(colorAttr.getY(r.ia[k])),
@@ -1487,7 +1521,9 @@ function withTrueScale(fn) {
 }
 let rgbTexture = null, heatmapTexture = null, confidenceTexture = null, errorTexture = null, normalTexture = null;
 // Read-only state probe for automated capture/diagnostics.
+const _dwT = { t0: performance.now() };
 window.__dwDebug = () => ({
+  timings: _dwT, post: postChain.join(" > "), quality: QUALITY,
   rgb: rgbTexture ? [rgbTexture.image?.width, rgbTexture.image?.height] : null,
   normal: !!normalTexture, ao: !!aoTexture,
   groundMap: !!(groundMesh && groundMesh.material && groundMesh.material.map),
@@ -1567,6 +1603,7 @@ Promise.all([
   gltfLoader.load(
     MESH_URL,
     (gltf) => {
+      _dwT.glbParsed = Math.round(performance.now() - _dwT.t0);
       const obj = gltf.scene;
       cityRoot = obj;
       obj.traverse((child) => {
@@ -1698,6 +1735,7 @@ Promise.all([
         photoSurfaces.add(vehicleMesh);
       }
       scene.add(obj);
+      _dwT.shaded = Math.round(performance.now() - _dwT.t0);
 
       const box = new THREE.Box3().setFromObject(obj);
       const center = box.getCenter(new THREE.Vector3());
@@ -1821,6 +1859,12 @@ Promise.all([
       const azDeg = parseFloat(q.get("az"));
       const elDeg = parseFloat(q.get("el"));
       const distMul = parseFloat(q.get("dist"));
+      // &tx=&tz= (world metres, x east / z north) centres the orbit on a spot.
+      const tx = parseFloat(q.get("tx")), tz = parseFloat(q.get("tz"));
+      if (Number.isFinite(tx) && Number.isFinite(tz)) {
+        center.set(tx, center.y, tz);
+        controls.target.copy(center);
+      }
       if (Number.isFinite(azDeg) || Number.isFinite(elDeg) || Number.isFinite(distMul)) {
         const az = THREE.MathUtils.degToRad(Number.isFinite(azDeg) ? azDeg : 45);
         const el = THREE.MathUtils.degToRad(
@@ -1918,9 +1962,9 @@ Promise.all([
             ? `${SCENE_META.buildings_extruded} buildings extruded`
             : `landscape scene: no buildings`,
           !SCENE_META.buildings_extruded ? `canopy: real canopy-height map as one continuous surface` :
-          Array.isArray(SCENE_META.lean_m_per_m)
+          Array.isArray(SCENE_META.roof_lean_m_per_m || SCENE_META.lean_m_per_m)
             ? `facades: real image pixels on sensor-facing walls (measured lean ` +
-              `${Math.hypot(...SCENE_META.lean_m_per_m).toFixed(2)} m/m); ` +
+              `${Math.hypot(...(SCENE_META.roof_lean_m_per_m || SCENE_META.lean_m_per_m)).toFixed(2)} m/m); ` +
               `unseen walls reuse the same building's photographed facade ` +
               `(inferred), else its measured colour`
             : `facades: each building's measured colour (no lean measured, ` +
@@ -1945,6 +1989,8 @@ Promise.all([
       }
       document.getElementById("stats").textContent = lines.join("\n");
 
+      _dwT.ready = Math.round(performance.now() - _dwT.t0);
+      renderer.info && (_dwT.firstFrameReq = _dwT.ready);
       document.getElementById("loading").style.display = "none";
       document.getElementById("ui").style.display = "block";
       calibrateFloodRange();
@@ -4691,6 +4737,8 @@ function animate() {
   // Real elapsed time, not a fixed per-frame step: the tour must take the same
   // 60 seconds whether the renderer is managing 120 fps or 20.
   const dt = _clock.getDelta();
+  _dwT.frames = (_dwT.frames || 0) + 1;
+  if (_dwT.frames === 2) _dwT.firstFrames = Math.round(performance.now() - _dwT.t0);
   updateTour(dt);
   updateWalkMode(dt);
   if (!walkModeActive) controls.update();

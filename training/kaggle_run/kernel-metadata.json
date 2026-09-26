@@ -1,0 +1,13 @@
+{
+  "id": "jawaharananth/depthwizard-height-train",
+  "title": "depthwizard-height-train",
+  "code_file": "kaggle_kernel.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_internet": true,
+  "dataset_sources": ["jawaharananth/depthwizard-train-code"],
+  "competition_sources": [],
+  "kernel_sources": []
+}

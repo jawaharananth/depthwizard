@@ -2406,6 +2406,19 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
             meta["dsm_product"] = "DSM" if _abs_datum else "rDSM"
         with open(os.path.join(VIEWER_DIR, "scene.json"), "w") as f:
             json.dump(meta, f, indent=2)
+        # The viewer samples roofs and walls where this image photographed
+        # them (footprint + lean * height). The alignment lean above is the
+        # lean between the footprint source's imagery and this image, so the
+        # image's own displacement is measured separately from its towers.
+        if image_path.lower().endswith((".tif", ".tiff")) and meta.get("buildings_extruded"):
+            try:
+                import sys as _sys
+                _sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                                 "scripts"))
+                import measure_image_lean as _mil
+                _mil.main(VIEWER_DIR, image_path)
+            except (Exception, SystemExit) as _e:
+                print(f"      image lean not measured: {_e}")
         print(f"      staged to {VIEWER_DIR}  ({meta['build_seconds']}s)")
     return meta
 
