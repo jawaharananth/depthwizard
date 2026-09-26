@@ -243,7 +243,9 @@ def _save_result_to_cache(cache_dir: str, dsm_path: str | None = None) -> None:
 # --- DSM lookup / reference validation ---------------------------------------
 
 FINAL_OUT = os.path.join(ROOT, "final_out")
-SCENES_DIR = os.path.join(ROOT, "scenes")
+# The desktop installer puts the pre-built scenes beside the app, not inside
+# the backend folder; it passes their location in DW_SCENES_DIR.
+SCENES_DIR = os.environ.get("DW_SCENES_DIR") or os.path.join(ROOT, "scenes")
 MAX_REFERENCE_BYTES = 500 * 1024 * 1024
 _current_job: str | None = None     # job whose result is staged in viewer/output
 _loaded_code_version: str | None = None

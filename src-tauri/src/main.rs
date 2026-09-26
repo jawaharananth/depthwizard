@@ -29,8 +29,16 @@ fn backend_homes(exe_dir: &Path) -> Vec<PathBuf> {
 
 fn find_backend(exe_dir: &Path) -> Option<(PathBuf, PathBuf)> {
     backend_homes(exe_dir).into_iter().find_map(|home| {
-        let py = home.join(r"venv\Scripts\python.exe");
-        (py.is_file() && home.join("server.py").is_file()).then_some((home, py))
+        if !home.join("server.py").is_file() {
+            return None;
+        }
+        // The installer ships an embedded runtime (backend\python); a
+        // developer checkout uses its venv.
+        [r"python\python.exe", r"venv\Scripts\python.exe"]
+            .iter()
+            .map(|p| home.join(p))
+            .find(|py| py.is_file())
+            .map(|py| (home, py))
     })
 }
 
@@ -41,6 +49,7 @@ fn spawn_backend(home: &Path, py: &Path, port: u16) -> std::io::Result<Child> {
         .args(["--host", "127.0.0.1", "--port", &port.to_string()])
         .current_dir(home)
         .env("PYTHONUNBUFFERED", "1")
+        .env("DW_SCENES_DIR", home.parent().map(|p| p.join("scenes")).unwrap_or_default())
         .stdin(Stdio::null())
         .stdout(log.try_clone()?)
         .stderr(log);

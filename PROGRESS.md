@@ -1,0 +1,33 @@
+# DepthWizard — 24-hour completion checklist
+
+Legend: [x] done and verified · [~] in progress · [ ] not started · [!] blocked (needs input)
+
+## Accuracy (SIH evaluation 50%)
+- [x] Retrained model run 02 (Depth-Anything-V2-Small, Apache-2.0): blind DFC RMSE 4.36 m (was 4.97), held-out per-building 2.19 m
+- [x] Honest blind benchmark: every tile scored, zero-prediction floor reported
+- [x] Per-pixel uncertainty: calibrated (held-out ECE 0.085, rank corr 0.72), `_sigma.tif` + viewer layer, verified in a real build
+- [x] GCPs recalibrate the DSM file (tests pass; +3 m shift recovered to 0.06 m)
+- [~] Hilly / forest / sparse LiDAR benchmark (NEON / USGS 3DEP) — agent running
+- [~] ICESat-2 automatic GCPs + independent Indian accuracy — agent running
+- [~] Tall-building physics fusion (relief displacement + shadows) — agent running
+- [!] Run 03 training on all DFC2019 (needs Track 1 + Track 3 RGB-2/3 downloads)
+- [ ] Resolution robustness test (0.3 / 0.6 / 1.0 m)
+
+## Visualization & platform (SIH evaluation 50%)
+- [x] Original input image draped by default (sharper imagery opt-in)
+- [x] Lean fix: roofs/walls textured from the correct pixels
+- [x] Rooftop structures (3,033), sliver buildings removed (170)
+- [x] Frame-rate readout, getting-started guide, tooltips
+- [x] Upload -> DSM -> view -> validate -> download (tested)
+- [~] Standalone installer: embedded Python runtime + model assembled and upload-tested end to end; NSIS build running
+- [ ] Periyar lake water surface
+- [ ] Dark slab artifact (HITEC) — source not yet found
+- [ ] Time-machine 3D change detection — agent queued
+- [ ] Analysis suite (solar potential, shadow simulation) — agent queued
+- [ ] Projection-accuracy measurement (number)
+- [ ] Real-GPU frame-rate number (needs a run on a real browser)
+
+## Documentation & submission
+- [x] README / BENCHMARK / EVALUATION_PROTOCOL lead with blind numbers
+- [ ] Technical report + user manual
+- [!] SIH idea PPT (due 30 Sep) — team

@@ -1,0 +1,17 @@
+{
+    "bundle": {
+        "targets": [
+            "nsis"
+        ],
+        "resources": {
+            "../scenes/periyar_forest/*": "scenes/periyar_forest/",
+            "../scenes/hitec_2x2/*.json": "scenes/hitec_2x2/",
+            "../scenes/hitec_2x2/*.geojson": "scenes/hitec_2x2/",
+            "../scenes/hitec_2x2/*.glb": "scenes/hitec_2x2/",
+            "../scenes/hitec_2x2/*.jpg": "scenes/hitec_2x2/",
+            "../scenes/hitec_2x2/terrain_[anr]*.png": "scenes/hitec_2x2/",
+            "../scenes/hitec_2x2/terrain_texture.png": "scenes/hitec_2x2/",
+            "../dist_backend/backend/": "backend/"
+        }
+    }
+}

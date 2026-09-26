@@ -27,7 +27,7 @@ import shutil
 import sys
 import time
 
-SCENES_DIR = "scenes"
+SCENES_DIR = os.environ.get("DW_SCENES_DIR") or "scenes"   # desktop installer: scenes live beside the app
 VIEWER_OUT = "viewer/output"
 THUMB_PX = 320
 
