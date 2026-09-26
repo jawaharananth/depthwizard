@@ -11,7 +11,7 @@ Legend: [x] done and verified · [~] in progress · [ ] not started · [!] block
 - [~] ICESat-2 automatic GCPs + independent Indian accuracy — agent running
 - [~] Tall-building physics fusion (relief displacement + shadows) — agent running
 - [!] Run 03 training on all DFC2019 (needs Track 1 + Track 3 RGB-2/3 downloads)
-- [ ] Resolution robustness test (0.3 / 0.6 / 1.0 m)
+- [x] Resolution robustness: 0.25->1.0 m input, RMSE 2.85->2.97 m, corr 0.75->0.73 (raw model, held-out tiles)
 
 ## Visualization & platform (SIH evaluation 50%)
 - [x] Original input image draped by default (sharper imagery opt-in)
