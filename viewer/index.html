@@ -2225,7 +2225,11 @@ renderer.domElement.addEventListener("pointermove", (e) => {
   if (coords !== null) {
     lines.push(`E ${coords.easting.toFixed(1)}  N ${coords.northing.toFixed(1)}`);
   }
-  if (conf !== null) lines.push(`confidence  ${(conf * 100).toFixed(0)}%`);
+  if (conf !== null) {
+    lines.push(SCENE_META && SCENE_META.uncertainty
+      ? `uncertainty  ±${(conf * 20).toFixed(1)} m (1 sigma, calibrated)`
+      : `confidence  ${(conf * 100).toFixed(0)}%`);
+  }
   if (err !== null) lines.push(`error       ${err >= 0 ? "+" : ""}${err.toFixed(2)} m`);
   hoverBadge.textContent = lines.join("\n");
   hoverBadge.style.left = (e.clientX + 14) + "px";

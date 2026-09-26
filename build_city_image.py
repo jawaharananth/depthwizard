@@ -2141,6 +2141,42 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
     except Exception as _e:
         print(f"      DSM export failed: {_e}")
 
+    # PER-PIXEL UNCERTAINTY (1 sigma, metres).
+    #
+    # The spread of the model across 4 rotated views, mapped to metres by a
+    # calibration fitted on DFC2019 validation views and checked on held-out
+    # ones (checkpoints/height_best/sigma_calibration.json):
+    #     sigma = sqrt((k * tta_std)^2 + s0^2)
+    # Computed at <= 1024 px to keep uploads quick, then upsampled.
+    _sigma, _sigma_info = None, None
+    _cal_p = os.path.join(DepthBackbone.METRIC_CKPT, "sigma_calibration.json")
+    if (_metric and _bb.is_metric and os.path.exists(_cal_p)
+            and not os.environ.get("DW_NO_SIGMA")):
+        try:
+            _cal = json.load(open(_cal_p))
+            _sw = min(1.0, 1024.0 / max(W, H))
+            _ps = pil.resize((max(64, int(W * _sw)), max(64, int(H * _sw))), Image.BILINEAR)
+            _, _std = _bb.predict_tta(_ps, raw_metric=True, views=4)
+            _std = cv2.resize(_std.astype(np.float32), (W, H), interpolation=cv2.INTER_LINEAR)
+            _sigma = np.sqrt((_cal["k"] * _std) ** 2 + _cal["s0"] ** 2).astype(np.float32)
+            _sigma_info = {"file": os.path.basename(stem) + "_sigma.tif",
+                           "definition": "1-sigma height uncertainty, metres",
+                           "method": f"4-view rotation spread, calibrated sqrt(({_cal['k']:.2f}*std)^2 + "
+                                     f"{_cal['s0']:.2f}^2) on {_cal.get('fit_views')} DFC2019 val views",
+                           "heldout_ece": round(float(_cal.get("ece_heldout", float("nan"))), 3),
+                           "heldout_rank_corr": round(float(_cal.get("rank_corr", float("nan"))), 3),
+                           "median_m": round(float(np.median(_sigma)), 2)}
+            _dx.export_dsm_geotiff_affine(
+                _sigma, stem + "_sigma.tif", transform=_tf_out,
+                crs=src_crs if _georef else None,
+                tags={"PRODUCT": "height uncertainty (1 sigma, metres)",
+                      "METHOD": _sigma_info["method"], "PIPELINE": "DepthWizard"})
+            print(f"      uncertainty written: {_sigma_info['file']} "
+                  f"(median +/-{_sigma_info['median_m']} m)")
+        except Exception as _e:
+            _sigma = None
+            print(f"      uncertainty skipped: {_e}")
+
     # PER-BUILDING EXPORT (GeoJSON + CSV).
     #
     # This path previously wrote none -- only the DFC2019 path did -- so a
@@ -2424,6 +2460,22 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
                                             file="context_city.glb")
             except Exception as _e:
                 print(f"      context city skipped: {_e}")
+        if _sigma is not None:
+            # CONFIDENCE view: colour ramp of +/-sigma (0-8 m), plus a raw
+            # channel the hover readout decodes as sigma = value/255*20 m.
+            _sd = cv2.resize(_sigma, (min(W, 2048), min(H, 2048)), interpolation=cv2.INTER_AREA)
+            _ramp = cv2.applyColorMap(np.clip(_sd / 8.0 * 255, 0, 255).astype(np.uint8),
+                                      cv2.COLORMAP_TURBO)
+            cv2.imwrite(os.path.join(VIEWER_DIR, "terrain_confidence.png"), _ramp)
+            cv2.imwrite(os.path.join(VIEWER_DIR, "terrain_confidence_raw.png"),
+                        np.clip(_sd / 20.0 * 255, 0, 255).astype(np.uint8))
+            meta["uncertainty"] = dict(_sigma_info, raw_encoding="sigma_m = value/255*20",
+                                       ramp="turbo, 0-8 m")
+        else:
+            for _stale in ("terrain_confidence.png", "terrain_confidence_raw.png"):
+                _sp = os.path.join(VIEWER_DIR, _stale)
+                if os.path.exists(_sp):
+                    os.remove(_sp)
         if pbr_maps:
             for _suf, _dst in (("_normal.png", "terrain_normal.png"),
                                ("_ao.png", "terrain_ao.png"),

@@ -591,7 +591,8 @@ class DepthBackbone:
         return ((fused - fused.min()) / (rng + 1e-8)).astype(np.float32)
 
     def predict_tta(self, image: Image.Image, tile: int = 768,
-                    raw_metric: bool = False, verbose: bool = False):
+                    raw_metric: bool = False, verbose: bool = False,
+                    views: int = 8):
         """D4 test-time augmentation: 8 views (4 rotations x optional mirror),
         each run through predict_tiled, averaged.
 
@@ -618,6 +619,8 @@ class DepthBackbone:
         for flip in (False, True):
             for k in range(4):
                 variants.append((k, flip))
+        # views=4: the four rotations only (half the cost); views=8: full D4.
+        variants = variants[:max(2, min(8, int(views)))]
 
         preds = []
         for i, (k, flip) in enumerate(variants):
@@ -636,7 +639,7 @@ class DepthBackbone:
                 pred = np.fliplr(pred)
             preds.append(pred)
             if verbose:
-                print(f"    TTA view {i+1}/8  (rot{k*90} flip={flip})", flush=True)
+                print(f"    TTA view {i+1}/{len(variants)}  (rot{k*90} flip={flip})", flush=True)
 
         stack = np.stack(preds, axis=0)
         mean = stack.mean(axis=0).astype(np.float32)
