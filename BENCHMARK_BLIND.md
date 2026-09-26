@@ -9,11 +9,10 @@ This is the counterpart to `BENCHMARK.md`. That document's 3.87 m / 2.01 m figur
 
 ## Result
 
-**RMSE 4.97 m   MAE 2.82 m** -- 10 of 10 tiles reached a metric tier (A/B) blind and were scored.
+**RMSE 4.36 m   MAE 2.36 m** -- 10 of 10 tiles reached a metric tier (A/B) blind and were scored.
 
 Floor to beat -- predicting 0 m everywhere on the same pixels: RMSE 5.14 m, MAE 2.36 m.
-Per-tile correlation with the LiDAR nDSM: median 0.507 (range 0.204-0.696).
-Low-correlation tiles (< 0.25), scored and INCLUDED above: JAX_068.
+Per-tile correlation with the LiDAR nDSM: median 0.542 (range 0.311-0.718).
 
 - Scored (metric tier, in RMSE aggregate): 10
 - Shape-only (Tier C, correlation reported, excluded from RMSE): 0
@@ -25,25 +24,25 @@ scale_error_pct is the key column: |calibrated m/unit - what a truth-fit affine 
 
 | tile | tier | RMSE | MAE | zero-pred RMSE | corr | scale_source | m_per_unit | fitted_scale | scale_error_pct |
 |---|---|---|---|---|---|---|---|---|---|
-| JAX_004 | A (DEM-anchored absolute elevation) | 2.80 | 1.51 | 4.14 | 0.696 | dem | 1.0 | 2.28 | 56.1 |
-| JAX_017 | A (DEM-anchored absolute elevation) | 4.40 | 3.04 | 5.41 | 0.509 | dem | 1.0 | 1.7 | 41.1 |
-| JAX_018 | A (DEM-anchored absolute elevation) | 3.39 | 2.26 | 3.98 | 0.519 | dem | 1.0 | 1.49 | 32.9 |
-| JAX_020 | A (DEM-anchored absolute elevation) | 3.52 | 1.82 | 4.42 | 0.607 | dem | 1.0 | 1.93 | 48.1 |
-| JAX_022 | A (DEM-anchored absolute elevation) | 4.07 | 2.84 | 5.11 | 0.423 | dem | 1.0 | 1.68 | 40.5 |
-| JAX_028 | A (DEM-anchored absolute elevation) | 4.68 | 3.41 | 5.77 | 0.402 | dem | 1.0 | 1.71 | 41.7 |
-| JAX_031 | A (DEM-anchored absolute elevation) | 4.80 | 3.51 | 5.25 | 0.33 | dem | 1.0 | 1.53 | 34.6 |
-| JAX_033 | A (DEM-anchored absolute elevation) | 2.30 | 1.03 | 1.96 | 0.52 | dem | 1.0 | 0.79 | 27.4 |
-| JAX_068 | A (DEM-anchored absolute elevation) | 11.26 | 7.69 | 9.27 | 0.204 (low) | dem | 1.0 | 1.55 | 35.5 |
-| JAX_070 | A (DEM-anchored absolute elevation) | 2.64 | 1.31 | 2.93 | 0.505 | dem | 1.0 | 1.52 | 34.2 |
+| JAX_004 | A (DEM-anchored absolute elevation) | 2.80 | 1.59 | 4.14 | 0.66 | dem | 1.0 | 1.8 | 44.4 |
+| JAX_017 | B (metric depth model -- heights predicted directly in metres) | 4.04 | 2.73 | 5.41 | 0.536 | metric | 1.0 | 1.86 | 46.3 |
+| JAX_018 | B (metric depth model -- heights predicted directly in metres) | 3.06 | 1.92 | 3.98 | 0.571 | metric | 1.0 | 1.53 | 34.7 |
+| JAX_020 | B (metric depth model -- heights predicted directly in metres) | 2.92 | 1.38 | 4.42 | 0.718 | metric | 1.0 | 1.45 | 30.9 |
+| JAX_022 | B (metric depth model -- heights predicted directly in metres) | 3.71 | 2.38 | 5.11 | 0.5 | metric | 1.0 | 2.07 | 51.8 |
+| JAX_028 | B (metric depth model -- heights predicted directly in metres) | 3.94 | 2.68 | 5.77 | 0.547 | metric | 1.0 | 1.8 | 44.4 |
+| JAX_031 | B (metric depth model -- heights predicted directly in metres) | 4.03 | 2.69 | 5.25 | 0.46 | metric | 1.0 | 1.61 | 37.9 |
+| JAX_033 | B (metric depth model -- heights predicted directly in metres) | 2.67 | 1.05 | 1.96 | 0.468 | metric | 1.0 | 0.71 | 40.6 |
+| JAX_068 | B (metric depth model -- heights predicted directly in metres) | 9.63 | 6.21 | 9.27 | 0.311 | metric | 1.0 | 1.76 | 43.3 |
+| JAX_070 | B (metric depth model -- heights predicted directly in metres) | 2.43 | 1.15 | 2.93 | 0.561 | metric | 1.0 | 1.49 | 32.7 |
 
 ## By terrain class
 
 | class | RMSE | MAE | pixels |
 |---|---|---|---|
-| urban | 8.16 | 5.56 | 317851 |
-| hilly | 4.53 | 2.01 | 554313 |
-| forest | 5.12 | 4.01 | 534740 |
-| sparse | 3.83 | 1.92 | 1167793 |
+| urban | 7.48 | 4.89 | 317851 |
+| hilly | 3.42 | 1.36 | 554313 |
+| forest | 5.13 | 4.04 | 534740 |
+| sparse | 3.01 | 1.38 | 1167793 |
 
 ## Reproducing
 

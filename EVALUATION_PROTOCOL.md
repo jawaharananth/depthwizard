@@ -58,7 +58,9 @@ scale.**
 | 2026-09-19 | 3 (per-building) | 18 | 461 | ~~3.063m~~ | ~~2.306m~~ | ~~+0.900m~~ | **VOID — predates raw_metric fix** |
 | 2026-09-19 | 3 (per-building) | 50 | 1,063 | ~~4.219m~~ | ~~2.998m~~ | ~~+1.465m~~ | **VOID — predates raw_metric fix** |
 | 2026-09-20 | 3 (per-building) | 18 | 461 | 2.164m | 1.597m | -0.596m | provisional, superseded by 50-tile row below |
-| 2026-09-20 | 3 (per-building) | 50 | 1,063 | **3.132m** | **1.870m** | **-0.608m** | **CURRENT, validated at scale** |
+| 2026-09-20 | 3 (per-building) | 50 | 1,063 | **3.132m** | **1.870m** | **-0.608m** | superseded: previous Base checkpoint; tiles 19-50 overlap run-02 training tiles |
+| 2026-09-26 | 3 (per-building) | 18 held-out | 461 | **2.185m** | **1.580m** | **-1.190m** | **CURRENT (run 02, Small/Apache); only held-out tiles are valid now** |
+| 2026-09-26 | 2 (whole-tile, blind) | 10 held-out | -- | **4.36m** | **2.36m** | -- | **CURRENT (run 02); zero-prediction floor 5.14m / 2.36m** |
 
 **The 3.132m / 50-tile / 1,063-building row is the number to cite.** It
 survived the exact test that broke the earlier 3.063m claim: RMSE widened

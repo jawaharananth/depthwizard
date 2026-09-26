@@ -5,8 +5,8 @@ Single satellite image → navigable 3D city model.
 Built for SIH26175 (ISRO): reconstruct elevation and a 3D terrain model from a
 single-view satellite or aerial image, with a visualisation layer.
 
-![whole-tile](https://img.shields.io/badge/blind%20whole--tile%20RMSE-4.97%20m%20(zero--pred%205.14%20m)-orange)
-![per-building](https://img.shields.io/badge/per--building%20RMSE-3.13%20m%20(50%20tiles%2C%201%2C063%20bldgs)-blue)
+![whole-tile](https://img.shields.io/badge/blind%20whole--tile%20RMSE-4.36%20m%20(zero--pred%205.14%20m)-orange)
+![per-building](https://img.shields.io/badge/held--out%20per--building%20RMSE-2.19%20m%20(18%20tiles%2C%20461%20bldgs)-blue)
 ![tier](https://img.shields.io/badge/heights-Tier%20A%20when%20anchorable-green)
 ![interval](https://img.shields.io/badge/90%25%20interval-%C2%B14.53%20m-informational)
 
@@ -69,18 +69,24 @@ DFC2019 Jacksonville, airborne LiDAR nDSM as truth):
 
 | Protocol | Scope | RMSE | MAE | Correlation | Sample |
 |---|---|---|---|---|---|
-| Whole-tile, blind (`scripts/benchmark_blind.py`) | every pixel | **4.97 m** | 2.82 m | median 0.51 per tile | 10 tiles, none dropped |
+| Whole-tile, blind (`scripts/benchmark_blind.py`) | every pixel | **4.36 m** | 2.36 m | median 0.54 per tile | 10 held-out tiles, none dropped |
 | &nbsp;&nbsp;floor: predict 0 m everywhere | same pixels | 5.14 m | 2.36 m | -- | same 10 tiles |
-| Per-building (`per_building_metric.py`) | median height per labelled building | **3.13 m** | 1.87 m | -- | 50 tiles, 1,063 buildings |
-| Upper bound, NOT deployable | whole tile, scale fitted to the LiDAR per tile | 3.74 m | 2.02 m | median 0.68 | 18 tiles |
+| Per-building (`per_building_metric.py 18`) | median height per labelled building | **2.19 m** | 1.58 m | bias -1.19 m | 18 held-out tiles, 461 buildings |
+| Upper bound, NOT deployable | whole tile, scale fitted to the LiDAR per tile | 3.74 m | 2.02 m | median 0.68 | 18 tiles (older model) |
 
-What these say, plainly: the current checkpoint gets building heights within
-~3 m on average, but on whole tiles it only just beats predicting zero,
-because it compresses heights to roughly 1/1.7 of the truth (the
-`fitted_scale` column in `BENCHMARK_BLIND.md`) and fails on tall buildings
-(JAX_068). That compression is the target of the GAMUS retrain on
-Depth-Anything-V2-Small (`training/`). The last row is kept only as a ceiling:
-it needs the answer to compute the answer.
+Model: Depth-Anything-V2-**Small** (Apache-2.0) fine-tuned on GAMUS (4,972
+aerial tiles, DC/Philadelphia/NYC) and then on DFC2019 Track 3 satellite
+tile-views from tiles **outside** the benchmark set (`training/`). Held-out
+tiles are the 18 `dfc2019_height.benchmark_tiles()`, excluded from training.
+Versus the previous Base checkpoint on the same blind protocol: RMSE
+4.97 -> 4.36 m, MAE 2.82 -> 2.36 m, correlation 0.51 -> 0.54.
+
+What these say, plainly: building heights are within ~2 m on held-out
+Jacksonville tiles, but heights are still compressed to roughly 1/1.7 of the
+truth (the `fitted_scale` column in `BENCHMARK_BLIND.md`), the model fails on
+the tall-building tile JAX_068, and MAE only equals predicting zero because
+most pixels are ground. The DFC tiles are one city; training and test tiles
+are different areas of it, not different cities.
 
 A licensed model (`checkpoints/height_best/`, GAMUS-fine-tuned) predicts
 **metric height directly** when present — no per-tile scale to assume, which
