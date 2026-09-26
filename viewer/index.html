@@ -1591,9 +1591,14 @@ let aoTexture = null, roughnessTexture = null, metalnessTexture = null;
 const textureLoader = new THREE.TextureLoader();
 const gltfLoader = new GLTFLoader();
 
+// The problem statement asks for the ORIGINAL optical image on the mesh, so
+// that is the default; a sharper same-bounds display texture (when the scene
+// has one) is opt-in via &tex=hires and labelled in the HUD.
+const USE_HIRES_TEX = new URLSearchParams(location.search).get("tex") === "hires";
 Promise.all([
   new Promise((res) => textureLoader.load(
-    SCENE_META && SCENE_META.texture_file ? `${BASE}/${SCENE_META.texture_file}` : TEXTURE_RGB_URL,
+    SCENE_META && SCENE_META.texture_file && USE_HIRES_TEX
+      ? `${BASE}/${SCENE_META.texture_file}` : TEXTURE_RGB_URL,
     res, undefined, () => res(null))),
   new Promise((res) => textureLoader.load(TEXTURE_HEATMAP_URL, res, undefined, () => res(null))),
   new Promise((res) => textureLoader.load(TEXTURE_CONF_URL, res, undefined, () => res(null))),
@@ -2040,9 +2045,13 @@ Promise.all([
           SCENE_META.context && new URLSearchParams(location.search).get("context") === "1"
             ? `beyond the modelled tile: ${SCENE_META.context.source}`
             : `nothing is drawn beyond the modelled tile`);
-        if (SCENE_META.texture_display) {
-          lines.push(`display texture: ${SCENE_META.texture_display.method}; ` +
-                     `measurements use ${SCENE_META.texture_display.measurements_use}`);
+        if (SCENE_META.texture_display && USE_HIRES_TEX) {
+          lines.push(`texture: OPTIONAL sharper imagery -- ${SCENE_META.texture_display.method}; ` +
+                     `measurements use ${SCENE_META.texture_display.measurements_use} ` +
+                     `(remove &tex=hires for the original input image)`);
+        } else {
+          lines.push(`texture: the original input image, as processed` +
+                     (SCENE_META.texture_display ? ` (add &tex=hires for sharper same-bounds imagery)` : ``));
         }
         if (SCENE_META.structures) {
           const st = SCENE_META.structures;
