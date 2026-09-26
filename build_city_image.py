@@ -1152,7 +1152,15 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
         # sane prediction on THIS image, only of having beaten a baseline on
         # GAMUS, so the field is checked against the scene in front of it.
         _p99_metric = float(np.percentile(rel, 99))
-        if _p99_metric < 3.0:
+        # Only a field that is essentially flat is refused. A LOW field (a
+        # suburb of one-storey houses under trees) is still metres, and the
+        # fallback below would multiply this same field by 40/p99 -- measured
+        # on DFC2019 JAX_004 as roughly x400, i.e. 500 m houses. Under-called
+        # metres are a smaller error than an invented scale.
+        if 0.5 <= _p99_metric < 3.0:
+            print(f"      metric model 99th percentile is only {_p99_metric:.2f} m on "
+                  f"this scene -- kept (low-rise scene or under-call), not rescaled")
+        if _p99_metric < 0.5:
             print(f"      REFUSED: the metric model's 99th percentile height is "
                   f"{_p99_metric:.2f} m across this whole scene. That is not a "
                   f"plausible city, so the checkpoint's metres are rejected "
@@ -1186,6 +1194,12 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
             scale = 40.0 / max(p99, 1e-6)
             tier = "C (relative, no scale information at all)"
             scale_source = "none -- pixel units, vertical assumed 40 m tallest"
+        # An assumed scale must never manufacture skyscrapers from noise: a
+        # near-flat field divided into "tallest = 40 m" can multiply by
+        # hundreds. Bound the result to a physically plausible tallest point.
+        if np.isfinite(scale) and float(np.max(rel)) * scale > 250.0:
+            scale = 250.0 / max(float(np.max(rel)), 1e-6)
+            scale_source += "; capped so no point exceeds 250 m"
         print(f"[3/5] scale: {scale_source}")
 
     print(f"      sun azimuth estimated from shadows: "
