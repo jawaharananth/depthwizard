@@ -238,6 +238,14 @@ def main() -> None:
     ap.add_argument("--time-budget-h", type=float, default=0.0,
                     help="stop starting new epochs once another would overrun this "
                          "many hours (Kaggle sessions end at 12 h); 0 = no limit")
+    ap.add_argument("--extra-root", default=None,
+                    help="second dataset in GAMUS layout (e.g. training/dfc_tiles from "
+                         "training/prepare_dfc.py): satellite imagery, the target domain")
+    ap.add_argument("--extra-crops-per-tile", type=int, default=8,
+                    help="oversampling for the (small) extra dataset")
+    ap.add_argument("--init-from", default=None,
+                    help="start from this fine-tuned checkpoint directory instead of "
+                         "the pretrained --model weights")
     a = ap.parse_args()
 
     global MODEL
@@ -281,6 +289,18 @@ def main() -> None:
         val_sets.append(dfc_val)
         n_dfc_train, n_dfc_val = len(dfc_train_stems), len(dfc_val_stems)
 
+    extra_val = None
+    if a.extra_root:
+        extra_train = gamus.GamusHeight(root=a.extra_root, split="train", crop=a.crop,
+                                        augment=True, crops_per_tile=a.extra_crops_per_tile)
+        extra_val = gamus.GamusHeight(root=a.extra_root, split="val", crop=a.crop,
+                                      augment=False, crops_per_tile=1)
+        if a.smoke:
+            extra_train.stems, extra_val.stems = extra_train.stems[:2], extra_val.stems[:2]
+        train_sets.append(extra_train)
+        print(f"extra: {len(extra_train.stems)} train / {len(extra_val.stems)} val tile-views "
+              f"from {a.extra_root} (x{a.extra_crops_per_tile} crops)")
+
     from torch.utils.data import ConcatDataset
     train = train_sets[0] if len(train_sets) == 1 else ConcatDataset(train_sets)
     val = val_sets[0] if len(val_sets) == 1 else ConcatDataset(val_sets)
@@ -295,12 +315,16 @@ def main() -> None:
                           num_workers=a.workers, pin_memory=(device == "cuda"),
                           drop_last=True)
     dl_val = DataLoader(val, batch_size=1, shuffle=False, num_workers=0)
+    dl_extra_val = (DataLoader(extra_val, batch_size=1, shuffle=False, num_workers=0)
+                    if extra_val is not None else None)
 
     if a.htc:
         model = htc_bins.HTCDepthModel(model_id=MODEL, n_bins=a.n_bins).to(device)
     else:
         from transformers import AutoModelForDepthEstimation
-        model = AutoModelForDepthEstimation.from_pretrained(MODEL).to(device)
+        model = AutoModelForDepthEstimation.from_pretrained(a.init_from or MODEL).to(device)
+        if a.init_from:
+            print(f"initialised from {a.init_from}")
 
     # Baseline first, on the same held-out tiles, WITH its best-fit affine.
     # Establishing the bar before training means the comparison cannot be
@@ -406,8 +430,14 @@ def main() -> None:
         print(f"ep{ep} [{time.time()-t0:.0f}s] train {run/max(seen,1):.3f}   "
               + _fmt("val", m))
 
-        if m and m["mae_m"] < best:
-            best = m["mae_m"]
+        sel = m
+        if dl_extra_val is not None:
+            mx = evaluate(model, dl_extra_val, device, allow_affine=False, htc=a.htc)
+            history[-1]["extra_val"] = mx
+            print("        " + _fmt("extra val (selects best)", mx))
+            sel = mx
+        if sel and sel["mae_m"] < best:
+            best = sel["mae_m"]
             if a.htc:
                 # Not a transformers.PreTrainedModel -- it's our own wrapper
                 # (backbone/neck/conv1/conv2 borrowed from one, HTCAdaBinsHead

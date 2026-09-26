@@ -968,8 +968,19 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
     # now-correct real-metres field, and everything downstream that assumes
     # `depth_is_metric => height is already in metres` would be wrong in the
     # specific, silent way this whole fix exists to stop.
+    # The metric checkpoint's own fingerprint belongs in the key: a retrained
+    # checkpoint otherwise reads the previous model's cached field back
+    # (measured: a new GAMUS checkpoint scored bit-identically to the old one
+    # on all 10 blind DFC tiles because every height came from this cache).
+    _ckid = ""
+    if _bb.is_metric:
+        try:
+            with open(os.path.join(DepthBackbone.METRIC_CKPT, DepthBackbone.MARKER)) as _f:
+                _ckid = "_" + str(json.load(_f).get("canary", {}).get("hash", "nofp"))[:12]
+        except Exception:
+            _ckid = "_nofp"
     key = (f"plainimg_{name}_{backbone_tag()}"
-          + ("_metric" if _bb.is_metric else "")
+          + ("_metric" + _ckid if _bb.is_metric else "")
           + ("_fused" if multiscale_fusion else "")
           + ("_hires" if depth_image_path else ""))
     height = height_cache.load(key, "tiled", H) if H == W else None

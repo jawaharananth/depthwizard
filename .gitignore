@@ -201,3 +201,12 @@ nyc_fidi/*.png
 
 # Internal notes (competitor research, predictions) -- never shipped
 archive/private_notes/
+
+# Training data and checkpoints (rebuild: training/prepare_dfc.py; Kaggle outputs)
+training/dfc_tiles/
+training/kaggle_dfc/
+training/kaggle_ckpt/
+training/run01/out/
+training/kaggle_code/*.py
+checkpoints/height_best_run01_small/
+checkpoints/height_best_v1_base400/
