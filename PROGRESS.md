@@ -31,3 +31,16 @@ Legend: [x] done and verified · [~] in progress · [ ] not started · [!] block
 - [x] README / BENCHMARK / EVALUATION_PROTOCOL lead with blind numbers
 - [ ] Technical report + user manual
 - [!] SIH idea PPT (due 30 Sep) — team
+
+## Also required for "fully finished" (beyond the 12 beast moves)
+- [ ] Projection-accuracy measurement (texture-to-geometry offset, metres)
+- [!] Real-GPU frame rate (open viewer with &fps=1 in Chrome)
+- [ ] First-person walk: collision + smoothness check
+- [ ] Technical report + user manual
+- [ ] Awkward-file smoke test (tiny, huge, 16-bit, lat/lon, corrupt)
+- [ ] Browser matrix: Chrome/Edge, WebGPU and WebGL
+- [ ] Installer rebuilt (last build: "Access is denied") + clean-PC test
+- [!] Accuracy parity with competitor on MAE/correlation (run 03 on DFC Track 1)
+- [ ] Final consistency pass: rebuild scenes, re-run benchmarks, refresh all docs
+- [ ] Demo script, 2-minute video, live-upload rehearsal, offline fallback
+- [!] Final deliverables pack (source, docs, installer, evidence)
