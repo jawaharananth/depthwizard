@@ -1006,6 +1006,13 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
         if H == W:
             height_cache.save(key, "tiled", H, height)
     print(f"[2/5] height field in {time.time()-t0:.0f}s")
+    # A metric checkpoint predicts height above ground directly. That field is
+    # the elevation PRODUCT (DSM file, benchmark): measured blind on 10
+    # DFC2019 tiles, the raw field scores RMSE 2.82 m / MAE 1.59 m / corr
+    # 0.787, while the same field after the mesh post-processing below
+    # (refinement, roof squaring, a second ground subtraction) scored
+    # 4.36 m / 2.36 m / 0.493. Post-processing still shapes the 3D MESH.
+    _agl_raw = np.asarray(height, np.float32).copy() if _bb.is_metric else None
     _tr.leave(); _tr.enter("scale")
 
     # Strip map-overlay graphics before anything reads the image as terrain.
@@ -1175,6 +1182,7 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
             tier = None
             scale = None
             scale_source = None
+            _agl_raw = None
 
     if tier is None:
         if anchor_height_m is not None:
@@ -2107,12 +2115,27 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
     # datum; otherwise a georeferenced metric scene takes the DEM's median
     # offset over bare ground as its DATUM (shape agreement not required for
     # a datum), so the file holds elevation, not height above local ground.
-    _dsm_out, _datum = dsm, ("DEM-anchored (Tier A)" if tier[0] == "A" else "local ground = 0")
+    _product_agl = None
+    # Real building heights fused in (Open Buildings) or given with the
+    # footprints are better than the model where they exist, so those scenes
+    # keep the fused surface; the raw field is the product where the model
+    # alone produced the heights.
+    _fused_real = bool(gt_building_polygons) or any(
+        locals().get(_k) for _k in ("_n_ob_fused", "_n_ob_fused2", "_n_ob_fused3"))
+    if (_agl_raw is not None and _metric and not _fused_real
+            and "metric depth model" in (scale_source or "") + str(tier)):
+        _product_agl = np.maximum(_agl_raw if _agl_raw.shape == dsm.shape else
+                                  cv2.resize(_agl_raw, (dsm.shape[1], dsm.shape[0]),
+                                             interpolation=cv2.INTER_AREA), 0.0).astype(np.float32)
+    # Surface = the pipeline's ground (which carries the datum work above)
+    # plus the model's own height above ground, when that is what we have.
+    _dsm_base = (np.minimum(dsm, ground) + _product_agl) if _product_agl is not None else dsm
+    _dsm_out, _datum = _dsm_base, ("DEM-anchored (Tier A)" if tier[0] == "A" else "local ground = 0")
     if _metric and _terrain_datum is not None:
-        _dsm_out = dsm + _terrain_datum
+        _dsm_out = _dsm_base + _terrain_datum
         _datum = "Copernicus GLO-30 (EGM2008 geoid), terrain_from_dem"
     elif _metric and tier[0] != "A" and _datum_fit is not None:
-        _dsm_out = dsm + float(_datum_fit["offset_m"])
+        _dsm_out = _dsm_base + float(_datum_fit["offset_m"])
         _datum = (f"Copernicus/SRTM median offset {_datum_fit['offset_m']:+.2f} m over "
                   f"{_datum_fit.get('n', 0)} bare-ground px (datum only)")
     # The working grid's exact affine. src_transform was rescaled to the
@@ -2377,7 +2400,7 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
     }
     if return_arrays:
         assert not stage, "return_arrays=True requires stage=False (meta is not JSON-safe with an array in it)"
-        meta["_ndsm"] = ndsm
+        meta["_ndsm"] = _product_agl if _product_agl is not None else ndsm
         # The internal metres-per-raw-depth-unit actually applied for this
         # build, whatever tier was reached (Tier B: calibrate_scale's own
         # output, untouched; Tier C: the assumed-tallest scale, possibly

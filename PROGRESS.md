@@ -3,7 +3,7 @@
 Legend: [x] done and verified · [~] in progress · [ ] not started · [!] blocked (needs input)
 
 ## Accuracy (SIH evaluation 50%)
-- [x] Retrained model run 02 (Depth-Anything-V2-Small, Apache-2.0): blind DFC RMSE 4.36 m (was 4.97), held-out per-building 2.19 m
+- [x] Retrained model run 02 (Depth-Anything-V2-Small, Apache-2.0) + product fix: blind DFC RMSE 2.82 m / MAE 1.59 m / pooled corr 0.787 (was 4.97 / 2.82 / 0.51), per-building 2.19 m
 - [x] Honest blind benchmark: every tile scored, zero-prediction floor reported
 - [x] Per-pixel uncertainty: calibrated (held-out ECE 0.085, rank corr 0.72), `_sigma.tif` + viewer layer, verified in a real build
 - [x] GCPs recalibrate the DSM file (tests pass; +3 m shift recovered to 0.06 m)
@@ -45,4 +45,4 @@ Legend: [x] done and verified · [~] in progress · [ ] not started · [!] block
 - [ ] Demo script, 2-minute video, live-upload rehearsal, offline fallback
 - [!] Final deliverables pack (source, docs, installer, evidence)
 
-- [x] Pooled correlation measured like-for-like: 0.49 (competitor reports 0.84) -- behind; run 03 is the lever
+- [x] Pooled correlation like-for-like: 0.787 after the product fix (competitor reports 0.84 on their tiles)

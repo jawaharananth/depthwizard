@@ -16,13 +16,14 @@ No scale is fitted to the ground truth anywhere in these numbers. Full table:
 
 | | RMSE | MAE | Correlation |
 |---|---|---|---|
-| Current model (run 02), whole tile, 10 held-out tiles (none dropped) | **4.36 m** | 2.36 m | median 0.54 |
+| Current model (run 02), whole tile, 10 held-out tiles (none dropped) | **2.82 m** | **1.59 m** | pooled 0.787, median 0.73 |
+| Same model through the old mesh post-processing | 4.36 m | 2.36 m | pooled 0.49 |
 | Previous Base checkpoint, same protocol | 4.97 m | 2.82 m | median 0.51 |
 | Predicting 0 m everywhere, same pixels | 5.14 m | 2.36 m | -- |
 | Current model, per building, 18 held-out tiles / 461 buildings | **2.19 m** | 1.58 m | bias -1.19 m |
 
-By terrain class (blind, whole tile): urban 7.48 m, forest 5.13 m, "hilly"
-3.42 m, sparse 3.01 m RMSE. Jacksonville has no real hills; the "hilly" class
+By terrain class (blind, whole tile): urban 3.83 m, forest 4.41 m, "hilly"
+1.53 m, sparse 1.86 m RMSE. Jacksonville has no real hills; the "hilly" class
 is relief-based and should not be read as mountain terrain.
 
 The model under-calls heights by a factor of ~1.5-2.3 per tile. Every figure
