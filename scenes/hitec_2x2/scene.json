@@ -150,5 +150,27 @@
   "file": "roof_details.glb",
   "count": 3033,
   "note": "rooftop structures (water tanks, stair rooms) measured from their own shadows under the fitted sun; outlines inferred"
+ },
+ "projection_accuracy": {
+  "corrected": {
+   "n": 5822,
+   "median_m": 0.6,
+   "p75_m": 0.84,
+   "p90_m": 1.25,
+   "p75_m_3-10m": 0.84,
+   "p75_m_10-25m": 0.84,
+   "p75_m_25-m": 0.6
+  },
+  "uncorrected": {
+   "n": 5822,
+   "median_m": 0.6,
+   "p75_m": 1.02,
+   "p90_m": 1.49,
+   "p75_m_3-10m": 1.19,
+   "p75_m_10-25m": 1.02,
+   "p75_m_25-m": 1.02
+  },
+  "ground": "exact by construction: the texture is the input image on its own geotransform",
+  "method": "median distance from each roof outline (as drawn by the viewer) to the nearest Canny edge of the image, per building; buildings >= 3 m"
  }
 }

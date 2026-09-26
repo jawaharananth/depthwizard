@@ -69,7 +69,7 @@ DFC2019 Jacksonville, airborne LiDAR nDSM as truth):
 
 | Protocol | Scope | RMSE | MAE | Correlation | Sample |
 |---|---|---|---|---|---|
-| Whole-tile, blind (`scripts/benchmark_blind.py`) | every pixel | **4.36 m** | 2.36 m | median 0.54 per tile | 10 held-out tiles, none dropped |
+| Whole-tile, blind (`scripts/benchmark_blind.py`) | every pixel | **4.36 m** | 2.36 m | pooled 0.49 (median per tile 0.54) | 10 held-out tiles, none dropped |
 | &nbsp;&nbsp;floor: predict 0 m everywhere | same pixels | 5.14 m | 2.36 m | -- | same 10 tiles |
 | Per-building (`per_building_metric.py 18`) | median height per labelled building | **2.19 m** | 1.58 m | bias -1.19 m | 18 held-out tiles, 461 buildings |
 | Upper bound, NOT deployable | whole tile, scale fitted to the LiDAR per tile | 3.74 m | 2.02 m | median 0.68 | 18 tiles (older model) |
@@ -80,6 +80,8 @@ tile-views from tiles **outside** the benchmark set (`training/`). Held-out
 tiles are the 18 `dfc2019_height.benchmark_tiles()`, excluded from training.
 Versus the previous Base checkpoint on the same blind protocol: RMSE
 4.97 -> 4.36 m, MAE 2.82 -> 2.36 m, correlation 0.51 -> 0.54.
+
+Projection accuracy (`scripts/projection_accuracy.py`, HITEC, 5,822 buildings): roof outlines as drawn sit a median 0.6 m (one pixel) from the image's edges, p75 0.84 m, p90 1.25 m with the measured relief-displacement correction (1.02 / 1.49 m without it); the ground drape is exact by construction.
 
 What these say, plainly: building heights are within ~2 m on held-out
 Jacksonville tiles, but heights are still compressed to roughly 1/1.7 of the

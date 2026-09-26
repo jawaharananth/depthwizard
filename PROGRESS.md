@@ -24,7 +24,7 @@ Legend: [x] done and verified · [~] in progress · [ ] not started · [!] block
 - [ ] Dark slab artifact (HITEC) — source not yet found
 - [ ] Time-machine 3D change detection — agent queued
 - [ ] Analysis suite (solar potential, shadow simulation) — agent queued
-- [ ] Projection-accuracy measurement (number)
+- [x] Projection-accuracy measurement: HITEC roofs median 0.6 m / p75 0.84 m / p90 1.25 m to image edges (lean-corrected)
 - [ ] Real-GPU frame-rate number (needs a run on a real browser)
 
 ## Documentation & submission
@@ -33,7 +33,7 @@ Legend: [x] done and verified · [~] in progress · [ ] not started · [!] block
 - [!] SIH idea PPT (due 30 Sep) — team
 
 ## Also required for "fully finished" (beyond the 12 beast moves)
-- [ ] Projection-accuracy measurement (texture-to-geometry offset, metres)
+- [x] Projection-accuracy measurement (see above)
 - [!] Real-GPU frame rate (open viewer with &fps=1 in Chrome)
 - [ ] First-person walk: collision + smoothness check
 - [ ] Technical report + user manual
@@ -44,3 +44,5 @@ Legend: [x] done and verified · [~] in progress · [ ] not started · [!] block
 - [ ] Final consistency pass: rebuild scenes, re-run benchmarks, refresh all docs
 - [ ] Demo script, 2-minute video, live-upload rehearsal, offline fallback
 - [!] Final deliverables pack (source, docs, installer, evidence)
+
+- [x] Pooled correlation measured like-for-like: 0.49 (competitor reports 0.84) -- behind; run 03 is the lever

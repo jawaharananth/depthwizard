@@ -327,6 +327,10 @@ def score_tile(result: dict) -> dict:
     # that would discard our worst results using the answer key. Every tile
     # is scored; a low correlation is only flagged for inspection.
     out["low_correlation_flag"] = bool(not np.isfinite(corr) or corr < MIN_CORRELATION)
+    # A thinned sample of (prediction, truth) for a POOLED correlation across
+    # all tiles -- the statistic other published work reports; per-tile
+    # medians run lower on the same predictions.
+    out["_pool"] = (pred[fin][::37].astype(np.float32), gt_ndsm[fin][::37].astype(np.float32))
     # What "predict 0 m everywhere" would score on the same pixels -- the
     # floor any height model has to beat to be worth anything.
     z = -gt_ndsm[fin]
@@ -454,6 +458,11 @@ def write_report(results: list, out_px: int, path: str = None):
             lines.append("")
             lines.append(f"Floor to beat -- predicting 0 m everywhere on the same pixels: "
                          f"RMSE {np.sqrt(zsq/zn):.2f} m, MAE {zab/zn:.2f} m.")
+        pools = [r["_pool"] for r in scored if r.get("_pool") is not None]
+        if pools:
+            pp = np.concatenate([a for a, _ in pools]); tt = np.concatenate([b for _, b in pools])
+            lines.append(f"Pooled correlation over all scored pixels: {np.corrcoef(pp, tt)[0, 1]:.3f} "
+                         f"({pp.size:,} sampled pixels).")
         cs = [r["correlation"] for r in scored if r.get("correlation") is not None]
         if cs:
             lines.append(f"Per-tile correlation with the LiDAR nDSM: median {np.median(cs):.3f} "
