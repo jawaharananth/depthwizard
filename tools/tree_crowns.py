@@ -361,7 +361,10 @@ def run(scene, tile=1024, halo=128, binary=None, overlay_dir=None):
             # a crown whose mean colour is bright soil/concrete is not a tree
             # (canopy in these images is dark: mean luminance ~40-110)
             lumc = st["rgb"][1:] @ np.array([0.2126, 0.7152, 0.0722])
-            ok = (st["area_px"][1:] >= 3) & (st["h"][1:] >= 2.0) & (lumc < 140)
+            mc = st["rgb"][1:]
+            chroma = mc.max(1) - mc.min(1)
+            roofish = ((lumc > 90) & (chroma < 22)) | (mc[:, 2] > mc[:, 1] + 6)   # grey/white/blue
+            ok = (st["area_px"][1:] >= 3) & (st["h"][1:] >= 2.0) & (lumc < 140) & ~roofish
             for k in out:
                 v = st[k][1:][ok]
                 if k == "cx":

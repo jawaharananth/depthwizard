@@ -995,6 +995,60 @@ function shadeBuildingPrisms(mesh, mat) {
     (Math.abs(n.y) > 0.5 ? roofIdx : wallIdx).push(i0, i1, i2);
   }
 
+  // Sliver footprints (a boundary wall or a footprint fragment traced as a
+  // building) extrude into blade-like slabs that stand far taller than they
+  // are wide. Width is estimated as 2*area/perimeter from the prism itself.
+  {
+    const par = new Int32Array(pos.count);
+    for (let i = 0; i < pos.count; i++) par[i] = i;
+    const fnd = (x) => { while (par[x] !== x) { par[x] = par[par[x]]; x = par[x]; } return x; };
+    for (const L of [roofIdx, wallIdx]) {
+      for (let t = 0; t < L.length; t += 3) {
+        const r0 = fnd(L[t]); par[fnd(L[t + 1])] = r0; par[fnd(L[t + 2])] = r0;
+      }
+    }
+    const area = new Map(), perim = new Map(), yr = new Map();
+    const P = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()];
+    for (const [L, isRoof] of [[roofIdx, true], [wallIdx, false]]) {
+      for (let t = 0; t < L.length; t += 3) {
+        for (let k = 0; k < 3; k++) P[k].fromBufferAttribute(pos, L[t + k]);
+        const cmp = fnd(L[t]);
+        const e = yr.get(cmp) || [Infinity, -Infinity];
+        for (let k = 0; k < 3; k++) { e[0] = Math.min(e[0], P[k].y); e[1] = Math.max(e[1], P[k].y); }
+        yr.set(cmp, e);
+        if (isRoof) {
+          const A = 0.5 * Math.abs((P[1].x - P[0].x) * (P[2].z - P[0].z) - (P[2].x - P[0].x) * (P[1].z - P[0].z));
+          area.set(cmp, (area.get(cmp) || 0) + A);
+        } else {
+          let d = 0;
+          for (const [i, j] of [[0, 1], [0, 2], [1, 2]]) d = Math.max(d, Math.hypot(P[i].x - P[j].x, P[i].z - P[j].z));
+          perim.set(cmp, (perim.get(cmp) || 0) + d / 2);   // two triangles per wall quad
+        }
+      }
+    }
+    const drop = new Set();
+    for (const [cmp, A] of area) {
+      const Pm = perim.get(cmp) || 0, e = yr.get(cmp);
+      if (!(Pm > 0) || !e) continue;
+      const w = 2 * A / Pm, h = e[1] - e[0];
+      // e.g. HITEC: a 9 m2, 1.5 m-wide fragment that inherited a 48.7 m
+      // tower height. No real building is that shape.
+      if ((w < 3.0 && h > 6 * w) || (A < 20 && h > 12)) drop.add(cmp);
+    }
+    if (drop.size) {
+      for (const L of [roofIdx, wallIdx]) {
+        let o = 0;
+        for (let t = 0; t < L.length; t += 3) {
+          if (drop.has(fnd(L[t]))) continue;
+          L[o++] = L[t]; L[o++] = L[t + 1]; L[o++] = L[t + 2];
+        }
+        L.length = o;
+      }
+      console.info(`building slivers dropped: ${drop.size}`);
+    }
+    window.__dwSlivers = drop.size;
+  }
+
   // Building colour comes from the GLB when the builder measured it: each
   // prism carries the median colour of its own roof, sampled from the
   // satellite image. That is real data about the building, so it is preferred
@@ -1848,6 +1902,20 @@ Promise.all([
           g3.scene.name = "structures";
           (cityRoot || scene).add(g3.scene);
         });
+      }
+      // Rooftop structures (water tanks, stair rooms): heights measured from
+      // their own shadows, tops textured with their own photographed pixels.
+      if (SCENE_META && SCENE_META.roof_details && rgbTexture) {
+        gltfLoader.load(`${BASE}/${SCENE_META.roof_details.file}`, (g4) => {
+          g4.scene.traverse((c) => {
+            if (!c.isMesh) return;
+            c.material = roofMaterial();
+            c.castShadow = true; c.receiveShadow = false;
+            photoSurfaces.add(c);
+          });
+          g4.scene.name = "roof_details";
+          (cityRoot || scene).add(g4.scene);
+        }, undefined, () => {});
       }
       controls.target.copy(center);
       // Optional camera placement from the query string, so a particular view

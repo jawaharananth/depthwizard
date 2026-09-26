@@ -400,7 +400,8 @@ def main():
         cw = max(0.0, 1 - (1 - bw["cw"]) * m)
         fp = bf["f"][1] / v if bf["f"][1] else None       # texels along lean / (texels per m)
         wp = bw["wnd"][1] * tex_m if bw["wnd"][1] else None
-        conf_all = 1 - (1 - cf) * (1 - cw) if (cf > 0.5 and cw > 0.5) else max(cf, cw) * 0.5
+        # overall = the stronger axis (no optimistic combination of two weak axes)
+        conf_all = max(cf, cw)
         glass = None
         if cf >= 0.9 and bf["fprof"] is not None:
             df, _ = duty_and_cells(bf["fprof"], samp.step, bf["f"][1])

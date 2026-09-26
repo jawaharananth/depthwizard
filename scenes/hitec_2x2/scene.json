@@ -145,5 +145,10 @@
   -3.006731302783253,
   -1.5387325961592178
  ],
- "roof_lean_note": "measured from 233 buildings >= 25 m: roof outline = footprint + offset + lean*height (lean 0.25 m/m toward 324 deg, median residual 3.5 m)"
+ "roof_lean_note": "measured from 233 buildings >= 25 m: roof outline = footprint + offset + lean*height (lean 0.25 m/m toward 324 deg, median residual 3.5 m)",
+ "roof_details": {
+  "file": "roof_details.glb",
+  "count": 3033,
+  "note": "rooftop structures (water tanks, stair rooms) measured from their own shadows under the fitted sun; outlines inferred"
+ }
 }
