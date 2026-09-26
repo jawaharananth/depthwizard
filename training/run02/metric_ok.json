@@ -1,0 +1,29 @@
+{
+  "licensed": true,
+  "units": "metres (AGL) predicted directly",
+  "model": "depth-anything/Depth-Anything-V2-Small-hf (Apache-2.0)",
+  "training": "run02: init run01 (GAMUS 4,972 tiles) + GAMUS + DFC2019 Track 3 non-benchmark tile-views (110), 6 epochs, best epoch by DFC val",
+  "gamus_val": {
+    "mae_m": 1.381,
+    "rmse_m": 2.729,
+    "corr": 0.918
+  },
+  "dfc_val_satellite": {
+    "mae_m": 2.593,
+    "rmse_m": 4.578,
+    "corr": 0.706,
+    "tiles": 19
+  },
+  "baseline_mae_m_with_affine": 2.652,
+  "finetuned_mae_m_no_affine": 1.381,
+  "note": "Promotion judged on blind DFC2019 (scripts/benchmark_blind.py); the in-script gate could not run because the initial checkpoint was already fine-tuned.",
+  "canary": {
+    "hash": "3db6539159668a8a",
+    "mean": 0.0001,
+    "std": 0.001,
+    "shape": [
+      64,
+      64
+    ]
+  }
+}
