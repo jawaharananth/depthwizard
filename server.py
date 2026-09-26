@@ -655,9 +655,14 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self._json(400, {"error": "pass ?job=<id> or ?scene=<name>"})
                 return
+            if path and (qs.get("variant") or [""])[0] == "gcp":
+                from calibration import gcp_dsm
+                path = gcp_dsm.gcp_output_path(path)
             if not path or not os.path.isfile(path):
                 self._json(404, {"error": "no DSM/rDSM GeoTIFF for that "
-                                          + ("job" if job_id else "scene")})
+                                          + ("job" if job_id else "scene")
+                                          + (" (no GCP calibration has been run yet)"
+                                             if (qs.get("variant") or [""])[0] == "gcp" else "")})
                 return
             size = os.path.getsize(path)
             self.send_response(200)
@@ -695,6 +700,9 @@ class Handler(BaseHTTPRequestHandler):
         u = urllib.parse.urlparse(self.path)
         if u.path == "/api/reference":
             self._reference(u)
+            return
+        if u.path == "/api/gcp":
+            self._gcp(u)
             return
         if u.path != "/api/upload":
             self._json(404, {"error": "no such route"})
@@ -831,6 +839,60 @@ class Handler(BaseHTTPRequestHandler):
             _jobs[job_id] = {"job": job}
         threading.Thread(target=run_job, args=(job,), daemon=True).start()
         self._json(200, {"job": job_id})
+
+    def _gcp(self, u) -> None:
+        """Recalibrate a scene's DSM from Ground Control Points.
+
+        Body: {"points": [{"x","y","z","crs"} or {"col","row","z"}, ...],
+               "mode": "auto" | "offset" | "affine"}. z is an ABSOLUTE
+        elevation. Writes <dsm>_gcp.tif beside the original (which is kept)
+        and returns the fit report, including leave-one-out RMSE per method.
+        """
+        from calibration import gcp_dsm
+        qs = urllib.parse.parse_qs(u.query)
+        job_id = (qs.get("job") or [None])[0]
+        scene = (qs.get("scene") or [None])[0]
+        if job_id:
+            dsm = _job_dsm(job_id)
+            ref = f"job={urllib.parse.quote(job_id)}"
+        elif scene:
+            d = _scene_dir(scene)
+            dsm = _find_dsm_in(d) if d else None
+            ref = f"scene={urllib.parse.quote(scene)}"
+        else:
+            self._json(400, {"error": "pass ?job=<id> or ?scene=<name>"})
+            return
+        if not dsm:
+            self._json(404, {"error": "no DSM/rDSM GeoTIFF for that job/scene"})
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            length = 0
+        if length <= 0 or length > 2_000_000:
+            self._json(400, {"error": "send a JSON body of at most 2 MB: "
+                                      '{"points": [{"x":..,"y":..,"z":..,"crs":"EPSG:4326"}], '
+                                      '"mode": "auto"}'})
+            return
+        try:
+            body = json.loads(self.rfile.read(length).decode("utf-8"))
+            points = body["points"]
+            mode = body.get("mode", "auto")
+            if not isinstance(points, list) or not points:
+                raise ValueError("points must be a non-empty list")
+        except (ValueError, KeyError, TypeError) as e:
+            self._json(400, {"error": f"bad GCP request: {e}"})
+            return
+        try:
+            rep = gcp_dsm.calibrate_file(dsm, points, mode=mode)
+        except ValueError as e:
+            self._json(400, {"error": str(e)})
+            return
+        except Exception as e:
+            self._json(500, {"error": f"GCP calibration failed: {type(e).__name__}: {e}"})
+            return
+        rep["download"] = f"/api/dsm?{ref}&variant=gcp"
+        self._json(200, rep)
 
     def _reference(self, u) -> None:
         import tempfile

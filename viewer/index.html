@@ -2256,6 +2256,7 @@ function refreshErrButton() {
 }
 refreshErrButton();
 
+let API_SERVED = false;   // set once /api/gallery answers (processing server present)
 // --- Server-only: DSM download + reference validation ---
 // Hidden under a static server or offline (Tauri): those have no /api/.
 (async () => {
@@ -2265,6 +2266,7 @@ refreshErrButton();
     served = r.ok && (r.headers.get("content-type") || "").includes("json");
   } catch (_) { served = false; }
   if (!served) return;
+  API_SERVED = true;
 
   const home = document.createElement("a");
   home.href = "/";
@@ -2979,6 +2981,11 @@ function gcpRender() {
       }
     }
     html += `<button class="gcp-apply" id="gcp-apply">Apply scale &rarr; metric</button>`;
+    if (API_SERVED && API_QS && SCENE_META && SCENE_META.crs) {
+      html += `<button class="gcp-apply" id="gcp-write" title="Recalibrate the DSM GeoTIFF `
+           + `on the server from these points (leave-one-out checked); the original file is kept">`
+           + `Write to DSM file</button>`;
+    }
   } else {
     html += `<div class="gcp-hint">${res.reason}</div>`;
   }
@@ -2993,6 +3000,8 @@ function gcpRender() {
       gcpRender();
     });
   });
+  const gw = document.getElementById("gcp-write");
+  if (gw) gw.addEventListener("click", gcpWriteToDsm);
   const ap = document.getElementById("gcp-apply");
   if (ap) {
     ap.addEventListener("click", () => {
@@ -3007,6 +3016,37 @@ function gcpRender() {
         gcpRender();
       }
     });
+  }
+}
+
+// Send the control points to the server, which fits offset/affine on the DSM
+// itself (scale applies only above ground; the choice is leave-one-out checked)
+// and writes <dsm>_gcp.tif beside the original.
+async function gcpWriteToDsm() {
+  const panel = document.getElementById("measure-panel");
+  const pts = [];
+  for (const p of gcpPoints) {
+    const rc = realCoordsAt(p.x, p.z);
+    if (rc) pts.push({ x: rc.easting, y: rc.northing, crs: SCENE_META.crs, h_agl: p.known });
+  }
+  if (pts.length < 2) { panel.textContent = "Need at least 2 georeferenced control points."; return; }
+  panel.textContent = `Recalibrating the DSM from ${pts.length} control points...`;
+  try {
+    const r = await fetch(`/api/gcp?${API_QS}`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ points: pts, mode: "auto" }) });
+    const j = await r.json();
+    if (!r.ok) { panel.textContent = `DSM not recalibrated: ${j.error || r.status}`; return; }
+    const loo = j.loo_rmse || {};
+    const fmt = (v) => (v == null ? "n/a" : `${v.toFixed(2)} m`);
+    panel.innerHTML =
+      `DSM recalibrated (${j.method}, ${j.n} points): above-ground scale &times;${j.scale.toFixed(3)}, `
+      + `datum ${j.offset_m >= 0 ? "+" : ""}${j.offset_m.toFixed(2)} m.<br>`
+      + `Leave-one-out RMSE &mdash; none ${fmt(loo.none)}, offset ${fmt(loo.offset)}, affine ${fmt(loo.affine)}.<br>`
+      + (j.warnings && j.warnings.length ? `<span style="color:#fc8">${j.warnings.join("<br>")}</span><br>` : "")
+      + `<a href="${j.download}" download style="color:#8cf">Download recalibrated DSM</a>`;
+  } catch (e) {
+    panel.textContent = `DSM not recalibrated: ${e}`;
   }
 }
 
