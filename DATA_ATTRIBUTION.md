@@ -26,6 +26,14 @@ python gamus.py download --split val --limit 40
 Tiles are `*_RGB.h5` (imagery), `*_AGL.h5` (height above ground, in metres,
 LiDAR-derived) and `*_CLS.h5` (six semantic classes).
 
+## Model weights
+
+| Weights | Licence | Where used |
+|---|---|---|
+| depth-anything/Depth-Anything-V2-Small-hf | Apache-2.0 | default backbone for fine-tuning (`train_height.py`) |
+| depth-anything/Depth-Anything-V2-Base-hf | CC-BY-NC-4.0 (non-commercial) | base of the current `checkpoints/height_best/`; to be replaced by the Small retrain |
+| Meta/WRI Global Canopy Height Map v1/v2 | CC-BY-4.0 | canopy heights (Periyar, HITEC trees) |
+
 ## `scenes/` — pre-built reconstructions
 
 Output of this pipeline. `scenes/jax165` is derived from DFC2019 imagery (see

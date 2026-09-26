@@ -5,7 +5,7 @@ Single satellite image → navigable 3D city model.
 Built for SIH26175 (ISRO): reconstruct elevation and a 3D terrain model from a
 single-view satellite or aerial image, with a visualisation layer.
 
-![whole-tile](https://img.shields.io/badge/whole--tile%20RMSE-3.74%20m-blue)
+![whole-tile](https://img.shields.io/badge/blind%20whole--tile%20RMSE-4.97%20m%20(zero--pred%205.14%20m)-orange)
 ![per-building](https://img.shields.io/badge/per--building%20RMSE-3.13%20m%20(50%20tiles%2C%201%2C063%20bldgs)-blue)
 ![tier](https://img.shields.io/badge/heights-Tier%20A%20when%20anchorable-green)
 ![interval](https://img.shields.io/badge/90%25%20interval-%C2%B14.53%20m-informational)
@@ -64,18 +64,23 @@ real metre output for every downstream consumer. Both are fixed now; the
 numbers below were re-measured after both fixes, not carried over from before
 them. Full history in `EVALUATION_PROTOCOL.md`.
 
-**Two accuracy figures, answering different questions, from `EVALUATION_PROTOCOL.md`'s protocols 2 and 3:**
+**Accuracy, measured blind** (no scale fitted to the LiDAR at any point;
+DFC2019 Jacksonville, airborne LiDAR nDSM as truth):
 
-| Protocol | Scope | RMSE | MAE | Sample |
-|---|---|---|---|---|
-| 2 — whole-tile | every pixel (roads, ground, everything) | 3.74 m | 2.02 m | 18 DFC2019 tiles |
-| 3 — per-building | only pixels a human labelled as a building | 3.13 m | 1.87 m | 50 tiles, 1,063 buildings |
+| Protocol | Scope | RMSE | MAE | Correlation | Sample |
+|---|---|---|---|---|---|
+| Whole-tile, blind (`scripts/benchmark_blind.py`) | every pixel | **4.97 m** | 2.82 m | median 0.51 per tile | 10 tiles, none dropped |
+| &nbsp;&nbsp;floor: predict 0 m everywhere | same pixels | 5.14 m | 2.36 m | -- | same 10 tiles |
+| Per-building (`per_building_metric.py`) | median height per labelled building | **3.13 m** | 1.87 m | -- | 50 tiles, 1,063 buildings |
+| Upper bound, NOT deployable | whole tile, scale fitted to the LiDAR per tile | 3.74 m | 2.02 m | median 0.68 | 18 tiles |
 
-Protocol 3 is the harder, more specific question and is what a "how good is a
-predicted building height" claim should cite. It beats a 3.46 m comparison
-figure on the same 50-tile sample — checked at that scale deliberately, after
-an 18-tile subsample of the same model gave a different-looking number and
-this project's own rule ("not real until it survives 3x the sample") caught it.
+What these say, plainly: the current checkpoint gets building heights within
+~3 m on average, but on whole tiles it only just beats predicting zero,
+because it compresses heights to roughly 1/1.7 of the truth (the
+`fitted_scale` column in `BENCHMARK_BLIND.md`) and fails on tall buildings
+(JAX_068). That compression is the target of the GAMUS retrain on
+Depth-Anything-V2-Small (`training/`). The last row is kept only as a ceiling:
+it needs the answer to compute the answer.
 
 A licensed model (`checkpoints/height_best/`, GAMUS-fine-tuned) predicts
 **metric height directly** when present — no per-tile scale to assume, which
@@ -100,8 +105,13 @@ never carry a CRS.
   from 0.522 (JAX_068, 44 m) to 0.086 (JAX_167, 161 m) — street canyons defeat it.
 - Buildings are **flat-roofed prisms**. Domes and spires become boxes. This is a
   deliberate abstraction, not an accident.
-- Nadir imagery contains **no facade pixels**. Wall appearance is synthetic and
-  labelled as such.
+- Walls are textured only where the image actually photographed them: an
+  oblique satellite view shows the sensor-facing side of tall buildings, found
+  from the image's measured relief displacement
+  (`scripts/measure_image_lean.py`). Walls the sensor never saw reuse the same
+  building's photographed facade and are labelled inferred; a near-nadir image
+  has no facade pixels at all, and its walls take the building's measured
+  colour.
 - Vehicle detection is a size/shape heuristic, not an inventory.
 - Dense tree canopy is misread as buildings where canopy height matches roof
   height (measured: 40% "building" on a campus that is ~8% built).
@@ -182,3 +192,11 @@ Code: MIT. See `LICENSE`.
 Data is **not** covered by that licence: DFC2019 is licensed by IEEE GRSS;
 OpenAerialMap imagery carries its own per-scene licence (CC-BY / CC-BY-SA /
 ODbL). Check before redistributing anything derived from either.
+
+**Model weights.** The checkpoint in `checkpoints/height_best/` was fine-tuned
+from Depth-Anything-V2-**Base**, whose weights are CC-BY-NC-4.0
+(non-commercial). It is fine for research and evaluation but not for a
+commercial deliverable. `train_height.py` now defaults to
+Depth-Anything-V2-**Small** (Apache-2.0); the retrain on the full GAMUS set
+(`training/kaggle_kernel.py`) replaces the Base checkpoint once it passes the
+promotion gates.

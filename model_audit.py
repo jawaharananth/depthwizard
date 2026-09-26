@@ -313,7 +313,7 @@ def audit(footprints: Sequence[np.ndarray], binfo: Dict,
 
 def report(res: Dict) -> str:
     g = res["grades"]
-    lines = ["      model-vs-image audit:"]
+    lines = ["      model-vs-image audit (internal consistency -- not ground-truth accuracy):"]
     lines.append(f"  [{g['silhouette_iou']:>4}] silhouette IoU   {res['silhouette_iou']:.3f}"
                  f"   (recall {res['coverage_recall']:.3f}, "
                  f"precision {res['coverage_precision']:.3f})")
@@ -322,7 +322,7 @@ def report(res: Dict) -> str:
     lines.append(f"  [{g['edge_support']:>4}] edge support     {res['edge_support']:.3f}"
                  f"   of {res['boundary_px']} boundary px on a real image edge")
     mae = res.get("height_mae")
-    lines.append(f"  [{g['height_corr']:>4}] height agreement corr {res['height_corr']:.3f}"
+    lines.append(f"  [{g['height_corr']:>4}] prism vs own height field corr {res['height_corr']:.3f}"
                  + (f", MAE {mae}" if mae is not None else ""))
     sa = res.get("shadow_agreement")
     if sa is not None:

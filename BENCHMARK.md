@@ -9,7 +9,28 @@
 
 ---
 
-## Tile-level accuracy — 18 tiles (current: `dashboard/validation_results.json`)
+## Headline: blind accuracy (read this first)
+
+No scale is fitted to the ground truth anywhere in these numbers. Full table:
+`BENCHMARK_BLIND.md` (regenerate: `python scripts/benchmark_blind.py 10`).
+
+| | RMSE | MAE | Correlation |
+|---|---|---|---|
+| Current model, whole tile, 10 tiles (none dropped) | **4.97 m** | 2.82 m | median 0.51 |
+| Predicting 0 m everywhere, same pixels | 5.14 m | 2.36 m | -- |
+| Current model, per building, 50 tiles / 1,063 buildings | **3.13 m** | 1.87 m | -- |
+
+By terrain class (blind, whole tile): urban 8.16 m, forest 5.12 m, "hilly"
+4.53 m, sparse 3.83 m RMSE. Jacksonville has no real hills; the "hilly" class
+is relief-based and should not be read as mountain terrain.
+
+The model under-calls heights by a factor of ~1.5-2.3 per tile. Every figure
+BELOW this section scale-aligns each tile to the LiDAR before scoring and is
+an upper bound, not a deployable result.
+
+---
+
+## Upper bound (scale fitted to LiDAR per tile) — 18 tiles (current: `dashboard/validation_results.json`)
 
 **Scope: Jacksonville, FL only (DFC2019 Track 3).** No other city has LiDAR truth
 scored this way; the India demo scenes are not benchmarked.

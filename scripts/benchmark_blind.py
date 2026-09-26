@@ -52,9 +52,12 @@ RULES ENFORCED, NOT JUST STATED
     correlation only and are excluded from the RMSE/MAE aggregate, loudly
     (printed and recorded in BENCHMARK_BLIND.md), the same way an
     unregistered tile already is.
-  - MIN_CORRELATION floor (0.25) is unchanged from rescore_baseline.py: a
-    tile whose prediction doesn't correlate with its own ground truth is
-    reporting noise, not a number.
+  - Every tile is scored. A tile whose prediction correlates with its truth
+    below MIN_CORRELATION (0.25) is FLAGGED, never dropped: rejecting tiles by
+    how well our own output matches the truth would discard our worst
+    results using the answer key.
+  - Each tile also reports the "predict 0 m everywhere" RMSE/MAE on the same
+    pixels -- the floor a height model has to beat.
 
 Usage:
   python scripts/benchmark_blind.py 20
@@ -320,10 +323,15 @@ def score_tile(result: dict) -> dict:
         "acq_time": result["acq_time"].isoformat() if result["acq_time"] else None,
     }
 
-    if not np.isfinite(corr) or corr < MIN_CORRELATION:
-        out["status"] = "REJECTED"
-        out["reason"] = f"unregistered (corr={corr:.3f} < {MIN_CORRELATION})"
-        return out
+    # A low prediction-vs-truth correlation is NOT grounds to drop a tile:
+    # that would discard our worst results using the answer key. Every tile
+    # is scored; a low correlation is only flagged for inspection.
+    out["low_correlation_flag"] = bool(not np.isfinite(corr) or corr < MIN_CORRELATION)
+    # What "predict 0 m everywhere" would score on the same pixels -- the
+    # floor any height model has to beat to be worth anything.
+    z = -gt_ndsm[fin]
+    out["zero_baseline"] = {"rmse_m": round(float(np.sqrt(np.mean(z ** 2))), 3),
+                            "mae_m": round(float(np.mean(np.abs(z))), 3)}
 
     # FITTED SCALE, computed for the report table only -- never applied to
     # `pred`, never fed back into anything scored above. This answers "what
@@ -438,6 +446,22 @@ def write_report(results: list, out_px: int, path: str = None):
         lines.append(f"**RMSE {np.sqrt(agg_sq/n):.2f} m   MAE {agg_abs/n:.2f} m** "
                      f"-- {len(scored)} of {len(results)} tiles reached a metric "
                      f"tier (A/B) blind and were scored.")
+        zb = [r for r in scored if r.get("zero_baseline")]
+        if zb:
+            zsq = sum(r["zero_baseline"]["rmse_m"] ** 2 * r["metrics"]["overall"]["n_pixels"] for r in zb)
+            zab = sum(r["zero_baseline"]["mae_m"] * r["metrics"]["overall"]["n_pixels"] for r in zb)
+            zn = sum(r["metrics"]["overall"]["n_pixels"] for r in zb)
+            lines.append("")
+            lines.append(f"Floor to beat -- predicting 0 m everywhere on the same pixels: "
+                         f"RMSE {np.sqrt(zsq/zn):.2f} m, MAE {zab/zn:.2f} m.")
+        cs = [r["correlation"] for r in scored if r.get("correlation") is not None]
+        if cs:
+            lines.append(f"Per-tile correlation with the LiDAR nDSM: median {np.median(cs):.3f} "
+                         f"(range {min(cs):.3f}-{max(cs):.3f}).")
+        flagged = [r["tile"] for r in scored if r.get("low_correlation_flag")]
+        if flagged:
+            lines.append(f"Low-correlation tiles (< {MIN_CORRELATION}), scored and INCLUDED "
+                         f"above: {', '.join(flagged)}.")
     else:
         lines.append("**No tile reached a metric tier blind.** Every tile that "
                      "was not rejected for poor registration produced a Tier C, "
@@ -460,16 +484,18 @@ def write_report(results: list, out_px: int, path: str = None):
                      "It says whether this tile's Tier B metres are correct metres or "
                      "merely confident ones.")
         lines.append("")
-        lines.append("| tile | tier | RMSE | MAE | corr | scale_source | m_per_unit | "
-                     "n_shadow | fitted_scale | scale_error_pct |")
+        lines.append("| tile | tier | RMSE | MAE | zero-pred RMSE | corr | scale_source | "
+                     "m_per_unit | fitted_scale | scale_error_pct |")
         lines.append("|---|---|---|---|---|---|---|---|---|---|")
         for r in scored:
             m = r["metrics"]["overall"]
+            zr = (r.get("zero_baseline") or {}).get("rmse_m")
             lines.append(
                 f"| {r['tile']} | {r['tier']} | {m['rmse_m']:.2f} | {m['mae_m']:.2f} | "
-                f"{r['correlation']} | {r['scale_source']} | {r['m_per_unit']} | "
-                f"{r['n_shadow_measurements']} | {r['fitted_scale_m_per_unit']} | "
-                f"{r['scale_error_pct']} |")
+                f"{'' if zr is None else f'{zr:.2f}'} | "
+                f"{r['correlation']}{' (low)' if r.get('low_correlation_flag') else ''} | "
+                f"{r['scale_source']} | {r['m_per_unit']} | "
+                f"{r['fitted_scale_m_per_unit']} | {r['scale_error_pct']} |")
         lines.append("")
 
         lines.append("## By terrain class")

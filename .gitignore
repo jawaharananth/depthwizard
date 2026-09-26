@@ -198,3 +198,6 @@ nyc_fidi/*.csv
 nyc_fidi/*.png
 *_polygons_px*.json
 *.log
+
+# Internal notes (competitor research, predictions) -- never shipped
+archive/private_notes/
