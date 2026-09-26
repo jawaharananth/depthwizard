@@ -1,99 +1,104 @@
 {
-  "source_image": "C:\\Users\\jawahar\\depthwizard\\periyar.tif",
-  "resolution": [
-    4096,
-    4096
-  ],
-  "tier": "A (terrain: Copernicus GLO-30, canopy-corrected x0.6; canopy: real canopy-height map)",
-  "scale_source": "GSD 0.597 m/px measured from the file -- horizontal distances are real; vertical assumes tallest ~40 m",
-  "gsd_m": 0.5971642834779395,
-  "sun_azimuth_deg": 133.2857093212295,
-  "sun_elevation_deg": 54.27137695555383,
-  "capture_time_utc": "2023-02-08 05:21",
-  "capture_local_solar_hour": 10.49,
-  "sun_note": "solar ephemeris at the capture date with an assumed pass time",
-  "crs": "EPSG:3857",
-  "affine_transform": [
-    0.5971642834779395,
-    0.0,
-    8589381.742461827,
-    0.0,
-    -0.5971642834779395,
-    1069965.5219358988
-  ],
-  "ground_truth": "NONE -- no LiDAR available for this image; no accuracy figure can be quoted for this scene",
-  "nadir_check": {
-    "sky_span": 0.003,
-    "sky_holes": 0,
-    "likely_nadir": true
+ "source_image": "C:\\Users\\jawahar\\depthwizard\\periyar.tif",
+ "resolution": [
+  4096,
+  4096
+ ],
+ "tier": "A (terrain: Copernicus GLO-30, canopy-corrected x0.6; canopy: real canopy-height map)",
+ "scale_source": "GSD 0.597 m/px measured from the file -- horizontal distances are real; vertical assumes tallest ~40 m",
+ "gsd_m": 0.5971642834779395,
+ "sun_azimuth_deg": 133.2857093212295,
+ "sun_elevation_deg": 54.27137695555383,
+ "capture_time_utc": "2023-02-08 05:21",
+ "capture_local_solar_hour": 10.49,
+ "sun_note": "solar ephemeris at the capture date with an assumed pass time",
+ "crs": "EPSG:3857",
+ "affine_transform": [
+  0.5971642834779395,
+  0.0,
+  8589381.742461827,
+  0.0,
+  -0.5971642834779395,
+  1069965.5219358988
+ ],
+ "ground_truth": "NONE -- no LiDAR available for this image; no accuracy figure can be quoted for this scene",
+ "nadir_check": {
+  "sky_span": 0.003,
+  "sky_holes": 0,
+  "likely_nadir": true
+ },
+ "overlays_removed": 21,
+ "overlay_coverage": 6e-05,
+ "model": "prism city (flat roofs, vertical walls)",
+ "buildings_extruded": 0,
+ "canopy_volumes": 0,
+ "water_bodies": 0,
+ "vehicles": 0,
+ "provenance": "MEASURED",
+ "height_is_metric": true,
+ "shadow_calibration": {
+  "attempted": false,
+  "refusal_reason": "no sun elevation source available -- need a GeoTIFF with capture time + CRS, or --anchor-height"
+ },
+ "dem_anchor": {
+  "attempted": true,
+  "accepted": true,
+  "source": "Copernicus GLO-30 (Copernicus_DSM_COG_10_N09_00_E077_00_DEM)",
+  "mode": "terrain_from_dem",
+  "canopy_penetration_correction": 0.6,
+  "relief_m": 139.4
+ },
+ "conformal": {
+  "applied": false,
+  "variant": "constant",
+  "coverage_nominal": 0.9,
+  "half_width_m": 4.526630519866947,
+  "fitted_on": "JAX_165",
+  "held_out_coverage": 0.8968253968253969,
+  "omitted_reason": null
+ },
+ "discovery": {
+  "candidates_examined": 6595,
+  "retained": 2607,
+  "by_size": {
+   "tiny": 1128,
+   "small": 879,
+   "medium": 460,
+   "large": 140
   },
-  "overlays_removed": 21,
-  "overlay_coverage": 6e-05,
-  "model": "prism city (flat roofs, vertical walls)",
-  "buildings_extruded": 0,
-  "canopy_volumes": 0,
-  "water_bodies": 0,
-  "vehicles": 0,
-  "provenance": "MEASURED",
-  "height_is_metric": true,
-  "shadow_calibration": {
-    "attempted": false,
-    "refusal_reason": "no sun elevation source available -- need a GeoTIFF with capture time + CRS, or --anchor-height"
+  "rejected": {
+   "no_evidence": 14,
+   "duplicate": 3598,
+   "below_min_area": 376,
+   "degenerate": 0
   },
-  "dem_anchor": {
-    "attempted": true,
-    "accepted": true,
-    "source": "Copernicus GLO-30 (Copernicus_DSM_COG_10_N09_00_E077_00_DEM)",
-    "mode": "terrain_from_dem",
-    "canopy_penetration_correction": 0.6,
-    "relief_m": 139.4
-  },
-  "conformal": {
-    "applied": false,
-    "variant": "constant",
-    "coverage_nominal": 0.9,
-    "half_width_m": 4.526630519866947,
-    "fitted_on": "JAX_165",
-    "held_out_coverage": 0.8968253968253969,
-    "omitted_reason": null
-  },
-  "discovery": {
-    "candidates_examined": 6595,
-    "retained": 2607,
-    "by_size": {
-      "tiny": 1128,
-      "small": 879,
-      "medium": 460,
-      "large": 140
-    },
-    "rejected": {
-      "no_evidence": 14,
-      "duplicate": 3598,
-      "below_min_area": 376,
-      "degenerate": 0
-    },
-    "min_area_m2": 6.0,
-    "scales": [
-      1,
-      2,
-      4
-    ]
-  },
-  "build_seconds": 7952.6,
-  "texture_display": null,
-  "lean_m_per_m": null,
-  "context": {
-    "x0": -4586.221697110683,
-    "x1": 7032.206602236256,
-    "z0": -7185.080658806255,
-    "z1": 4433.347640540451,
-    "source": "Esri World Imagery zoom 16 -- real surroundings, flat, not modelled in 3D"
-  },
-  "context_far": {
-    "x0": -21096.61980671063,
-    "x1": 25377.093390677124,
-    "z0": -25529.9674472505,
-    "z1": 20943.745750136673,
-    "source": "Esri World Imagery zoom 14 -- real, flat, horizon context"
-  }
+  "min_area_m2": 6.0,
+  "scales": [
+   1,
+   2,
+   4
+  ]
+ },
+ "build_seconds": 7952.6,
+ "texture_display": null,
+ "lean_m_per_m": null,
+ "context": {
+  "x0": -4586.221697110683,
+  "x1": 7032.206602236256,
+  "z0": -7185.080658806255,
+  "z1": 4433.347640540451,
+  "source": "Esri World Imagery zoom 16 -- real surroundings, flat, not modelled in 3D"
+ },
+ "context_far": {
+  "x0": -21096.61980671063,
+  "x1": 25377.093390677124,
+  "z0": -25529.9674472505,
+  "z1": 20943.745750136673,
+  "source": "Esri World Imagery zoom 14 -- real, flat, horizon context"
+ },
+ "water_surface": {
+  "file": "water.json",
+  "polygons": 6,
+  "note": "OSM water confirmed by image colour; level = rendered lake surface (p98); translucent reflective layer over the real photographed water"
+ }
 }

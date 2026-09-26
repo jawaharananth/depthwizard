@@ -13929,7 +13929,9 @@
       -229.91
      ]
     ]
-   ]
+   ],
+   "level_y": 4.75,
+   "level_note": "p90 of the rendered lake surface (DEM water is noisy); shore/islands above it show through"
   },
   {
    "area_m2": 257507.5,
@@ -18942,7 +18944,9 @@
       -2076.34
      ]
     ]
-   ]
+   ],
+   "level_y": 4.01,
+   "level_note": "p90 of the rendered lake surface (DEM water is noisy); shore/islands above it show through"
   },
   {
    "area_m2": 12350.7,
@@ -19958,7 +19962,9 @@
      -794.83
     ]
    ],
-   "holes": []
+   "holes": [],
+   "level_y": 5.87,
+   "level_note": "p90 of the rendered lake surface (DEM water is noisy); shore/islands above it show through"
   },
   {
    "area_m2": 11427.1,
@@ -20308,7 +20314,9 @@
      -1709.68
     ]
    ],
-   "holes": []
+   "holes": [],
+   "level_y": 5.67,
+   "level_note": "p90 of the rendered lake surface (DEM water is noisy); shore/islands above it show through"
   },
   {
    "area_m2": 2964.1,
@@ -20491,7 +20499,9 @@
       -2389.25
      ]
     ]
-   ]
+   ],
+   "level_y": 5.89,
+   "level_note": "p90 of the rendered lake surface (DEM water is noisy); shore/islands above it show through"
   },
   {
    "area_m2": 2033.4,
@@ -20621,7 +20631,9 @@
      -1448.12
     ]
    ],
-   "holes": []
+   "holes": [],
+   "level_y": 4.72,
+   "level_note": "p90 of the rendered lake surface (DEM water is noisy); shore/islands above it show through"
   },
   {
    "area_m2": 232.5,

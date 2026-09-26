@@ -1937,6 +1937,36 @@ Promise.all([
           (cityRoot || scene).add(g3.scene);
         });
       }
+      // Water surface over confirmed lakes (OSM outline + image colour): a
+      // thin translucent, reflective layer at the lake's rendered level, so
+      // the photographed water still shows through and the sky reflects.
+      if (SCENE_META && SCENE_META.water_surface) {
+        fetch(`${BASE}/${SCENE_META.water_surface.file}`).then((r) => r.ok ? r.json() : null).then((wj) => {
+          if (!wj || !Array.isArray(wj.polygons_world)) return;
+          const rgb = wj.mean_water_rgb || [58, 73, 81];
+          const wmat = new (THREE.MeshPhysicalMaterial || THREE.MeshStandardMaterial)({
+            color: new THREE.Color(rgb[0] / 255, rgb[1] / 255, rgb[2] / 255),
+            roughness: 0.06, metalness: 0.0, transparent: true, opacity: 0.42,
+            envMapIntensity: 1.4, depthWrite: false,
+          });
+          const grp = new THREE.Group(); grp.name = "water_surface";
+          for (const p of wj.polygons_world) {
+            if (typeof p.level_y !== "number" || !p.exterior || p.exterior.length < 3) continue;
+            // Shape lives in XY; rotating -90 deg about X maps (x, y) to (x, 0, -y),
+            // so y = -z puts it back on the world x/z plane.
+            const sh = new THREE.Shape(p.exterior.map(([x, z]) => new THREE.Vector2(x, -z)));
+            for (const h of p.holes || []) {
+              if (h.length >= 3) sh.holes.push(new THREE.Path(h.map(([x, z]) => new THREE.Vector2(x, -z))));
+            }
+            const m = new THREE.Mesh(new THREE.ShapeGeometry(sh), wmat);
+            m.rotation.x = -Math.PI / 2;
+            m.position.y = p.level_y;
+            m.renderOrder = 2; m.receiveShadow = true;
+            grp.add(m);
+          }
+          (cityRoot || scene).add(grp);
+        }).catch(() => {});
+      }
       // Rooftop structures (water tanks, stair rooms): heights measured from
       // their own shadows, tops textured with their own photographed pixels.
       if (SCENE_META && SCENE_META.roof_details && rgbTexture) {

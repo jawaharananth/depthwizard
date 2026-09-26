@@ -19,8 +19,8 @@ Legend: [x] done and verified · [~] in progress · [ ] not started · [!] block
 - [x] Rooftop structures (3,033), sliver buildings removed (170)
 - [x] Frame-rate readout, getting-started guide, tooltips
 - [x] Upload -> DSM -> view -> validate -> download (tested)
-- [~] Standalone installer: embedded Python runtime + model assembled and upload-tested end to end; NSIS build running
-- [ ] Periyar lake water surface
+- [x] Standalone backend (embedded runtime) built + upload-tested; installer DROPPED by decision -- product will be hosted as a website
+- [x] Periyar lake water surface (6 confirmed water bodies, translucent reflective layer at measured level)
 - [ ] Dark slab artifact (HITEC) — source not yet found
 - [ ] Time-machine 3D change detection — agent queued
 - [ ] Analysis suite (solar potential, shadow simulation) — agent queued
@@ -39,7 +39,7 @@ Legend: [x] done and verified · [~] in progress · [ ] not started · [!] block
 - [ ] Technical report + user manual
 - [ ] Awkward-file smoke test (tiny, huge, 16-bit, lat/lon, corrupt)
 - [ ] Browser matrix: Chrome/Edge, WebGPU and WebGL
-- [ ] Installer rebuilt (last build: "Access is denied") + clean-PC test
+- [ ] Web deployment (host TBD): public server config, Docker image as the standalone deliverable
 - [!] Accuracy parity with competitor on MAE/correlation (run 03 on DFC Track 1)
 - [ ] Final consistency pass: rebuild scenes, re-run benchmarks, refresh all docs
 - [ ] Demo script, 2-minute video, live-upload rehearsal, offline fallback
