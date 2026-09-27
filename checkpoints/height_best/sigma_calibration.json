@@ -1,0 +1,9 @@
+{
+  "k": 4.0,
+  "s0": 0.25,
+  "fit_views": 14,
+  "test_views": 14,
+  "ece_heldout": 0.1112944228656124,
+  "rank_corr": 0.7187392759545138,
+  "fitted_by": "scripts/fit_sigma.py (coverage ECE, DFC2019 validation views, alternate halves)"
+}

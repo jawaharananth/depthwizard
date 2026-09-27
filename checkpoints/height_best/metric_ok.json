@@ -1,0 +1,16 @@
+{
+  "checkpoint": "run03",
+  "model": "depth-anything/Depth-Anything-V2-Small-hf",
+  "note": "run 02 + sensor-gap augmentation (0.3-1.0 m, satellite colour). Promoted on held-out evidence: DFC 18 tiles at 0.6 m per-building RMSE 1.873 vs 1.916 m (bias -0.085 vs -0.350), pixel RMSE 2.807 vs 2.790 m; swisstopo LiDAR absolute DSM better in all four landscapes; uncertainty ECE 0.111 vs 0.118 (scripts/fit_sigma.py). final_out/compare_*.",
+  "best_dfc_val_mae_m": 2.563591162759388,
+  "canary": {
+    "hash": "e9265ad221a3b2c3",
+    "mean": 0.0,
+    "std": 0.0003,
+    "shape": [
+      64,
+      64
+    ]
+  },
+  "promoted": "2026-09-27"
+}
