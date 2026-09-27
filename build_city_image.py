@@ -2732,6 +2732,14 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
             print(f"      hover rasters skipped: {_e}")
         with open(os.path.join(VIEWER_DIR, "scene.json"), "w") as f:
             json.dump(meta, f, indent=2)
+        try:
+            if meta.get("hover") and meta.get("affine_transform"):
+                import hover_export as _hx
+                _nb = _hx.burn_buildings(VIEWER_DIR, os.path.join(VIEWER_DIR, "buildings.geojson"),
+                                         meta["affine_transform"], [W, H])
+                print(f"      cursor readout: {_nb} buildings at their drawn heights")
+        except Exception as _e:
+            print(f"      building heights not written into the readout: {_e}")
         # The viewer samples roofs and walls where this image photographed
         # them (footprint + lean * height). The alignment lean above is the
         # lean between the footprint source's imagery and this image, so the

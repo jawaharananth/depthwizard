@@ -71,6 +71,11 @@ def main():
     facts = hx.scene_facts(agl, sigma, gsd, {"centre_lonlat": centre, "crs": crs,
                                              "model": marker.get("checkpoint", "metric")})
     hx.update_scene_json(scene_dir, hover, facts)
+    meta = json.load(open(os.path.join(scene_dir, "scene.json")))
+    if meta.get("affine_transform") and meta.get("resolution"):
+        n = hx.burn_buildings(scene_dir, os.path.join(scene_dir, "buildings.geojson"),
+                              meta["affine_transform"], meta["resolution"])
+        print(f"buildings written into the readout: {n}")
     print(json.dumps({"hover": hover, "facts": facts}, indent=2))
 
 

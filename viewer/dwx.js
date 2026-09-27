@@ -473,6 +473,17 @@ export function installDWX(ctx) {
     for (let i = 0; !ground && i < 600; i++) { await new Promise((r) => setTimeout(r, 100)); ground = getGround(); }
     if (ground) fitPlanar(ground);
     window.__dwxReady = { rasters: !!R, sigma: !!(R && R.sigma), lidar: !!(R && R.lidar), planar: !!uvOf };
+    // &dwxtest=1: sample the readout on a grid and write it into the page, so
+    // a headless browser can check the numbers without a mouse.
+    if (new URLSearchParams(location.search).get("dwxtest") === "1") {
+      await new Promise((r) => setTimeout(r, 1500));
+      const out = [JSON.stringify(window.__dwxReady)];
+      for (const fy of [0.35, 0.5, 0.65, 0.8]) for (const fx of [0.3, 0.5, 0.7]) {
+        out.push(`${fx},${fy}: ${window.__dwxProbe(fx * innerWidth, fy * innerHeight)}`);
+      }
+      const pre = document.createElement("pre"); pre.id = "dwx-test"; pre.textContent = out.join("\n");
+      pre.style.display = "none"; document.body.appendChild(pre);
+    }
   })();
 
   // Test hooks: read the value under a screen point, and drive the controls.

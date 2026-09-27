@@ -125,3 +125,54 @@ def update_scene_json(scene_dir: str, hover: dict, facts: dict) -> None:
     meta["hover"] = hover
     meta["facts"] = {**meta.get("facts", {}), **facts}
     json.dump(meta, open(p, "w"), indent=2)
+
+
+def burn_buildings(out_dir: str, geojson_path: str, affine6, image_wh) -> int:
+    """Write each building's own height (as drawn in 3D) into the readout rasters.
+
+    The 3D buildings may carry heights fused from real sources (Open Buildings
+    2.5D) or a per-building median, which differ from the raw per-pixel field.
+    The cursor must read what the eye sees, so inside every footprint the
+    readout takes that building's height_m, and its uncertainty is the
+    building's own interval (90 % half-width / 1.645 = 1 sigma).
+    """
+    import rasterio.features
+    from rasterio.transform import Affine
+    meta_p = os.path.join(out_dir, "scene.json")
+    meta = json.load(open(meta_p)) if os.path.exists(meta_p) else {}
+    hv = meta.get("hover")
+    if not hv or not os.path.exists(geojson_path):
+        return 0
+    w, h = hv["width"], hv["height"]
+    W, H = image_wh
+    tf = Affine(*affine6[:6]) * Affine.scale(W / w, H / h)
+    g = json.load(open(geojson_path))
+    hs, ss = [], []
+    for f in g.get("features", []):
+        p = f.get("properties", {})
+        if isinstance(p.get("height_m"), (int, float)) and f.get("geometry"):
+            hs.append((f["geometry"], float(p["height_m"])))
+            if isinstance(p.get("interval_half_width_m"), (int, float)):
+                ss.append((f["geometry"], float(p["interval_half_width_m"]) / 1.645))
+    if not hs:
+        return 0
+    bh = rasterio.features.rasterize(hs, out_shape=(h, w), transform=tf, fill=np.nan, dtype="float32")
+    agl = np.fromfile(os.path.join(out_dir, hv["agl"]), dtype="<u2").reshape(h, w).astype(np.float32) / 100
+    agl = np.where(np.isfinite(bh), bh, agl)
+    with open(os.path.join(out_dir, hv["agl"]), "wb") as f:
+        f.write(_encode(agl))
+    if ss and hv.get("sigma"):
+        bs = rasterio.features.rasterize(ss, out_shape=(h, w), transform=tf, fill=np.nan, dtype="float32")
+        sg = np.fromfile(os.path.join(out_dir, hv["sigma"]), dtype="<u2").reshape(h, w).astype(np.float32) / 100
+        sg = np.where(np.isfinite(bs), bs, sg)
+        with open(os.path.join(out_dir, hv["sigma"]), "wb") as f:
+            f.write(_encode(sg))
+    else:
+        sg = None
+    # The sheet's numbers follow what the readout now holds.
+    gsd = (meta.get("facts") or {}).get("pixel_m")
+    fresh = scene_facts(np.where(agl >= 0, agl, np.nan), sg, gsd)
+    fresh.pop("ground_m", None); fresh.pop("pixel_m", None)
+    fresh["buildings_drawn"] = len(hs)
+    update_scene_json(out_dir, hv, fresh)
+    return len(hs)
