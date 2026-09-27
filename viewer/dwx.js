@@ -300,6 +300,22 @@ export function installDWX(ctx) {
     tag.style.left = tx + "px"; tag.style.top = ty + "px";
     reticle.style.display = tag.style.display = "block";
   }
+  // Estimated height under a screen point (no display), for choosing stills.
+  function heightAt(x, y) {
+    const ground = getGround();
+    if (!ground || !R || !uvOf) return null;
+    ndc.set((x / innerWidth) * 2 - 1, -(y / innerHeight) * 2 + 1);
+    ray.setFromCamera(ndc, camera);
+    const targets = [];
+    scene.traverse((o) => { if (o.isMesh && o.visible && o !== lidarMesh && !o.userData.dwxSkip) targets.push(o); });
+    const hits = ray.intersectObjects(targets, false);
+    if (!hits.length) return null;
+    const local = ground.worldToLocal(hits[0].point.clone());
+    const [u, v] = uvOf(local.x, local.z);
+    const i = cellOf(u, v);
+    return i < 0 ? null : val(R.agl, i);
+  }
+
   renderer.domElement.addEventListener("pointermove", (e) => {
     lastEvt = e;
     if (!pending) { pending = true; requestAnimationFrame(readCursor); }
@@ -473,6 +489,26 @@ export function installDWX(ctx) {
     for (let i = 0; !ground && i < 600; i++) { await new Promise((r) => setTimeout(r, 100)); ground = getGround(); }
     if (ground) fitPlanar(ground);
     window.__dwxReady = { rasters: !!R, sigma: !!(R && R.sigma), lidar: !!(R && R.lidar), planar: !!uvOf };
+    // Stills for documents: &dwxpanels=0 hides the side panels, and
+    // &dwxshot=fx,fy pins the cursor readout at that fraction of the screen.
+    const q = new URLSearchParams(location.search);
+    if (q.get("dwxpanels") === "0") { sheet.style.display = "none"; dock.style.display = "none"; }
+    if (q.get("dwxshot")) {
+      await new Promise((r) => setTimeout(r, 1500));
+      let fx, fy;
+      if (q.get("dwxshot") === "auto") {
+        // Pin the readout on the tallest structure in the middle of the view.
+        let best = -1;
+        for (let y = 0.48; y <= 0.82; y += 0.02) for (let x = 0.30; x <= 0.72; x += 0.02) {
+          const v = heightAt(x * innerWidth, y * innerHeight);
+          if (v !== null && v > best && v < 150) { best = v; fx = x; fy = y; }
+        }
+      } else {
+        [fx, fy] = q.get("dwxshot").split(",").map(Number);
+      }
+      if (fx !== undefined) window.__dwxProbe(fx * innerWidth, fy * innerHeight);
+      window.__dwxShotDone = tag.textContent;
+    }
     // &dwxtest=1: sample the readout on a grid and write it into the page, so
     // a headless browser can check the numbers without a mouse.
     if (new URLSearchParams(location.search).get("dwxtest") === "1") {

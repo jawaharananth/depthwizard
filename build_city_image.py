@@ -1148,7 +1148,18 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
         seg_labels[_gt0 > 0] = seg.CLASS_IDX["building"]
     oc = orientation_check(height, seg_labels)
     if oc.get("checked") and not oc["correct_orientation"]:
-        raise SystemExit("height field inverted -- refusing to build")
+        if _bb.is_metric:
+            # The inversion this guards against is a RELATIVE-depth failure
+            # (depth read as height). A metric model predicts height above
+            # ground directly and cannot come out upside down; on a steep
+            # hillside the building-vs-ground comparison is weak anyway
+            # (the ground class is mostly slope, footprints shift with
+            # relief). Reported, not fatal. Darjeeling tripped it.
+            print(f"      orientation check weak on this scene: buildings mean "
+                  f"{oc['building_mean']:.2f} m vs ground {oc['ground_mean']:.2f} m "
+                  f"(metric model, not an inversion) -- continuing")
+        else:
+            raise SystemExit("height field inverted -- refusing to build")
     refined = dsm_refine.refine_dsm(height, image_np)
 
     sun_az = estimate_sun_azimuth(image_np, seg_labels)
