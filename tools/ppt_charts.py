@@ -77,7 +77,9 @@ def resolution():
     ax.axvline(0.6, color="#E0A21B", lw=2, ls="--")
     ax.text(0.61, max(ys) * 0.99, "ISRO evaluates\nat 0.6 m", color="#B07A0A", fontsize=11, va="top")
     for x, y in zip(xs, ys):
-        ax.text(x, y + 0.04, f"{y:.2f}", ha="center", fontsize=11, color=INK)
+        below = abs(x - 0.6) < 1e-6                           # keep clear of the ISRO line and 0.5 m
+        ax.text(x + (0.012 if below else 0), y - 0.075 if below else y + 0.04, f"{y:.2f}",
+                ha="left" if below else "center", fontsize=11, color=INK)
     ax.set_xlabel("input ground sample (m)"); ax.set_ylabel("per-building RMSE (m)")
     ax.set_ylim(min(ys) - 0.2, max(ys) + 0.25)
     y06 = pts[2][1]["bldg_rmse"]
