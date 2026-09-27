@@ -1,0 +1,112 @@
+"""Exact per-pixel height and uncertainty for the viewer's cursor readout.
+
+The viewer shows two numbers under the cursor: the height the model
+estimated there and its 1-sigma uncertainty. They are read from rasters, not
+from the rendered mesh, so the number is the product's own value (the one the
+DSM file carries and the benchmarks score), not a property of how buildings
+were drawn.
+
+Format: little-endian uint16 in centimetres (0 .. 655.34 m), 65535 = no
+data, row-major from the top-left of the image -- the same orientation as the
+scene's texture, so a texture UV addresses it directly. Longest side <= 1024.
+
+`scene_facts` gathers the numbers the viewer's information panel shows, all
+derived from the same rasters.
+"""
+from __future__ import annotations
+
+import json
+import math
+import os
+
+import cv2
+import numpy as np
+
+MAX_SIDE = 1024
+NODATA = 65535
+
+
+def _fit(a: np.ndarray, max_side: int = MAX_SIDE) -> np.ndarray:
+    h, w = a.shape
+    s = min(1.0, max_side / max(h, w))
+    if s >= 1.0:
+        return a.astype(np.float32)
+    m = np.isfinite(a).astype(np.float32)
+    v = np.where(m > 0, a, 0).astype(np.float32)
+    size = (max(1, round(w * s)), max(1, round(h * s)))
+    num = cv2.resize(v, size, interpolation=cv2.INTER_AREA)
+    den = cv2.resize(m, size, interpolation=cv2.INTER_AREA)
+    return np.where(den > 0.5, num / np.maximum(den, 1e-6), np.nan).astype(np.float32)
+
+
+def _encode(a: np.ndarray) -> bytes:
+    q = np.where(np.isfinite(a), np.clip(np.round(a * 100.0), 0, NODATA - 1), NODATA)
+    return q.astype("<u2").tobytes()
+
+
+def write(out_dir: str, agl: np.ndarray, sigma: np.ndarray | None) -> dict:
+    """Write hover_agl.u16 (+ hover_sigma.u16); returns the scene.json entry."""
+    a = _fit(np.maximum(agl, 0.0) if agl is not None else agl)
+    with open(os.path.join(out_dir, "hover_agl.u16"), "wb") as f:
+        f.write(_encode(a))
+    entry = {"width": int(a.shape[1]), "height": int(a.shape[0]), "agl": "hover_agl.u16",
+             "encoding": "uint16 little-endian, centimetres, 65535 = no data, rows from image top"}
+    if sigma is not None:
+        s = _fit(sigma)
+        if s.shape != a.shape:
+            s = cv2.resize(np.nan_to_num(s, nan=0.0), (a.shape[1], a.shape[0]), interpolation=cv2.INTER_LINEAR)
+        with open(os.path.join(out_dir, "hover_sigma.u16"), "wb") as f:
+            f.write(_encode(s))
+        entry["sigma"] = "hover_sigma.u16"
+    else:
+        for stale in ("hover_sigma.u16",):
+            p = os.path.join(out_dir, stale)
+            if os.path.exists(p):
+                os.remove(p)
+    return entry
+
+
+def scene_facts(agl: np.ndarray, sigma: np.ndarray | None, gsd_m: float | None,
+                extra: dict | None = None) -> dict:
+    """What the information panel shows. Every number from the rasters."""
+    a = np.asarray(agl, np.float32)
+    fin = np.isfinite(a)
+    facts = {}
+    if gsd_m:
+        facts["ground_m"] = [round(a.shape[1] * gsd_m), round(a.shape[0] * gsd_m)]
+        facts["pixel_m"] = round(float(gsd_m), 3)
+    if fin.any():
+        facts["height_p99_m"] = round(float(np.percentile(a[fin], 99)), 1)
+        facts["height_max_m"] = round(float(a[fin].max()), 1)
+        built = a[fin] > 2.5
+        facts["above_2p5m_share"] = round(float(built.mean()), 3)
+    if sigma is not None:
+        s = np.asarray(sigma, np.float32)
+        sf = np.isfinite(s)
+        if sf.any():
+            facts["sigma_median_m"] = round(float(np.median(s[sf])), 2)
+    if extra:
+        facts.update(extra)
+    return facts
+
+
+def lonlat_centre(transform, crs, width, height):
+    """(lon, lat) of the image centre, or None."""
+    try:
+        from rasterio.warp import transform as _tr
+        x = transform.c + transform.a * width / 2 + transform.b * height / 2
+        y = transform.f + transform.d * width / 2 + transform.e * height / 2
+        lon, lat = _tr(crs, "EPSG:4326", [x], [y])
+        if math.isfinite(lon[0]) and math.isfinite(lat[0]):
+            return [round(lon[0], 5), round(lat[0], 5)]
+    except Exception:
+        pass
+    return None
+
+
+def update_scene_json(scene_dir: str, hover: dict, facts: dict) -> None:
+    p = os.path.join(scene_dir, "scene.json")
+    meta = json.load(open(p)) if os.path.exists(p) else {}
+    meta["hover"] = hover
+    meta["facts"] = {**meta.get("facts", {}), **facts}
+    json.dump(meta, open(p, "w"), indent=2)

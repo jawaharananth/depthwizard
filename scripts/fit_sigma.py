@@ -59,7 +59,7 @@ def main():
     cache = os.path.join(ck, "_sigma_fit_samples.npz")
     z = np.load(cache, allow_pickle=True) if os.path.exists(cache) else None
     if z is not None and "P" in z.files:
-        E, S, P = list(z["E"]), list(z["S"]), list(z["P"])
+        E, S, P = ([np.asarray(a, np.float64) for a in z[n]] for n in ("E", "S", "P"))
     else:
         E, S, P = [], [], []
         for name, rgb, agl in views():
@@ -77,8 +77,8 @@ def main():
     pf = np.concatenate([P[i] for i in fit])
     best = None
     for k in np.arange(0.0, 6.01, 0.25):
-      for s0 in np.arange(0.1, 3.01, 0.1):
-        for c in (0.0, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.4, 0.5):
+      for s0 in (0.0, 0.05, 0.1, 0.2, 0.3, 0.5, 0.75, 1.0, 1.5, 2.0):
+        for c in (0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 1.0, 1.2):
             sig = np.sqrt((k * sf) ** 2 + s0 ** 2 + (c * pf) ** 2)
             # Coverage, not likelihood: the NLL is dominated by the few huge
             # errors at building edges and inflates sigma everywhere

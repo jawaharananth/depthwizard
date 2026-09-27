@@ -2706,6 +2706,30 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
         if os.path.exists(stem + _suffix):
             meta["dsm_file"] = os.path.basename(stem + _suffix)
             meta["dsm_product"] = "DSM" if _abs_datum else "rDSM"
+        # Cursor readout: the product's own height above ground and its
+        # 1-sigma uncertainty, as exact rasters (hover_export.py).
+        try:
+            import hover_export as _hx
+            _hv_agl = (_product_agl if _product_agl is not None else
+                       (_agl_raw if _agl_raw is not None else None))
+            if _hv_agl is not None:
+                _hv_agl = np.asarray(_hv_agl, np.float32)
+                if _hv_agl.shape != (H, W):
+                    _hv_agl = cv2.resize(_hv_agl, (W, H), interpolation=cv2.INTER_AREA)
+                if _valid is not None:
+                    _hv_agl = np.where(_valid, _hv_agl, np.nan)
+                meta["hover"] = _hx.write(VIEWER_DIR, _hv_agl, _sigma)
+                _centre = (_hx.lonlat_centre(src_transform, src_crs, W, H)
+                           if (src_transform is not None and src_crs is not None) else None)
+                meta["facts"] = _hx.scene_facts(_hv_agl, _sigma, px_m, {
+                    "centre_lonlat": _centre,
+                    "crs": str(src_crs) if src_crs is not None else None,
+                    "elevation_reference": _datum if _abs_datum else None,
+                    "model": json.load(open(os.path.join(DepthBackbone.METRIC_CKPT, "metric_ok.json")))
+                    .get("checkpoint", "metric") if _bb.is_metric else "relative",
+                })
+        except Exception as _e:
+            print(f"      hover rasters skipped: {_e}")
         with open(os.path.join(VIEWER_DIR, "scene.json"), "w") as f:
             json.dump(meta, f, indent=2)
         # The viewer samples roofs and walls where this image photographed
