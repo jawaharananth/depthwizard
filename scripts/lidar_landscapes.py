@@ -53,11 +53,18 @@ SITES = [
 
 
 def items(coll, lat, lon):
-    r = requests.get(f"{STAC}/{coll}/items",
-                     params={"bbox": f"{lon},{lat},{lon + 1e-4},{lat + 1e-4}", "limit": 50},
-                     timeout=60)
-    r.raise_for_status()
-    return r.json()["features"]
+    import time
+    for k in range(6):                     # the catalogue resets connections now and then
+        try:
+            r = requests.get(f"{STAC}/{coll}/items",
+                             params={"bbox": f"{lon},{lat},{lon + 1e-4},{lat + 1e-4}", "limit": 50},
+                             timeout=60)
+            r.raise_for_status()
+            return r.json()["features"]
+        except requests.RequestException:
+            if k == 5:
+                raise
+            time.sleep(3 * (k + 1))
 
 
 def asset(feat, gsd):

@@ -4,9 +4,10 @@
 
 The pipeline's 1-sigma height uncertainty is
 
-    sigma = sqrt((k * tta_std)^2 + s0^2)
+    sigma = sqrt((k * tta_std)^2 + s0^2 + (c * height)^2)
 
-where tta_std is the spread of the model over 4 rotated views (what
+where height is the predicted height above ground (error grows with it:
+tall structures are under-called) and tta_std is the spread of the model over 4 rotated views (what
 build_city_image.py computes). k and s0 are fitted by Gaussian negative log
 likelihood of the product's error (predict_tiled height minus LiDAR height
 above ground) on half of the DFC2019 validation views, and scored on the
@@ -56,37 +57,41 @@ def main():
     dm.DepthBackbone.METRIC_CKPT = ck
     bb = dm.DepthBackbone(metric=True)
     cache = os.path.join(ck, "_sigma_fit_samples.npz")
-    if os.path.exists(cache):
-        z = np.load(cache, allow_pickle=True)
-        E, S = list(z["E"]), list(z["S"])
+    z = np.load(cache, allow_pickle=True) if os.path.exists(cache) else None
+    if z is not None and "P" in z.files:
+        E, S, P = list(z["E"]), list(z["S"]), list(z["P"])
     else:
-        E, S = [], []
+        E, S, P = [], [], []
         for name, rgb, agl in views():
             im = Image.fromarray(rgb)
             pred = bb.predict_tiled(im, raw_metric=True)
             _, std = bb.predict_tta(im, raw_metric=True, views=4)
             m = np.isfinite(agl)
-            E.append((pred - agl)[m][::7]); S.append(std[m][::7])
+            E.append((pred - agl)[m][::7]); S.append(std[m][::7]); P.append(np.maximum(pred, 0)[m][::7])
             print(f"  {name}", flush=True)
-        np.savez(cache, E=np.array(E, dtype=object), S=np.array(S, dtype=object))
+        np.savez(cache, E=np.array(E, dtype=object), S=np.array(S, dtype=object),
+                 P=np.array(P, dtype=object))
     idx = np.arange(len(E))
     fit, test = idx[::2], idx[1::2]
     ef, sf = np.concatenate([E[i] for i in fit]), np.concatenate([S[i] for i in fit])
+    pf = np.concatenate([P[i] for i in fit])
     best = None
-    for k in np.arange(0.5, 6.01, 0.25):
-        for s0 in np.arange(0.25, 4.01, 0.25):
-            sig = np.sqrt((k * sf) ** 2 + s0 ** 2)
+    for k in np.arange(0.0, 6.01, 0.25):
+      for s0 in np.arange(0.1, 3.01, 0.1):
+        for c in (0.0, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.4, 0.5):
+            sig = np.sqrt((k * sf) ** 2 + s0 ** 2 + (c * pf) ** 2)
             # Coverage, not likelihood: the NLL is dominated by the few huge
             # errors at building edges and inflates sigma everywhere
             # (k=5, s0=2.5 -> held-out ECE 0.188); what a user reads is
             # "68 % of pixels within +/- 1 sigma", so that is what is fitted.
             score = ece(ef, sig)
             if best is None or score < best[0]:
-                best = (score, float(k), float(s0))
-    _, k, s0 = best
+                best = (score, float(k), float(s0), float(c))
+    _, k, s0, c = best
     et, st = np.concatenate([E[i] for i in test]), np.concatenate([S[i] for i in test])
-    sig = np.sqrt((k * st) ** 2 + s0 ** 2)
-    out = {"k": k, "s0": s0, "fit_views": int(len(fit)), "test_views": int(len(test)),
+    pt = np.concatenate([P[i] for i in test])
+    sig = np.sqrt((k * st) ** 2 + s0 ** 2 + (c * pt) ** 2)
+    out = {"k": k, "s0": s0, "c_height": c, "fit_views": int(len(fit)), "test_views": int(len(test)),
            "ece_heldout": ece(et, sig), "rank_corr": float(spearmanr(sig, np.abs(et))[0]),
            "fitted_by": "scripts/fit_sigma.py (coverage ECE, DFC2019 validation views, alternate halves)"}
     json.dump(out, open(os.path.join(ck, "sigma_calibration.json"), "w"), indent=2)

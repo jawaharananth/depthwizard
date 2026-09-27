@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DepthWizard — Method and Evidence</title>
+<style>
+  :root {
+    --bg: #0d1013; --panel: #151a1f; --line: #232b33; --ink: #e6edf3;
+    --dim: #8b9aa8; --accent: #6ab6cd; --warn: #d8a657; --good: #7fbf8f;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 15px/1.6 ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif; }
+  main { max-width: 900px; margin: 0 auto; padding: 36px 20px 80px; }
+  h1 { font-size: 24px; margin: 0 0 4px; letter-spacing: -0.01em; }
+  h2 { font-size: 17px; margin: 40px 0 10px; color: var(--accent); }
+  .lede { color: var(--dim); margin: 0 0 24px; max-width: 68ch; }
+  p, li { max-width: 72ch; }
+  a { color: var(--accent); }
+  .wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; font-variant-numeric: tabular-nums; }
+  th, td { padding: 7px 12px; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; }
+  th { color: var(--dim); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+  tr:last-child td { border-bottom: 0; }
+  td.good { color: var(--good); } td.warn { color: var(--warn); }
+  .note { color: var(--dim); font-size: 13px; margin-top: 8px; }
+  .steps { counter-reset: s; list-style: none; padding: 0; }
+  .steps li { counter-increment: s; padding-left: 30px; position: relative; margin: 8px 0; }
+  .steps li::before { content: counter(s); position: absolute; left: 0; top: 1px; width: 20px; height: 20px;
+    border-radius: 50%; background: var(--line); color: var(--ink); font-size: 12px; text-align: center; line-height: 20px; }
+  nav { font-size: 13px; margin-bottom: 20px; }
+</style>
+</head>
+<body>
+<main>
+<nav><a href="/">← Upload an image</a></nav>
+<h1>DepthWizard — method and evidence</h1>
+<p class="lede">One satellite or aerial image in; a height map (DSM) and a navigable 3D model out.
+Every number on this page was measured on data the model never trained on, with nothing fitted to the answer.</p>
+
+<h2>How it works</h2>
+<ol class="steps">
+  <li><b>Read the image as the sensor wrote it.</b> Band order from the file's colour tags (untagged 4-band 16-bit stacks read as Blue, Green, Red, NIR — the Cartosat MX order); 16-bit data stretched per band; nodata, transparency and black footprint borders masked everywhere downstream.</li>
+  <li><b>Height above ground from a fine-tuned model.</b> Depth Anything V2 Small (Apache-2.0), fine-tuned to metres on airborne LiDAR (GAMUS, DFC2019). The model always runs at the 0.3 m scale it was trained at: a 0.6 m Cartosat image is upsampled 2× first, large scenes in ~2048 px blocks.</li>
+  <li><b>Absolute elevation from a global DEM.</b> For a GeoTIFF: terrain from Copernicus GLO-30 (or SRTM) at 30 m, minus the measured fraction of the building/tree height the radar DEM already contains, plus the model's height. PNG/JPG without coordinates gives a relative DSM (rDSM).</li>
+  <li><b>An error bar on every pixel.</b> 1-sigma uncertainty from the spread of the model over rotated views and the predicted height, calibrated on held-out LiDAR.</li>
+  <li><b>A 3D scene you can walk through.</b> The original image draped on the terrain and buildings, roof and wall texture corrected for the image's measured lean, height/slope/uncertainty views, measurement tools, and validation against your own reference DSM.</li>
+</ol>
+
+<h2>Accuracy at ISRO's evaluation resolution (0.6 m)</h2>
+<div class="wrap"><table>
+<tr><th>Input</th><th>Per-building RMSE</th><th>Change</th></tr>
+<tr><td>0.25 m native</td><td>1.86 m</td><td>—</td></tr>
+<tr><td>0.6 m, as the pipeline runs it</td><td>1.92 m</td><td class="good">+2.9 %</td></tr>
+<tr><td>0.6 m, without upsampling</td><td>2.00 m</td><td class="warn">+7.3 %</td></tr>
+<tr><td>1.0 m</td><td>2.30 m</td><td class="warn">+23.6 %</td></tr>
+</table></div>
+<p class="note">18 held-out DFC2019 tiles, ~1,100 LiDAR buildings; 0.6 m simulated by area-averaging (resolution gap only, not the sensor gap). <code>BENCHMARK_RESOLUTION.md</code></p>
+
+<h2>Four landscapes against airborne LiDAR</h2>
+<p>swisstopo open data: 10 cm orthophoto degraded to 0.6 m, scored against the LiDAR surface and terrain models. One 1 km tile per landscape, chosen by place name before any result.</p>
+<div class="wrap"><table>
+<tr><th>Landscape</th><th>Absolute DSM RMSE</th><th>Copernicus alone</th><th>Height above ground RMSE</th><th>“All ground” floor</th></tr>
+<tr><td>Urban (Zurich)</td><td class="good">6.75 m</td><td>8.36 m</td><td>7.84 m</td><td>12.31 m</td></tr>
+<tr><td>Hilly (Zermatt, 497 m relief)</td><td class="good">9.02 m</td><td>11.13 m</td><td>7.90 m</td><td>12.73 m</td></tr>
+<tr><td>Forest (Sihlwald)</td><td class="good">8.82 m</td><td>9.61 m</td><td class="warn">26.32 m</td><td>31.48 m</td></tr>
+<tr><td>Sparse (farmland)</td><td class="good">2.86 m</td><td>3.56 m</td><td>2.94 m</td><td>4.13 m</td></tr>
+</table></div>
+<p class="note">Our absolute surface is closer to the LiDAR than the Copernicus DEM itself in all four. Under 30–40 m trees the model's height above ground is still far too low: stated, not hidden. <code>BENCHMARK_LANDSCAPES.md</code></p>
+
+<h2>Held-out benchmark (DFC2019, US3D)</h2>
+<div class="wrap"><table>
+<tr><th>Protocol</th><th>RMSE</th><th>MAE</th><th>Correlation</th><th>Sample</th></tr>
+<tr><td>Whole tile, 0.6 m, current model</td><td>2.81 m</td><td>1.56 m</td><td>0.756</td><td>18 held-out tiles</td></tr>
+<tr><td>Per building, 0.6 m, current model</td><td>1.87 m</td><td>bias −0.09 m</td><td>—</td><td>~1,100 buildings</td></tr>
+</table></div>
+
+<h2>Uncertainty and geometry</h2>
+<ul>
+  <li>Uncertainty calibration on held-out views: see <code>checkpoints/height_best/sigma_calibration.json</code> (expected calibration error and rank correlation between sigma and actual error).</li>
+  <li>Projection accuracy (HITEC City, 5,822 buildings): roof outlines sit a median 0.6 m (one pixel) from the image's own edges.</li>
+</ul>
+
+<h2>India</h2>
+<p>No public LiDAR covers our Indian scenes. The absolute DSM over Hyderabad, Periyar, Shimla and rural Telangana is scored against Copernicus and SRTM (anchored to one, scored against the other) and against ICESat-2 satellite LiDAR. <code>BENCHMARK_ISRO_PROTOCOL.md</code></p>
+
+<h2>Known limits</h2>
+<ul>
+  <li>Tall forest and tall buildings are under-called: the open training data holds few of either.</li>
+  <li>Buildings are extruded prisms with detected rooftop structures; domes and spires are simplified.</li>
+  <li>0.6 m is simulated from 0.3 m imagery; the Cartosat sensor and colour gap is not measured.</li>
+  <li>A relative DSM (no coordinates in the file) carries no absolute elevation.</li>
+</ul>
+
+<h2>Data and licences</h2>
+<p class="note">Model: Depth Anything V2 Small (Apache-2.0). Training: GAMUS (CC-BY-4.0), IEEE GRSS DFC2019. Evaluation: swisstopo (open government data), Copernicus GLO-30, SRTM, ICESat-2 ATL08 (NASA). Full attribution in <code>DATA_ATTRIBUTION.md</code>.</p>
+</main>
+</body>
+</html>

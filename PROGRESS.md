@@ -24,23 +24,28 @@ SRTM / Copernicus**; PNG/JPG must still work; ranked against other teams; first 
 - [-] Time-machine change detection (left, by decision; uncommitted code stays in server.py / viewer)
 
 ## Today — the whole technical prototype
-- [x] 0. BUG FIXED: predict_tiled fitted metric crops to a ~518 px whole-image prediction -> large scenes flattened (HITEC 4096 px p99 0.61 m). A/B on 18 held-out tiles: alignment HELPS at 2048 px (per-building 1.86 vs 2.09 m), so it is kept within ~2048 px blocks and large scenes are blended block-wise; the model now always runs on the SOURCE pixels at the trained 0.3 m (one pass feeds both the full-res DSM file and the 3D scene)
-- [x] 0a. ABSOLUTE-DSM FIX: ground = smooth30(DEM) - k x smooth30(model height), surface = ground + model height (anchoring.py); k measured on swisstopo LiDAR: 0.4 GLO-30, 0.0 SRTM. Old DSM RMSE hilly 147.7 / forest 65.7 / urban 16.4 / sparse 10.7 m -> new 9.5 / 8.8 / 6.9 / 2.9 m (GLO-30 alone 11.1 / 9.6 / 8.4 / 3.6). SRTM fetch fixed
-- [~] 0b. Run 04 RUNNING on Kaggle: run 03 recipe + ~330 km2 Swiss LiDAR tiles (tall buildings, 30-40 m forest, Alps), benchmark tiles + 1 km buffer held out
-- [x] 1. Cartosat input handling: B,G,R,NIR band order, per-band 16-bit stretch, nodata/black-collar mask, very large scenes, tests -- band order + nodata DONE (8 tests pass; synthetic 16-bit B,G,R,NIR Hyderabad file: bands read 3,2,1, 5.7% border masked, 44k mesh faces cut); full-resolution DSM for large scenes DONE (4096 px HITEC: DSM + sigma written at source grid, model at x1.9, 606 s CPU)
-- [ ] 2. Dark slab (HITEC): check if it is the unmasked border (fixed by 1)
-- [x] 3. 0.6 m test on the same held-out tiles (competitor: +15.4 %) -- 0.6 m upsampled +2.9 % per-building (1.92 vs 1.86 m), native pixels +7.3 %; also fixed: old table used 2 non-held-out tiles
-- [~] 4. Run 03 DONE (6 epochs; DFC val MAE 2.537 vs run 02 2.593 m). Held-out comparison (DFC 0.6 m + Swiss) running before any promotion
-- [~] 5. ISRO-style self-evaluation: absolute DSM vs Copernicus and SRTM over Indian scenes (urban HITEC, forest Periyar, hilly Shimla, sparse Telangana farmland) -- scenes fetched, script written
-- [x] 6. Anchoring study: done as 0a (k swept 0-1 on LiDAR elevations, both DEMs)
-- [x] 7. Four-landscape LiDAR benchmark (NEON API now 403 -> swisstopo LiDAR). Block-wise inference: Zurich 8.45, Zermatt 8.54, Sihlwald forest 25.15, farmland 3.08 m AGL RMSE (BENCHMARK_LANDSCAPES.md)
-- [!] 8. DFC Track 1 RGB + Reference and Track 3 RGB-2 downloads (Track 1 not on disk yet)
-- [ ] 9. Head-to-head on the competitor's exact 80-tile protocol (per building, whole tile, buildings <= 20 m)
-- [~] 10. Tall-building physics fusion (relief displacement + shadows)
-- [~] 11. ICESat-2 automatic GCPs + independent Indian check
-- [ ] 12. No-GPU fallback for the judges' machine; timed upload of a 0.6 m GeoTIFF
-- [ ] 13. Browser matrix: Chrome/Edge, WebGPU and WebGL
-- [ ] 14. Web deployment + Docker image as the standalone deliverable
-- [ ] 15. Final consistency pass: rebuild scenes, re-run benchmarks, refresh all docs
-- [ ] 16. Final deliverables pack: source, docs, evidence, Docker image
-- [ ] 17. (optional, last) Analysis suite: solar potential, shadow simulation
+- [x] 0. BUG FIXED: large scenes were flattened by whole-image crop alignment; now block-wise at the trained 0.3 m scale (one pass feeds the full-res DSM and the 3D scene)
+- [x] 0a. ABSOLUTE-DSM FIX (anchoring.py, k measured on LiDAR): hilly 147.7 -> 9.5 m, forest 65.7 -> 8.8, urban 16.4 -> 6.9, sparse 10.7 -> 2.9 m; beats GLO-30 alone everywhere. SRTM fetch fixed
+- [x] 1. Cartosat input: B,G,R,NIR order, 16-bit stretch, nodata/border mask, full-res DSM for large scenes (8 tests)
+- [x] 2. HITEC slab: not reproduced in a headless render (no flat slab); one tall tower's facade is streaky from its own shadow pixels (texture quality, noted)
+- [x] 3. 0.6 m test: +2.9 % per-building (competitor +15.4 %); old table's 2 non-held-out tiles removed
+- [x] 4. Run 03 trained and PROMOTED (0.6 m per-building 1.873 vs 1.916 m, bias -0.085 vs -0.350; absolute DSM better in all 4 landscapes; ECE 0.111 vs 0.118)
+- [~] 4b. Run 04 (Swiss LiDAR tiles) trained; held-out comparison vs run 03 running -> promote if better
+- [~] 5. India, ISRO's protocol: absolute DSM vs Copernicus/SRTM + ICESat-2 (Hyderabad, Periyar, Shimla, Telangana) -- running on run 03
+- [x] 6. Anchoring study (k swept on LiDAR, both DEMs)
+- [x] 7. Four-landscape LiDAR benchmark (swisstopo; NEON API now 403)
+- [!] 8. DFC Track 1 downloads -- USER: RGB images 1/1 (6.59 GB) + Reference (8.17 GB)
+- [ ] 9. HEAD-TO-HEAD on the competitor's exact 80-tile protocol (per building, whole tile, <= 20 m) -- needs 8; the one claim not yet proven
+- [~] 10. Tall-building physics fusion -- currently hurts small buildings; needs tall towers from 8
+- [~] 11. ICESat-2 automatic GCPs (leave-one-track-out) + India check -- in 5
+- [x] 12. No-GPU: the whole pipeline runs CPU-only (this machine has no GPU); server job limit 1800 s, uploads 1 GB
+- [ ] 13. FAST CPU INFERENCE: ONNX export (+ int8), parity check vs PyTorch, timing (competitor: 536 ms/tile)
+- [ ] 14. UNCERTAINTY CALIBRATION GAP: ECE 0.111 vs competitor 0.063 -- better sigma model (e.g. per-height-band scaling), refit, held-out check
+- [ ] 15. OFFLINE VIEWER: one self-contained HTML (scene data inlined) that opens from disk with no server (competitor has one)
+- [ ] 16. LARGER EVALUATION: more held-out tiles / buildings (competitor: 80 tiles, 3,090 buildings); DFC Track 1 via 8 + all Track 3 held-out views
+- [~] 17. Browser matrix: Chrome WebGL (SwiftShader) render verified; Edge headless screenshot not possible on this machine; USER: real-GPU `&fps=1` in Chrome + open once in Edge
+- [ ] 18. Web deployment config + Docker image (Dockerfile import closure verified statically; no Docker here) -- USER: hosting choice
+- [ ] 19. Documentation page for judges (method, evidence, limits) served by the site
+- [ ] 20. Final consistency pass: rebuild HITEC/Periyar on run 03/04 + new anchoring, re-run blind benchmark + per-building, refresh README badges/docs
+- [ ] 21. Final deliverables pack: source, docs, evidence, Docker image
+- [ ] 22. (optional, last) Analysis suite: solar potential, shadow simulation

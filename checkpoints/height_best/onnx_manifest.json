@@ -1,0 +1,25 @@
+{
+  "source_safetensors_sha": "22fcf9439b3073d2",
+  "variants": {
+    "fp32": {
+      "file": "model.onnx",
+      "size_mb": 99.1,
+      "518x518": {
+        "max_abs_diff_m": 5.37605956196785e-07,
+        "mean_abs_diff_m": 1.4036742601586383e-10,
+        "ms_onnx": 1046,
+        "ms_torch": 2221
+      }
+    },
+    "int8": {
+      "file": "model_int8.onnx",
+      "size_mb": 27.2,
+      "518x518": {
+        "max_abs_diff_m": 0.020871756598353386,
+        "mean_abs_diff_m": 3.547182132024318e-05,
+        "ms_onnx": 1949,
+        "ms_torch": 2221
+      }
+    }
+  }
+}

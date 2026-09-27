@@ -270,6 +270,7 @@ class DepthBackbone:
         # OpenVINO-exportable transformers pipeline.
         self._ov = None
         self._ov_checked = self.is_htc
+        self._onnx = None            # set after the checkpoint is verified
         self.model_name = model_name
 
         if self.is_htc:
@@ -296,6 +297,46 @@ class DepthBackbone:
         self._canary_verified = None   # not applicable to the stock backbone
         if self.is_metric or self.is_htc:
             self._verify_checkpoint_behaviour()
+        if self.is_metric and self.device == "cpu" and not os.environ.get("DW_NO_ONNX"):
+            self._onnx = self._load_onnx()
+
+    def _load_onnx(self):
+        """ONNX Runtime session for 518 x 518 metric inference, or None.
+
+        Used only if (1) tools/export_onnx.py wrote it from THESE weights (the
+        safetensors hash in onnx_manifest.json matches) and (2) it reproduces
+        PyTorch on a fixed input within 1 cm at load. Measured: identical to
+        5e-7 m and ~2x faster on CPU (onnx_manifest.json).
+        """
+        import hashlib
+        d = self.METRIC_CKPT
+        mp, op = os.path.join(d, "onnx_manifest.json"), os.path.join(d, "model.onnx")
+        if not (os.path.exists(mp) and os.path.exists(op)):
+            return None
+        try:
+            man = json.load(open(mp))
+            h = hashlib.sha256()
+            with open(os.path.join(d, "model.safetensors"), "rb") as f:
+                for b in iter(lambda: f.read(1 << 20), b""):
+                    h.update(b)
+            if h.hexdigest()[:16] != man.get("source_safetensors_sha"):
+                print("      ONNX export is stale (weights changed) -- using PyTorch")
+                return None
+            import onnxruntime as ort
+            so = ort.SessionOptions()
+            so.intra_op_num_threads = max(1, (os.cpu_count() or 1))
+            sess = ort.InferenceSession(op, so, providers=["CPUExecutionProvider"])
+            x = np.random.default_rng(7).standard_normal((1, 3, 518, 518)).astype(np.float32)
+            with torch.inference_mode():
+                ref = self.pipe.model(pixel_values=torch.from_numpy(x)).predicted_depth.numpy()
+            y = sess.run(None, {"pixel_values": x})[0]
+            if float(np.abs(y - ref).max()) > 0.01:
+                print("      ONNX does not reproduce PyTorch (>1 cm) -- using PyTorch")
+                return None
+            return sess
+        except Exception as e:
+            print(f"      ONNX unavailable ({type(e).__name__}) -- using PyTorch")
+            return None
 
     def _verify_checkpoint_behaviour(self) -> None:
         """Refuses a licensed checkpoint whose OUTPUT no longer matches what
@@ -427,8 +468,11 @@ class DepthBackbone:
         # being thrown away, not one.
         if self._ov is None and raw_metric and self.is_metric:
             px = self.pipe.image_processor(images=image, return_tensors="pt")["pixel_values"]
-            with torch.inference_mode():
-                raw = self.pipe.model(pixel_values=px).predicted_depth
+            if self._onnx is not None and tuple(px.shape[-2:]) == (518, 518):
+                raw = torch.from_numpy(self._onnx.run(None, {"pixel_values": px.numpy()})[0])
+            else:
+                with torch.inference_mode():
+                    raw = self.pipe.model(pixel_values=px).predicted_depth
             w, h = image.size
             if raw.ndim == 3:
                 raw = raw.unsqueeze(1)

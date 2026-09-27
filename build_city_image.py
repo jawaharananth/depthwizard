@@ -2349,13 +2349,20 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
             _ps = pil.resize((max(64, int(W * _sw)), max(64, int(H * _sw))), Image.BILINEAR)
             _, _std = _bb.predict_tta(_ps, raw_metric=True, views=4)
             _std = cv2.resize(_std.astype(np.float32), (W, H), interpolation=cv2.INTER_LINEAR)
-            _sigma = np.sqrt((_cal["k"] * _std) ** 2 + _cal["s0"] ** 2).astype(np.float32)
+            # Height term (scripts/fit_sigma.py): error grows with the height
+            # predicted -- tall structures are under-called -- so sigma does too.
+            _hgt = np.maximum(np.nan_to_num(_agl_raw if _agl_raw is not None else height), 0.0)
+            if _hgt.shape != _std.shape:
+                _hgt = cv2.resize(_hgt.astype(np.float32), (_std.shape[1], _std.shape[0]),
+                                  interpolation=cv2.INTER_AREA)
+            _sigma = np.sqrt((_cal["k"] * _std) ** 2 + _cal["s0"] ** 2
+                             + (_cal.get("c_height", 0.0) * _hgt) ** 2).astype(np.float32)
             if _valid is not None and _sigma.shape == _valid.shape:
                 _sigma = np.where(_valid, _sigma, np.nan).astype(np.float32)
             _sigma_info = {"file": os.path.basename(stem) + "_sigma.tif",
                            "definition": "1-sigma height uncertainty, metres",
                            "method": f"4-view rotation spread, calibrated sqrt(({_cal['k']:.2f}*std)^2 + "
-                                     f"{_cal['s0']:.2f}^2) on {_cal.get('fit_views')} DFC2019 val views",
+                                     f"{_cal['s0']:.2f}^2 + ({_cal.get('c_height', 0.0):.2f}*height)^2) on {_cal.get('fit_views')} DFC2019 val views",
                            "heldout_ece": round(float(_cal.get("ece_heldout", float("nan"))), 3),
                            "heldout_rank_corr": round(float(_cal.get("rank_corr", float("nan"))), 3),
                            "median_m": round(float(np.nanmedian(_sigma)), 2)}
