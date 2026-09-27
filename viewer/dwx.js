@@ -129,7 +129,7 @@ export function installDWX(ctx) {
     } catch (_) { places = []; }
     const avail = await Promise.all(places.map(async (p) => {
       if (p.id === currentId) return true;
-      try { return (await fetch(`/scenes/${encodeURIComponent(p.id)}/scene.json`, { method: "HEAD" })).ok; }
+      try { return (await fetch(`/scenes/${encodeURIComponent(p.id)}/scene.json`, { cache: "no-store" })).ok; }
       catch (_) { return false; }
     }));
     places = places.filter((_, i) => avail[i]);
@@ -471,7 +471,8 @@ export function installDWX(ctx) {
     const t = performance.now(); fpsAcc += (t - lastT) / 1000; fpsN++; lastT = t;
     if (fpsAcc >= 1) {
       const f = document.getElementById("dwx-fps");
-      if (f) f.textContent = `${Math.round(fpsN / fpsAcc)} fps`;
+      const v = Math.round(fpsN / fpsAcc);
+      if (f && v > 0) f.textContent = `${v} fps`;       // "—" until a real measurement
       fpsAcc = 0; fpsN = 0;
     }
     if (lidarOn) updateSplitPlanes();
