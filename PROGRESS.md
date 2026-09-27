@@ -7,9 +7,9 @@ Legend: [x] done and verified · [~] in progress · [ ] not started · [!] block
 - [x] Honest blind benchmark: every tile scored, zero-prediction floor reported
 - [x] Per-pixel uncertainty: calibrated (held-out ECE 0.085, rank corr 0.72), `_sigma.tif` + viewer layer, verified in a real build
 - [x] GCPs recalibrate the DSM file (tests pass; +3 m shift recovered to 0.06 m)
-- [~] Hilly / forest / sparse LiDAR benchmark (NEON / USGS 3DEP) — agent running
-- [~] ICESat-2 automatic GCPs + independent Indian accuracy — agent running
-- [~] Tall-building physics fusion (relief displacement + shadows) — agent running
+- [~] Hilly / forest / sparse LiDAR benchmark (NEON / USGS 3DEP) — paused partway (will resume, no agents)
+- [~] ICESat-2 automatic GCPs + independent Indian accuracy — paused partway (will resume, no agents)
+- [~] Tall-building physics fusion (relief displacement + shadows) — paused partway (will resume, no agents)
 - [!] Run 03 training on all DFC2019 (needs Track 1 + Track 3 RGB-2/3 downloads)
 - [x] Resolution robustness: 0.25->1.0 m input, RMSE 2.85->2.97 m, corr 0.75->0.73 (raw model, held-out tiles)
 
@@ -22,8 +22,8 @@ Legend: [x] done and verified · [~] in progress · [ ] not started · [!] block
 - [x] Standalone backend (embedded runtime) built + upload-tested; installer DROPPED by decision -- product will be hosted as a website
 - [x] Periyar lake water surface (6 confirmed water bodies, translucent reflective layer at measured level)
 - [ ] Dark slab artifact (HITEC) — source not yet found
-- [ ] Time-machine 3D change detection — agent queued
-- [ ] Analysis suite (solar potential, shadow simulation) — agent queued
+- [ ] Time-machine 3D change detection — not started
+- [ ] Analysis suite (solar potential, shadow simulation) — not started
 - [x] Projection-accuracy measurement: HITEC roofs median 0.6 m / p75 0.84 m / p90 1.25 m to image edges (lean-corrected)
 - [ ] Real-GPU frame-rate number (needs a run on a real browser)
 
@@ -40,9 +40,9 @@ Legend: [x] done and verified · [~] in progress · [ ] not started · [!] block
 - [ ] Awkward-file smoke test (tiny, huge, 16-bit, lat/lon, corrupt)
 - [ ] Browser matrix: Chrome/Edge, WebGPU and WebGL
 - [ ] Web deployment (host TBD): public server config, Docker image as the standalone deliverable
-- [!] Accuracy parity with competitor on MAE/correlation (run 03 on DFC Track 1)
+- [!] Head-to-head on competitor protocol (DFC Track 1) + run 03 -- downloads in progress
 - [ ] Final consistency pass: rebuild scenes, re-run benchmarks, refresh all docs
 - [ ] Demo script, 2-minute video, live-upload rehearsal, offline fallback
-- [!] Final deliverables pack (source, docs, installer, evidence)
+- [ ] Final deliverables pack (source, docs, evidence, Docker image)
 
 - [x] Pooled correlation like-for-like: 0.787 after the product fix (competitor reports 0.84 on their tiles)
