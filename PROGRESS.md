@@ -29,14 +29,14 @@ Legend: [x] done and verified · [~] in progress · [ ] not started · [!] block
 
 ## Documentation & submission
 - [x] README / BENCHMARK / EVALUATION_PROTOCOL lead with blind numbers
-- [ ] Technical report + user manual
+- [x] Technical report (TECHNICAL_REPORT.md) + user manual (USER_MANUAL.md)
 - [!] SIH idea PPT (due 30 Sep) — team
 
 ## Also required for "fully finished" (beyond the 12 beast moves)
 - [x] Projection-accuracy measurement (see above)
 - [!] Real-GPU frame rate (open viewer with &fps=1 in Chrome)
 - [x] First-person walk: ground-following at 1.7 m eye height, 1.2 m step limit, walls block and slide, G toggles flight (self-test: 16.7 m in 3 s, eye 1.5-1.9 m)
-- [ ] Technical report + user manual
+- [x] Technical report (TECHNICAL_REPORT.md) + user manual (USER_MANUAL.md)
 - [ ] Awkward-file smoke test (tiny, huge, 16-bit, lat/lon, corrupt)
 - [ ] Browser matrix: Chrome/Edge, WebGPU and WebGL
 - [ ] Web deployment (host TBD): public server config, Docker image as the standalone deliverable
