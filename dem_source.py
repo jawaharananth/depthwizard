@@ -242,11 +242,20 @@ def sample_grid(utm_x0: float, utm_y_top: float, size_px: int, gsd_m: float,
                     print(f"      DEM download attempt {_attempt + 1} failed; "
                           f"retrying in {_wait} s")
                     _time.sleep(_wait)
-                with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as f:
-                    f.write(data)
-                    local_path = f.name
-                local_url = f"/vsigzip/{local_path}" if suffix == ".hgt.gz" else local_path
-                dem, nodata = _read_block(local_url)
+                if suffix == ".hgt.gz":
+                    # GDAL's SRTMHGT driver only reads a file NAMED like the
+                    # tile (N47E008.hgt); a temp name inside /vsigzip/ is
+                    # "not recognized". Decompress to the tile's own name.
+                    import gzip
+                    _tdir = tempfile.mkdtemp()
+                    local_path = os.path.join(_tdir, os.path.basename(remote_url)[:-3])
+                    with open(local_path, "wb") as f:
+                        f.write(gzip.decompress(data))
+                else:
+                    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as f:
+                        f.write(data)
+                        local_path = f.name
+                dem, nodata = _read_block(local_path)
                 try:
                     os.remove(local_path)
                 except Exception:

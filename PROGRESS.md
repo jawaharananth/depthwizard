@@ -24,7 +24,8 @@ SRTM / Copernicus**; PNG/JPG must still work; ranked against other teams; first 
 - [-] Time-machine change detection (left, by decision; uncommitted code stays in server.py / viewer)
 
 ## Today — the whole technical prototype
-- [~] 0. BUG FOUND: predict_tiled fitted metric crops to a ~518 px whole-image prediction -> large scenes flattened (HITEC 4096 px p99 0.61 m). Fix in depth_model.py (align off for metric); A/B on 18 held-out tiles running
+- [x] 0. BUG FIXED: predict_tiled fitted metric crops to a ~518 px whole-image prediction -> large scenes flattened (HITEC 4096 px p99 0.61 m). A/B on 18 held-out tiles: alignment HELPS at 2048 px (per-building 1.86 vs 2.09 m), so it is kept within ~2048 px blocks and large scenes are blended block-wise; the model now always runs on the SOURCE pixels at the trained 0.3 m (one pass feeds both the full-res DSM file and the 3D scene)
+- [~] 0a. ABSOLUTE-DSM FIX: the old DSM = model's flat 'ground' + one datum offset (a plane on hills). Now ground = smooth30(DEM) - k x smooth30(model height), surface = ground + model height (anchoring.py); k being measured against swisstopo LiDAR elevations
 - [~] 0b. Run 04 RUNNING on Kaggle: run 03 recipe + ~330 km2 Swiss LiDAR tiles (tall buildings, 30-40 m forest, Alps), benchmark tiles + 1 km buffer held out
 - [~] 1. Cartosat input handling: B,G,R,NIR band order, per-band 16-bit stretch, nodata/black-collar mask, very large scenes, tests -- band order + nodata DONE (8 tests pass; synthetic 16-bit B,G,R,NIR Hyderabad file: bands read 3,2,1, 5.7% border masked, 44k mesh faces cut); full-resolution DSM for large scenes DONE (4096 px HITEC: DSM + sigma written at source grid, model at x1.9, 606 s CPU)
 - [ ] 2. Dark slab (HITEC): check if it is the unmasked border (fixed by 1)

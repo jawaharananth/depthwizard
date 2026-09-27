@@ -1034,6 +1034,45 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
           # (re-read band order, masked border) must not reuse old heights.
           + "_px" + __import__("hashlib").md5(
               np.ascontiguousarray(image_np[::7, ::7]).tobytes()).hexdigest()[:10])
+    # TRAINED-SCALE PASS. The metric model is run on the SOURCE pixels,
+    # resampled to the 0.3 m it was trained at, whenever the working grid is
+    # coarser than that or smaller than the source: the product DSM is written
+    # from it at the source grid, and the 3D scene's heights are it, averaged
+    # onto the working grid. Running the model on the working grid instead
+    # (a 4096 px 0.57 m scene shrunk to 2560 px = 0.91 m) under-called HITEC
+    # to p99 2.3 m against ~9 m at the trained scale; 0.6 m input costs
+    # +2.9 % per building upsampled vs +7.3 % not (BENCHMARK_RESOLUTION.md).
+    _agl_full, _full_zoom = None, 1.0
+    FULLRES_MAX_MPX = float(os.environ.get("DW_FULLRES_MAX_MPX", "80"))
+    _trained_scale_pass = bool(
+        _bb.is_metric and not depth_image_path and _pil_src is not None
+        and _gsd_src is not None and _gsd_work is not None
+        and (max(_gsd_src, _gsd_work) > NATIVE_TRAIN_GSD_M * 1.15
+             or max(_pil_src.size) > max(W, H) * 1.2)
+        and not os.environ.get("DW_NO_FULLRES"))
+    if _trained_scale_pass:
+        key += "_ts"
+        _Wf, _Hf = _pil_src.size
+        if _gsd_src > NATIVE_TRAIN_GSD_M * 1.15:
+            _full_zoom = min(3.0, _gsd_src / NATIVE_TRAIN_GSD_M)
+            _full_zoom = max(1.0, min(_full_zoom, math.sqrt(FULLRES_MAX_MPX * 1e6 / (_Wf * _Hf))))
+        _cp = os.path.join(height_cache.CACHE_DIR, f"{key}_full.npy")
+        if os.path.exists(_cp):
+            _agl_full = np.load(_cp)
+        else:
+            _tz = time.time()
+            print(f"      trained-scale pass: {_Wf}x{_Hf} source pixels at x{_full_zoom:.2f} "
+                  f"(~{_gsd_src / _full_zoom:.2f} m); 3D scene grid {W}x{H}")
+            _src_in = (_pil_src if _full_zoom < 1.05 else
+                       _pil_src.resize((round(_Wf * _full_zoom), round(_Hf * _full_zoom)),
+                                       Image.BICUBIC))
+            _agl_full = np.maximum(_bb.predict_tiled(_src_in, raw_metric=True), 0.0)
+            del _src_in
+            _agl_full = cv2.resize(_agl_full.astype(np.float32), (_Wf, _Hf),
+                                   interpolation=cv2.INTER_AREA)
+            os.makedirs(height_cache.CACHE_DIR, exist_ok=True)
+            np.save(_cp, _agl_full)
+            print(f"      trained-scale pass in {time.time() - _tz:.0f}s")
     height = height_cache.load(key, "tiled", H) if H == W else None
     if height is None:
         if depth_image_path:
@@ -1050,6 +1089,8 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
             del _hp
             height = cv2.resize(_hh.astype(np.float32), (W, H), interpolation=cv2.INTER_AREA)
             del _hh
+        elif _trained_scale_pass:
+            height = cv2.resize(_agl_full, (W, H), interpolation=cv2.INTER_AREA)
         elif multiscale_fusion:
             height = _bb.predict_fused(pil, raw_metric=_bb.is_metric)
         else:
@@ -2227,40 +2268,51 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
     # and +7.3 % fed at its own pixel count. Bounded by FULLRES_MAX_MPX so a
     # huge scene still finishes on a CPU; the zoom shrinks to fit.
     _full = None
-    FULLRES_MAX_MPX = float(os.environ.get("DW_FULLRES_MAX_MPX", "80"))
-    _coarse_pass = (_gsd_src is not None and _gsd_work is not None
-                    and _gsd_work > NATIVE_TRAIN_GSD_M * 1.15)
-    if (_product_agl is not None and _pil_src is not None
-            and (max(_pil_src.size) > max(W, H) * 1.2 or _coarse_pass)
-            and not os.environ.get("DW_NO_FULLRES")):
-        try:
-            _Wf, _Hf = _pil_src.size
-            _tf0 = time.time()
-            _z = 1.0
-            if _gsd_src is not None and _gsd_src > NATIVE_TRAIN_GSD_M * 1.15:
-                _z = min(3.0, _gsd_src / NATIVE_TRAIN_GSD_M)
-                _z = max(1.0, min(_z, math.sqrt(FULLRES_MAX_MPX * 1e6 / (_Wf * _Hf))))
-            print(f"      full-resolution DSM: {_Wf}x{_Hf} source pixels, model at "
-                  f"x{_z:.2f} (3D scene uses {W}x{H})")
-            _src_in = (_pil_src if _z < 1.05 else
-                       _pil_src.resize((round(_Wf * _z), round(_Hf * _z)), Image.BICUBIC))
-            _agl_f = np.maximum(_bb.predict_tiled(_src_in, raw_metric=True), 0.0)
-            _agl_f = _agl_f.astype(np.float32)
-            del _src_in
-            if _agl_f.shape != (_Hf, _Wf):
-                _agl_f = cv2.resize(_agl_f, (_Wf, _Hf), interpolation=cv2.INTER_AREA)
+    _anchor_info = None
+    if _product_agl is not None:
+        # The product's height above ground: the trained-scale pass on the
+        # source grid when there was one, else the working grid's own field.
+        _agl_p = _agl_full if _agl_full is not None else _product_agl
+        _shape_p = _agl_p.shape
+        _is_full = _agl_full is not None and _shape_p != _product_agl.shape
+        _valid_p = _valid_src if _is_full else _valid
+        # ABSOLUTE SURFACE (anchoring.py): terrain from the global DEM, not the
+        # model's own flat "ground" -- a metric model predicts height above
+        # ground and knows nothing of the hill it stands on. Measured against
+        # airborne LiDAR elevations in scripts/lidar_landscapes.py.
+        _dem_w = d["dem"] if (d is not None and d.get("dem") is not None) else None
+        if _dem_w is None and _metric and _georef and (use_dem or dem_path) and src_is_projected_m                 and not terrain_from_dem:
+            try:
+                _dd = _sample_dem()
+                _dem_w = _dd.get("dem")
+            except Exception:
+                _dem_w = None
+        if (_dem_w is not None and _metric and _georef and not terrain_from_dem
+                and not os.environ.get("DW_OLD_ANCHOR")):
+            import anchoring as _anc
+            _k = _anc.DEFAULT_K.get(dem_source, 0.5)
+            _dem_p = np.asarray(_dem_w, np.float32)
+            if _dem_p.shape != _shape_p:
+                _dem_p = cv2.resize(_dem_p, (_shape_p[1], _shape_p[0]), interpolation=cv2.INTER_LINEAR)
+            _gsd_p = (_gsd_src if _is_full else _gsd_work) or px_m or 1.0
+            _dsm_new, _ = _anc.absolute_surface(_dem_p, _agl_p, _gsd_p, _k)
+            _datum = (f"{dem_source.upper()} terrain (EGM2008/EGM96 as published) at 30 m, "
+                      f"minus {_k:.2f} x model height (DEM surface fraction); + model height")
+            _anchor_info = {"method": "dem_terrain_plus_model_height", "dem": dem_source, "k": _k}
+            _abs_datum = True
+            _suffix = "_DSM.tif"
+        else:
             _base_lo = (_dsm_out - _product_agl).astype(np.float32)
             _base_lo = np.where(np.isfinite(_base_lo), _base_lo, np.nanmedian(_base_lo))
-            _base_f = cv2.resize(_base_lo, (_Wf, _Hf), interpolation=cv2.INTER_LINEAR)
-            _dsm_f = (_base_f + _agl_f).astype(np.float32)
-            if _valid_src is not None and _valid_src.shape == _dsm_f.shape:
-                _dsm_f = np.where(_valid_src, _dsm_f, np.nan).astype(np.float32)
-            _full = {"shape": (_Hf, _Wf), "tf": _tf_src if _georef else None}
-            _dsm_out = _dsm_f
-            print(f"      full-resolution DSM in {time.time() - _tf0:.0f}s")
-        except MemoryError:
-            print("      full-resolution DSM skipped: not enough memory; "
-                  "writing the working-grid DSM")
+            _dsm_new = (cv2.resize(_base_lo, (_shape_p[1], _shape_p[0]), interpolation=cv2.INTER_LINEAR)
+                        if _base_lo.shape != _shape_p else _base_lo) + _agl_p
+        if _valid_p is not None and _valid_p.shape == _shape_p:
+            _dsm_new = np.where(_valid_p, _dsm_new, np.nan)
+        _dsm_out = _dsm_new.astype(np.float32)
+        if _is_full:
+            _full = {"shape": _shape_p, "tf": _tf_src if _georef else None}
+            print(f"      DSM product at the source grid: {_shape_p[1]}x{_shape_p[0]} "
+                  f"(3D scene uses {W}x{H})")
     _tf_dsm = _full["tf"] if _full else _tf_out
     try:
         _dx.export_dsm_geotiff_affine(
@@ -2450,6 +2502,7 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
         "source_image": os.path.abspath(image_path),
         "resolution": [W, H],
         "nodata_fraction": (round(float((~_valid).mean()), 5) if _valid is not None else 0.0),
+        "anchoring": _anchor_info,
         "bands": ({"rgb": list(_band_idx), "how": _band_how}
                   if "_band_how" in locals() else None),
         "tier": tier,

@@ -509,14 +509,17 @@ class DepthBackbone:
         leave a ridge.
         """
         # align: fit each crop's scale and shift to a whole-image prediction.
-        # Needed for a relative model, whose crops each come out on their own
-        # arbitrary scale. A metric model's crops are already in metres, and
-        # the whole-image reference is made at ~518 px: on a large scene it
-        # sees the ground shrunk so far that it is nearly flat, and fitting to
-        # it flattened every crop (HITEC 4096 px: p99 0.61 m). None = align
-        # only when the output is relative.
+        # Measured on the 18 held-out DFC2019 tiles (scripts/align_test.py):
+        # at 2048 px it HELPS a metric model too (per-building RMSE 1.86 m
+        # aligned vs 2.09 m not). But the whole-image reference is made at
+        # ~518 px, and on a scene much larger than 2048 px it sees the ground
+        # shrunk so far that it is nearly flat -- fitting to it flattened every
+        # crop (HITEC 4096 px: p99 0.61 m). So a large metric scene is split
+        # into ~2048 px blocks, each aligned within itself, and blended.
         if align is None:
-            align = not (raw_metric and self.is_metric)
+            if raw_metric and self.is_metric and max(image.size) > int(self.BLOCK_PX * 1.125):
+                return self._predict_blocks(image, tile, overlap, verbose, raw_metric)
+            align = True
         arr0 = np.asarray(image)
         if align:
             base = self.predict(image, raw_metric=raw_metric)
@@ -565,6 +568,40 @@ class DepthBackbone:
             return merged.astype(np.float32)
         rng = merged.max() - merged.min()
         return ((merged - merged.min()) / (rng + 1e-8)).astype(np.float32)
+
+    BLOCK_PX = 2048        # the scene size predict_tiled's alignment was measured at
+    BLOCK_OVERLAP_PX = 256
+
+    def _predict_blocks(self, image: Image.Image, tile: int, overlap: float,
+                        verbose: bool, raw_metric: bool) -> np.ndarray:
+        """predict_tiled over ~BLOCK_PX blocks of a large scene, feather-blended."""
+        arr = np.asarray(image)
+        H, W = arr.shape[:2]
+        B, ov = self.BLOCK_PX, self.BLOCK_OVERLAP_PX
+
+        def starts(n):
+            if n <= B:
+                return [0]
+            s = list(range(0, n - B + 1, B - ov))
+            if s[-1] != n - B:
+                s.append(n - B)
+            return s
+
+        acc = np.zeros((H, W), np.float32)
+        wsum = np.zeros((H, W), np.float32)
+        ys, xs = starts(H), starts(W)
+        for y in ys:
+            for x in xs:
+                blk = arr[y:y + B, x:x + B]
+                p = self.predict_tiled(Image.fromarray(blk), tile=tile, overlap=overlap,
+                                       verbose=verbose, raw_metric=raw_metric, align=True)
+                h, w = p.shape
+                wy = np.minimum(np.arange(1, h + 1), np.arange(h, 0, -1)).astype(np.float32)
+                wx = np.minimum(np.arange(1, w + 1), np.arange(w, 0, -1)).astype(np.float32)
+                win = np.outer(np.minimum(wy / ov, 1.0), np.minimum(wx / ov, 1.0)) + 1e-6
+                acc[y:y + h, x:x + w] += p * win
+                wsum[y:y + h, x:x + w] += win
+        return (acc / np.maximum(wsum, 1e-9)).astype(np.float32)
 
     def predict_fused(self, image: Image.Image, base_tile: int = 768,
                       detail_tile: int = 384, fuse_sigma_px: float = 8.0,

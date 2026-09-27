@@ -35,10 +35,13 @@ from PIL import Image
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 import depth_model as dm  # noqa: E402
+import anchoring  # noqa: E402
+import dem_source  # noqa: E402
 
 STAC = "https://data.geo.admin.ch/api/stac/v0.9/collections"
 WORK = os.path.join(ROOT, "data", "swiss_lidar")
 IMG_GSD, TRAIN_GSD, SCORE_GSD = 0.6, 0.3, 1.0
+KS = (0.0, 0.25, 0.5, 0.75, 1.0)      # fraction of above-ground height the DEM already holds
 
 # landscape, place, lat, lon
 SITES = [
@@ -105,6 +108,14 @@ def stats(p, t):
             "n": int(m.sum())}
 
 
+def bb_tag():
+    try:
+        fp = json.load(open(os.path.join(dm.DepthBackbone.METRIC_CKPT, "metric_ok.json")))
+        return str(fp.get("canary", {}).get("hash", "x"))[:10] + "_blocks"
+    except Exception:
+        return "x_blocks"
+
+
 def main():
     bb = dm.DepthBackbone(metric=True)
     rows = []
@@ -125,14 +136,39 @@ def main():
         del rgb
         z = IMG_GSD / TRAIN_GSD
         work = cv2.resize(img06, (int(n06 * z), int(n06 * z)), interpolation=cv2.INTER_CUBIC)
-        pred = bb.predict_tiled(Image.fromarray(work), raw_metric=True).astype(np.float32)
-        pred = cv2.resize(np.maximum(pred, 0), truth.shape[::-1], interpolation=cv2.INTER_AREA)
+        cache = os.path.join(WORK, f"pred_{tile}_{bb_tag()}.npy")
+        if os.path.exists(cache):
+            pred = np.load(cache)
+        else:
+            pred = bb.predict_tiled(Image.fromarray(work), raw_metric=True).astype(np.float32)
+            pred = cv2.resize(np.maximum(pred, 0), truth.shape[::-1], interpolation=cv2.INTER_AREA)
+            np.save(cache, pred)
         Image.fromarray(img06).save(os.path.join(WORK, f"{land}_{tile}_0.6m.jpg"), quality=85)
         row = {"landscape": land, "place": place, "tile": tile,
                "lidar_year": year(fd), "image_year": year(fi),
                "relief_m": float(np.nanpercentile(dtm, 99) - np.nanpercentile(dtm, 1)),
                "ours": stats(pred, truth), "zero": stats(np.zeros_like(truth), truth),
                "truth_p99_m": float(np.nanpercentile(truth, 99))}
+        # ABSOLUTE surface (the product ISRO scores): DEM terrain + model height,
+        # for each k and each global DEM, against the LiDAR DSM itself.
+        with rasterio.open(dsm_p) as s:
+            x0, ytop = s.transform.c, s.transform.f
+        abs_truth = block(dsm, int(SCORE_GSD / 0.5))
+        row["absolute"] = {}
+        for src in ("glo30", "srtm"):
+            d = dem_source.sample_grid(x0, ytop, truth.shape[0], SCORE_GSD, "EPSG:2056",
+                                       dem_source=src, width_px=truth.shape[1])
+            if d.get("dem") is None:
+                continue
+            dem = np.asarray(d["dem"], np.float32)
+            res = {"dem_only": stats(anchoring.smooth(dem, SCORE_GSD), abs_truth),
+                   "flat_plane_old": stats(np.nanmedian(dem) + pred, abs_truth)}
+            for k in KS:
+                surf, _ = anchoring.absolute_surface(dem, pred, SCORE_GSD, k)
+                res[f"k={k}"] = stats(surf, abs_truth)
+                res[f"k={k}_30m"] = stats(block(surf, 30), block(abs_truth, 30))
+            res["dem_only_30m"] = stats(block(anchoring.smooth(dem, SCORE_GSD), 30), block(abs_truth, 30))
+            row["absolute"][src] = res
         rows.append(row)
         print(json.dumps(row), flush=True)
     json.dump(rows, open(os.path.join(WORK, "results.json"), "w"), indent=2)
@@ -144,6 +180,16 @@ def main():
         lines.append(f"| {r['landscape']} | {r['place']} ({r['tile']}) | {r['relief_m']:.0f} m | "
                      f"{r['lidar_year']} / {r['image_year']} | {o['rmse']:.2f} m | {o['mae']:.2f} m | "
                      f"{o['bias']:+.2f} m | {o['corr']:.3f} | {z0['rmse']:.2f} m |")
+    lines += ["", "## Absolute surface vs the LiDAR DSM (1 m cells; the product ISRO scores)", "",
+              "ground = smooth30(DEM) - k x smooth30(model height); surface = ground + model height. "
+              "RMSE (bias) per anchor DEM. 'flat plane' is the old pipeline behaviour (one datum offset).", "",
+              "| landscape | DEM | DEM alone | flat plane (old) | " + " | ".join(f"k={k}" for k in KS) + " |",
+              "|---|---|---|---|" + "---|" * len(KS)]
+    for r in rows:
+        for src, res in r.get("absolute", {}).items():
+            f = lambda q: f"{q['rmse']:.2f} ({q['bias']:+.1f})"
+            lines.append(f"| {r['landscape']} | {src} | {f(res['dem_only'])} | {f(res['flat_plane_old'])} | "
+                         + " | ".join(f(res[f'k={k}']) for k in KS) + " |")
     txt = "\n".join(lines)
     print(txt)
     with open(os.path.join(ROOT, "BENCHMARK_LANDSCAPES.md"), "w", encoding="utf-8") as fh:

@@ -111,6 +111,50 @@ def ref_cells(src, x0, ytop, gx, gy, crs, shape):
     return None if r.get("dem") is None else np.asarray(r["dem"], np.float32)
 
 
+def icesat_check(dsm_path, anchor):
+    """Independent check against spaceborne LiDAR (ICESat-2 ATL08).
+
+    At every ATL08 point over the scene the true top surface is ground
+    elevation + canopy height (EGM2008). Our DSM's top there is its 98th
+    percentile within 15 m (ATL08 reports the canopy top of a ~100 m x 13 m
+    segment); the DEM-only answer is the anchor DEM at the point. The
+    difference between the two rows is what the single image adds.
+    """
+    import icesat2_source as ic
+    from pyproj import Transformer
+    with rasterio.open(dsm_path) as s:
+        a = s.read(1, masked=True).filled(np.nan).astype(np.float32)
+        tf, crs = s.transform, s.crs
+        lon0, lat0, lon1, lat1 = rasterio.warp.transform_bounds(crs, "EPSG:4326", *s.bounds)
+    res = ic.sample_scene_terrain(lon0, lat0, lon1, lat1)
+    pts = res["points"]
+    if not pts:
+        return {"n": 0, "note": "no ICESat-2 track over this scene"}
+    fwd = Transformer.from_crs("EPSG:4326", crs, always_xy=True)
+    unit_per_m = 1 / math.cos(math.radians((lat0 + lat1) / 2)) if crs.to_epsg() == 3857 else 1.0
+    r_px = max(1, int(round(15 * unit_per_m / abs(tf.a))))
+    ours, dem, truth = [], [], []
+    for p in pts:
+        x, y = fwd.transform(p["lon"], p["lat"])
+        col, row = ~tf * (x, y)
+        col, row = int(col), int(row)
+        if not (r_px <= row < a.shape[0] - r_px and r_px <= col < a.shape[1] - r_px):
+            continue
+        win = a[row - r_px:row + r_px + 1, col - r_px:col + r_px + 1]
+        if np.isfinite(win).mean() < 0.5:
+            continue
+        d = dem_source.sample_grid(x - 0.5, y + 0.5, 1, 1.0, f"EPSG:{crs.to_epsg()}", dem_source=anchor)
+        if d.get("dem") is None:
+            continue
+        ours.append(float(np.nanpercentile(win, 98)))
+        dem.append(float(np.asarray(d["dem"]).ravel()[0]))
+        truth.append(p["terrain_m"] + (p["canopy_m"] or 0.0))
+    ours, dem, truth = map(np.array, (ours, dem, truth))
+    if len(truth) < 5:
+        return {"n": int(len(truth)), "note": "too few ICESat-2 points inside the image"}
+    return {"n": int(len(truth)), "ours": stats(ours, truth), "dem_only": stats(dem, truth)}
+
+
 def stats(p, t):
     m = np.isfinite(p) & np.isfinite(t)
     if m.sum() < 20:
@@ -146,6 +190,10 @@ def main():
                    "ours": stats(ours, ref),
                    "references_vs_each_other": stats(np.where(np.isfinite(ours), anc, np.nan), ref)
                    if anc is not None else None}
+            try:
+                row["icesat2"] = icesat_check(dsm, anchor)
+            except Exception as e:
+                row["icesat2"] = {"n": 0, "note": f"ICESat-2 check failed: {e}"}
             rows.append(row)
             print(json.dumps(row), flush=True)
     json.dump(rows, open(os.path.join(WORK, "results.json"), "w"), indent=2)
@@ -159,6 +207,18 @@ def main():
         lines.append(f"| {r['scene']} | {r['landscape']} | {r['anchored_to']} -> {r['scored_vs']} | "
                      f"{o['rmse']:.2f} m | {o['mae']:.2f} m | {o['bias']:+.2f} m | {o['corr']:.3f} | "
                      f"{o['n_cells']} | {c['rmse']:.2f} m |" if c else "| - |")
+    lines += ["", "Independent check: ICESat-2 ATL08 top surface (ground + canopy, EGM2008)", "",
+              "| scene | anchored to | points | ours RMSE | ours bias | DEM-only RMSE | DEM-only bias |",
+              "|---|---|---|---|---|---|---|"]
+    for r in rows:
+        c = r.get("icesat2") or {}
+        if c.get("ours") and c.get("dem_only"):
+            lines.append(f"| {r['scene']} | {r['anchored_to']} | {c['n']} | {c['ours']['rmse']:.2f} m | "
+                         f"{c['ours']['bias']:+.2f} m | {c['dem_only']['rmse']:.2f} m | "
+                         f"{c['dem_only']['bias']:+.2f} m |")
+        else:
+            lines.append(f"| {r['scene']} | {r['anchored_to']} | {c.get('n', 0)} | "
+                         f"{c.get('note', '-')} | | | |")
     txt = "\n".join(lines)
     print(txt)
     with open(os.path.join(ROOT, "BENCHMARK_ISRO_PROTOCOL.md"), "w", encoding="utf-8") as fh:
