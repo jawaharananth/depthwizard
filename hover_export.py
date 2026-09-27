@@ -44,8 +44,15 @@ def _encode(a: np.ndarray) -> bytes:
     return q.astype("<u2").tobytes()
 
 
-def write(out_dir: str, agl: np.ndarray, sigma: np.ndarray | None) -> dict:
-    """Write hover_agl.u16 (+ hover_sigma.u16); returns the scene.json entry."""
+def write(out_dir: str, agl: np.ndarray, sigma: np.ndarray | None,
+          ground: np.ndarray | None = None) -> dict:
+    """Write hover_agl.u16 (+ hover_sigma.u16, + hover_ground.f32); returns the scene.json entry.
+
+    ground, when given, is the terrain in the 3D mesh's own vertical frame
+    (metres, the values the ground mesh was built from). The viewer uses it
+    to stand a LiDAR surface on exactly the same ground as the estimate, so
+    a comparison shows height differences only.
+    """
     a = _fit(np.maximum(agl, 0.0) if agl is not None else agl)
     with open(os.path.join(out_dir, "hover_agl.u16"), "wb") as f:
         f.write(_encode(a))
@@ -63,6 +70,14 @@ def write(out_dir: str, agl: np.ndarray, sigma: np.ndarray | None) -> dict:
             p = os.path.join(out_dir, stale)
             if os.path.exists(p):
                 os.remove(p)
+    if ground is not None:
+        g = _fit(np.asarray(ground, np.float32))
+        if g.shape != a.shape:
+            g = cv2.resize(np.nan_to_num(g, nan=float(np.nanmedian(g))), (a.shape[1], a.shape[0]),
+                           interpolation=cv2.INTER_LINEAR)
+        with open(os.path.join(out_dir, "hover_ground.f32"), "wb") as f:
+            f.write(np.nan_to_num(g, nan=float(np.nanmedian(g))).astype("<f4").tobytes())
+        entry["ground"] = "hover_ground.f32"
     return entry
 
 

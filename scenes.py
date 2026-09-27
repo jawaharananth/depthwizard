@@ -30,6 +30,11 @@ ASSETS = [
     "terrain.glb", "terrain_texture.png", "scene.json", "buildings.geojson",
     "terrain_heatmap.png", "terrain_normal.png", "terrain_ao.png",
     "terrain_roughness.png", "terrain_metalness.png",
+    # Everything else a staged build can carry: the display texture, the
+    # uncertainty views, rooftop detail, and the cursor readout rasters.
+    "terrain_texture_display.jpg", "terrain_confidence.png", "terrain_confidence_raw.png",
+    "terrain_slope.png", "roof_details.glb", "roof_details.json", "structures.glb",
+    "hover_agl.u16", "hover_sigma.u16", "hover_ground.f32", "lidar_agl.u16",
 ]
 
 

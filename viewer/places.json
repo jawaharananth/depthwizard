@@ -1,0 +1,10 @@
+[
+  {"id": "hitec_2x2", "name": "HITEC City", "region": "Hyderabad, India", "landscape": "urban", "lidar": false},
+  {"id": "zurich", "name": "Old town", "region": "Zurich, Switzerland", "landscape": "urban", "lidar": true},
+  {"id": "shimla", "name": "Shimla ridge", "region": "Himachal Pradesh, India", "landscape": "hilly", "lidar": false},
+  {"id": "zermatt", "name": "Zermatt", "region": "Valais, Switzerland", "landscape": "hilly", "lidar": true},
+  {"id": "periyar_forest", "name": "Periyar Tiger Reserve", "region": "Kerala, India", "landscape": "forested", "lidar": false},
+  {"id": "sihlwald", "name": "Sihlwald", "region": "Zurich, Switzerland", "landscape": "forested", "lidar": true},
+  {"id": "sangareddy_farmland", "name": "Farmland", "region": "Sangareddy, Telangana, India", "landscape": "sparse", "lidar": false},
+  {"id": "kerzers", "name": "Grosses Moos", "region": "Kerzers, Switzerland", "landscape": "sparse", "lidar": true}
+]

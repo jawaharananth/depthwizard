@@ -41,6 +41,8 @@ DROP_ORDER = ["context_city.glb", "terrain_context_far.jpg", "terrain_context.jp
 
 def canon(path):
     """Bare import name for a vendored file."""
+    if not os.path.abspath(path).startswith(os.path.abspath(VENDOR)):
+        return "dwapp/" + os.path.relpath(path, VIEWER).replace("\\", "/")   # viewer's own modules
     rel = os.path.relpath(path, VENDOR).replace("\\", "/")
     if rel == "build/three.webgpu.js":
         return "three"
@@ -56,8 +58,8 @@ def resolve(spec, importer_dir, imap):
         return os.path.join(VENDOR, "build", "three.tsl.js")
     if spec.startswith("three/addons/"):
         return os.path.join(VENDOR, "examples", "jsm", spec[len("three/addons/"):])
-    if spec.startswith(("./", "../")) and importer_dir:
-        return os.path.normpath(os.path.join(importer_dir, spec))
+    if spec.startswith(("./", "../")):
+        return os.path.normpath(os.path.join(importer_dir or VIEWER, spec))
     return None
 
 

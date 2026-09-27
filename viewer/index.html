@@ -208,6 +208,7 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { installDWX } from "./dwx.js";
 
 // ---------------------------------------------------------------------
 // Config: which mesh/texture to load. Point MESH_URL at your run_pipeline.py
@@ -5100,6 +5101,7 @@ function animate() {
   if (!walkModeActive) controls.update();
   updateCompass();
   updateScaleBar();
+  if (window.__dwxFrame) window.__dwxFrame();
   if (postProcessing) { postProcessing.render(); } else { renderer.render(scene, camera); }
   servicePendingCapture();
   _fpsTick(dt);
@@ -5172,6 +5174,16 @@ addEventListener("keydown", (e) => {
     if (b && !b.title) b.title = t;
   }
 }
+// The interface (viewer/dwx.js): place sheet, places + four actions, cursor readout.
+installDWX({
+  THREE, scene, camera, renderer, BASE,
+  getMeta: () => SCENE_META,
+  getGround: () => groundMesh,
+  getRGB: () => rgbTexture,
+  setConfidenceTexture: (t) => { confidenceTexture = t; },
+  setTextureMode,
+  tour: { toggle: () => { btnTour.click(); return tourActive; } },
+});
 renderer.setAnimationLoop(animate); // WebGPURenderer's own loop driver, handles both backends correctly
 
 window.addEventListener("resize", () => {

@@ -2718,7 +2718,7 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
                     _hv_agl = cv2.resize(_hv_agl, (W, H), interpolation=cv2.INTER_AREA)
                 if _valid is not None:
                     _hv_agl = np.where(_valid, _hv_agl, np.nan)
-                meta["hover"] = _hx.write(VIEWER_DIR, _hv_agl, _sigma)
+                meta["hover"] = _hx.write(VIEWER_DIR, _hv_agl, _sigma, locals().get("ground_display"))
                 _centre = (_hx.lonlat_centre(src_transform, src_crs, W, H)
                            if (src_transform is not None and src_crs is not None) else None)
                 meta["facts"] = _hx.scene_facts(_hv_agl, _sigma, px_m, {
