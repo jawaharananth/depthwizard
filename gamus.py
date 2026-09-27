@@ -128,10 +128,15 @@ class GamusHeight:
 
     def __init__(self, root: str = DATA_DIR, split: str = "train",
                  crop: int = 518, augment: bool = True,
-                 crops_per_tile: int = 4):
+                 crops_per_tile: int = 4, sensor_aug: bool = False,
+                 fixed_degrade: float = 1.0):
         self.dir = os.path.join(root, split)
         self.crop = crop
         self.augment = augment
+        self.sensor_aug = sensor_aug
+        # Validation at a coarser sensor: every crop area-averaged by this
+        # factor and resampled back (2.0 turns 0.3 m into ISRO's 0.6 m).
+        self.fixed_degrade = fixed_degrade
         self.crops_per_tile = max(1, crops_per_tile)
         if not os.path.isdir(self.dir):
             raise FileNotFoundError(
@@ -185,10 +190,23 @@ class GamusHeight:
             # RGB-band imagery with different radiometry from these US cities,
             # and a model that has only ever seen one sensor's response will
             # transfer badly.
-            if np.random.rand() < 0.8:
+            if self.sensor_aug:
+                # Run 03 onwards: coarser-sensor and satellite-colour gaps
+                # (training_aug.py) in place of the mild jitter below.
+                import training_aug
+                rgb = training_aug.sensor_gap(np.ascontiguousarray(rgb, np.float32))
+            elif np.random.rand() < 0.8:
                 gain = np.float32(np.random.uniform(0.88, 1.12))
                 bias = np.float32(np.random.uniform(-12, 12))
                 rgb = np.clip(rgb.astype(np.float32) * gain + bias, 0, 255)
+        elif self.fixed_degrade > 1.0:
+            import cv2
+            h, w = rgb.shape[:2]
+            f = self.fixed_degrade
+            small = cv2.resize(np.ascontiguousarray(rgb, np.float32),
+                               (max(8, int(round(w / f))), max(8, int(round(h / f)))),
+                               interpolation=cv2.INTER_AREA)
+            rgb = cv2.resize(small, (w, h), interpolation=cv2.INTER_CUBIC)
 
         rgb = np.ascontiguousarray(rgb, dtype=np.float32) / 255.0
         rgb = (rgb - self.mean) / self.std

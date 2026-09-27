@@ -243,6 +243,10 @@ def main() -> None:
                          "training/prepare_dfc.py): satellite imagery, the target domain")
     ap.add_argument("--extra-crops-per-tile", type=int, default=8,
                     help="oversampling for the (small) extra dataset")
+    ap.add_argument("--sensor-aug", action="store_true",
+                    help="run 03+: coarser-sensor (0.3-1.0 m) and satellite-colour "
+                         "augmentation (training_aug.py), and select the best epoch on "
+                         "the mean of native and 0.6 m-equivalent validation")
     ap.add_argument("--init-from", default=None,
                     help="start from this fine-tuned checkpoint directory instead of "
                          "the pretrained --model weights")
@@ -260,7 +264,8 @@ def main() -> None:
           + (f"  ({torch.cuda.get_device_name(0)})" if device == "cuda" else ""))
 
     gamus_train = gamus.GamusHeight(root=a.data_root, split="train", crop=a.crop,
-                                    augment=True, crops_per_tile=a.crops_per_tile)
+                                    augment=True, crops_per_tile=a.crops_per_tile,
+                                    sensor_aug=a.sensor_aug)
     try:
         gamus_val = gamus.GamusHeight(root=a.data_root, split="val", crop=a.crop,
                                       augment=False, crops_per_tile=1)
@@ -292,7 +297,8 @@ def main() -> None:
     extra_val = None
     if a.extra_root:
         extra_train = gamus.GamusHeight(root=a.extra_root, split="train", crop=a.crop,
-                                        augment=True, crops_per_tile=a.extra_crops_per_tile)
+                                        augment=True, crops_per_tile=a.extra_crops_per_tile,
+                                        sensor_aug=a.sensor_aug)
         extra_val = gamus.GamusHeight(root=a.extra_root, split="val", crop=a.crop,
                                       augment=False, crops_per_tile=1)
         if a.smoke:
@@ -317,6 +323,14 @@ def main() -> None:
     dl_val = DataLoader(val, batch_size=1, shuffle=False, num_workers=0)
     dl_extra_val = (DataLoader(extra_val, batch_size=1, shuffle=False, num_workers=0)
                     if extra_val is not None else None)
+    dl_coarse_val = None
+    if a.sensor_aug and extra_val is not None:
+        # ISRO evaluates on Cartosat-2S at 0.6 m: the same satellite val views,
+        # area-averaged 2x (0.3 -> 0.6 m) and resampled back.
+        coarse_val = gamus.GamusHeight(root=a.extra_root, split="val", crop=a.crop,
+                                       augment=False, crops_per_tile=1, fixed_degrade=2.0)
+        coarse_val.stems = list(extra_val.stems)
+        dl_coarse_val = DataLoader(coarse_val, batch_size=1, shuffle=False, num_workers=0)
 
     if a.htc:
         model = htc_bins.HTCDepthModel(model_id=MODEL, n_bins=a.n_bins).to(device)
@@ -436,6 +450,12 @@ def main() -> None:
             history[-1]["extra_val"] = mx
             print("        " + _fmt("extra val (selects best)", mx))
             sel = mx
+            if dl_coarse_val is not None:
+                mc = evaluate(model, dl_coarse_val, device, allow_affine=False, htc=a.htc)
+                history[-1]["extra_val_0p6m"] = mc
+                print("        " + _fmt("extra val at 0.6 m", mc))
+                if mx and mc:
+                    sel = dict(mx, mae_m=(mx["mae_m"] + mc["mae_m"]) / 2)
         if sel and sel["mae_m"] < best:
             best = sel["mae_m"]
             if a.htc:

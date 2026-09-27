@@ -757,12 +757,19 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
     _gt_grid_bound = (gt_building_mask is not None or gt_building_polygons is not None
                       or depth_image_path is not None or display_texture_path is not None
                       or canopy_height_map is not None)
+    _valid_src = None          # False where the input carries no image (nodata, border, alpha)
     if image_path.lower().endswith((".tif", ".tiff")):
         try:
             import rasterio
             with rasterio.open(image_path) as _s:
-                _band_idx = [1, 2, 3] if _s.count >= 3 else [1]
+                import input_bands as _ib
+                _band_idx, _band_how = _ib.rgb_band_plan(_s)
+                if _band_how == "grey":
+                    _band_idx = [1]
                 _raw = _s.read(_band_idx)
+                _valid_src = _ib.dataset_valid(_s, _band_idx) & ~_ib.border_collar(_raw)
+                if _band_how != "assumed-rgb" or _s.count >= 4:
+                    print(f"      bands: R,G,B = {_band_idx} of {_s.count} ({_band_how})")
                 _s_crs, _s_tf = _s.crs, _s.transform
                 _has_geo = (_s_crs is not None and _s_tf is not None
                             and not _s_tf.is_identity)
@@ -789,6 +796,14 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
                         _rpj(_raw[_b], _dst[_b], src_transform=_s_tf, src_crs=_s_crs,
                              dst_transform=_tf2, dst_crs=_utm, resampling=_Rs.bilinear,
                              src_nodata=None, dst_nodata=0)
+                    # The rotated footprint leaves corners with no source pixel;
+                    # carry the valid mask through the same warp so they stay
+                    # masked instead of becoming black "ground".
+                    _vdst = np.zeros((_h2, _w2), np.uint8)
+                    _rpj(_valid_src.astype(np.uint8), _vdst, src_transform=_s_tf,
+                         src_crs=_s_crs, dst_transform=_tf2, dst_crs=_utm,
+                         resampling=_Rs.nearest, src_nodata=None, dst_nodata=0)
+                    _valid_src = _vdst > 0
                     print(f"      geographic input ({_s_crs}) reprojected to {_utm} "
                           f"at {_res*100:.1f} cm/px: {_s.width}x{_s.height} -> {_w2}x{_h2}")
                     _raw, _s_crs, _s_tf = _dst, _utm, _tf2
@@ -872,7 +887,7 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
                     _out = np.zeros(_raw.shape, np.uint8)
                     for _b in range(_raw.shape[0]):
                         _band = _raw[_b].astype(np.float32)
-                        _v = _band[np.isfinite(_band) & (_band != 0)]
+                        _v = _band[np.isfinite(_band) & (_band != 0) & _valid_src]
                         if _v.size == 0:
                             continue
                         _lo, _hi = np.percentile(_v, [2, 98])
@@ -885,17 +900,39 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
                     # Panchromatic: replicate to three channels.
                     _raw = np.repeat(_raw, 3, axis=0)
                 arr = np.ascontiguousarray(np.transpose(_raw, (1, 2, 0)))
+                if not _valid_src.all():
+                    print(f"      nodata / black border: {100 * (~_valid_src).mean():.1f}% "
+                          f"of pixels carry no image; masked in every output")
+                    arr = _ib.fill_invalid(arr, _valid_src)
                 pil = Image.fromarray(arr)
         except Exception as e:
             print(f"      (not readable as GeoTIFF: {e}; falling back to PIL)")
             pil = Image.open(image_path).convert("RGB")
+            _valid_src = None
     else:
-        pil = Image.open(image_path).convert("RGB")
+        _pim = Image.open(image_path)
+        if _pim.mode in ("RGBA", "LA") or (_pim.mode == "P" and "transparency" in _pim.info):
+            _pim = _pim.convert("RGBA")
+            _alpha = np.asarray(_pim)[..., 3]
+            if (_alpha == 0).any() and (_alpha > 0).any():
+                import input_bands as _ib
+                _valid_src = _alpha > 0
+                print(f"      transparent pixels: {100 * (~_valid_src).mean():.1f}%; "
+                      f"masked in every output")
+                pil = Image.fromarray(_ib.fill_invalid(np.asarray(_pim.convert("RGB")),
+                                                       _valid_src))
+            else:
+                pil = _pim.convert("RGB")
+        else:
+            pil = _pim.convert("RGB")
     # Pixel size the georeference (if any) currently describes; the transform
     # is rescaled ONCE below to whatever grid auto-zoom/max_px leave, so every
     # later consumer (Open Buildings warp, DEM grid, DSM/GeoJSON export, OSM
     # structures) reads src_transform as the WORKING grid's affine.
     _geo_w, _geo_h = pil.size
+    # The source grid, kept for the full-resolution DSM product (a Cartosat
+    # scene is far larger than the 3D scene's working grid).
+    _pil_src, _tf_src, _gsd_src = pil, src_transform, gsd_m
     # Auto-zoom: upsample toward the depth model's own training resolution
     # when the source is coarser than it. GAMUS/DFC2019, the real datasets
     # this project's checkpoint is tuned on, are 0.3 m/px; ISRO's own imagery
@@ -930,6 +967,16 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
         src_transform = src_transform * _Aff.scale(_geo_w / pil.size[0], _geo_h / pil.size[1])
     image_np = np.array(pil)
     H, W = image_np.shape[:2]
+    _gsd_work = gsd_m          # ground sample the 3D scene's model pass actually saw
+    # The valid mask on the working grid (same resizes as the image).
+    _valid = None
+    if _valid_src is not None and not _valid_src.all():
+        _valid = cv2.resize(_valid_src.astype(np.uint8), (W, H),
+                            interpolation=cv2.INTER_NEAREST) > 0
+        if not _valid.any():
+            raise SystemExit("the image has no valid pixels: it is entirely nodata, "
+                             "transparent or black border, so there is nothing to "
+                             "estimate heights for.")
     print(f"[1/5] {os.path.basename(image_path)}  {W}x{H}")
     if tracker is not None:
         tracker.megapixels = (W * H) / 1e6
@@ -982,7 +1029,11 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
     key = (f"plainimg_{name}_{backbone_tag()}"
           + ("_metric" + _ckid if _bb.is_metric else "")
           + ("_fused" if multiscale_fusion else "")
-          + ("_hires" if depth_image_path else ""))
+          + ("_hires" if depth_image_path else "")
+          # The pixels themselves: a same-named input with different content
+          # (re-read band order, masked border) must not reuse old heights.
+          + "_px" + __import__("hashlib").md5(
+              np.ascontiguousarray(image_np[::7, ::7]).tobytes()).hexdigest()[:10])
     height = height_cache.load(key, "tiled", H) if H == W else None
     if height is None:
         if depth_image_path:
@@ -1006,6 +1057,10 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
         if H == W:
             height_cache.save(key, "tiled", H, height)
     print(f"[2/5] height field in {time.time()-t0:.0f}s")
+    if _valid is not None:
+        # No image, no height: masked pixels stand at ground level from here on
+        # (so nothing is extruded there) and are NaN / cut in every output.
+        height = np.where(_valid, height, 0.0).astype(np.float32)
     # A metric checkpoint predicts height above ground directly. That field is
     # the elevation PRODUCT (DSM file, benchmark): measured blind on 10
     # DFC2019 tiles, the raw field scores RMSE 2.82 m / MAE 1.59 m / corr
@@ -1031,6 +1086,9 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
                   "inpainting restores appearance, not the data the graphic hid.")
 
     seg_labels, _ = seg.segment(image_np, height=height)
+    if _valid is not None:
+        seg_labels = seg_labels.copy()
+        seg_labels[~_valid] = seg.CLASS_IDX["bare_earth"]
     if gt_building_mask is not None:
         # Every scale computation below (initial p99, DTM ground-fit, the
         # roof-squaring refit) reads seg_labels' building channel, not just
@@ -1887,6 +1945,15 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
     gsmall, _ = mg._resize_for_mesh(ground_display, seg_labels, ground_grid)
     gscale = ground_display.shape[0] / gsmall.shape[0]
     gverts, guvs, gfaces = mg.build_ground_mesh(gsmall, gsd * gscale, gsd * gscale)
+    if _valid is not None:
+        # Cut the ground where the input had no image, so a nodata collar is a
+        # hole rather than a flat slab. A face stays only if all three corners
+        # are on image.
+        _vm = cv2.resize(_valid.astype(np.uint8), (gsmall.shape[1], gsmall.shape[0]),
+                         interpolation=cv2.INTER_NEAREST).ravel() > 0
+        _n0 = len(gfaces)
+        gfaces = gfaces[_vm[gfaces].all(axis=1)]
+        print(f"      ground mesh: {_n0 - len(gfaces)} faces cut over nodata")
 
     # The same checks the benchmark path runs. This path had none, so malformed
     # geometry shipped silently -- which is how a scene full of crossing plates
@@ -2143,13 +2210,62 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
     # is real whenever the source had one, so it is written for an rDSM too;
     # only the vertical is relative there. A CRS without a geotransform is a
     # file no GIS can place, which is what this used to write.
+    if _valid is not None and _dsm_out.shape == _valid.shape:
+        _dsm_out = np.where(_valid, _dsm_out, np.nan).astype(np.float32)   # written as nodata
     _georef = src_transform is not None and src_crs is not None \
         and dsm.shape == (H, W)
     _tf_out = src_transform if _georef else None
+    # FULL-RESOLUTION PRODUCT. A Cartosat scene is many times the 3D scene's
+    # working grid; scoring a DSM that was averaged down to it throws away the
+    # resolution the evaluation is at. The model's height above ground is
+    # re-run on the source pixels; the ground under it (DEM-anchored, smooth
+    # at 30 m) is resampled from the working grid. The 3D scene is unchanged.
+    #
+    # The model is run at the scale it was trained at: a 0.6 m source is
+    # upsampled 2x first. Measured on the 18 held-out DFC2019 tiles
+    # (BENCHMARK_RESOLUTION.md), 0.6 m costs +2.9 % per-building RMSE this way
+    # and +7.3 % fed at its own pixel count. Bounded by FULLRES_MAX_MPX so a
+    # huge scene still finishes on a CPU; the zoom shrinks to fit.
+    _full = None
+    FULLRES_MAX_MPX = float(os.environ.get("DW_FULLRES_MAX_MPX", "80"))
+    _coarse_pass = (_gsd_src is not None and _gsd_work is not None
+                    and _gsd_work > NATIVE_TRAIN_GSD_M * 1.15)
+    if (_product_agl is not None and _pil_src is not None
+            and (max(_pil_src.size) > max(W, H) * 1.2 or _coarse_pass)
+            and not os.environ.get("DW_NO_FULLRES")):
+        try:
+            _Wf, _Hf = _pil_src.size
+            _tf0 = time.time()
+            _z = 1.0
+            if _gsd_src is not None and _gsd_src > NATIVE_TRAIN_GSD_M * 1.15:
+                _z = min(3.0, _gsd_src / NATIVE_TRAIN_GSD_M)
+                _z = max(1.0, min(_z, math.sqrt(FULLRES_MAX_MPX * 1e6 / (_Wf * _Hf))))
+            print(f"      full-resolution DSM: {_Wf}x{_Hf} source pixels, model at "
+                  f"x{_z:.2f} (3D scene uses {W}x{H})")
+            _src_in = (_pil_src if _z < 1.05 else
+                       _pil_src.resize((round(_Wf * _z), round(_Hf * _z)), Image.BICUBIC))
+            _agl_f = np.maximum(_bb.predict_tiled(_src_in, raw_metric=True), 0.0)
+            _agl_f = _agl_f.astype(np.float32)
+            del _src_in
+            if _agl_f.shape != (_Hf, _Wf):
+                _agl_f = cv2.resize(_agl_f, (_Wf, _Hf), interpolation=cv2.INTER_AREA)
+            _base_lo = (_dsm_out - _product_agl).astype(np.float32)
+            _base_lo = np.where(np.isfinite(_base_lo), _base_lo, np.nanmedian(_base_lo))
+            _base_f = cv2.resize(_base_lo, (_Wf, _Hf), interpolation=cv2.INTER_LINEAR)
+            _dsm_f = (_base_f + _agl_f).astype(np.float32)
+            if _valid_src is not None and _valid_src.shape == _dsm_f.shape:
+                _dsm_f = np.where(_valid_src, _dsm_f, np.nan).astype(np.float32)
+            _full = {"shape": (_Hf, _Wf), "tf": _tf_src if _georef else None}
+            _dsm_out = _dsm_f
+            print(f"      full-resolution DSM in {time.time() - _tf0:.0f}s")
+        except MemoryError:
+            print("      full-resolution DSM skipped: not enough memory; "
+                  "writing the working-grid DSM")
+    _tf_dsm = _full["tf"] if _full else _tf_out
     try:
         _dx.export_dsm_geotiff_affine(
             _dsm_out, stem + _suffix,
-            transform=_tf_out, crs=src_crs if _georef else None,
+            transform=_tf_dsm, crs=src_crs if _georef else None,
             tags={"TIER": tier, "HEIGHT_IS_METRIC": str(_metric),
                   "PRODUCT": "DSM" if _abs_datum else "rDSM",
                   "VERTICAL_DATUM": (_datum if _abs_datum else
@@ -2182,15 +2298,26 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
             _, _std = _bb.predict_tta(_ps, raw_metric=True, views=4)
             _std = cv2.resize(_std.astype(np.float32), (W, H), interpolation=cv2.INTER_LINEAR)
             _sigma = np.sqrt((_cal["k"] * _std) ** 2 + _cal["s0"] ** 2).astype(np.float32)
+            if _valid is not None and _sigma.shape == _valid.shape:
+                _sigma = np.where(_valid, _sigma, np.nan).astype(np.float32)
             _sigma_info = {"file": os.path.basename(stem) + "_sigma.tif",
                            "definition": "1-sigma height uncertainty, metres",
                            "method": f"4-view rotation spread, calibrated sqrt(({_cal['k']:.2f}*std)^2 + "
                                      f"{_cal['s0']:.2f}^2) on {_cal.get('fit_views')} DFC2019 val views",
                            "heldout_ece": round(float(_cal.get("ece_heldout", float("nan"))), 3),
                            "heldout_rank_corr": round(float(_cal.get("rank_corr", float("nan"))), 3),
-                           "median_m": round(float(np.median(_sigma)), 2)}
+                           "median_m": round(float(np.nanmedian(_sigma)), 2)}
+            _sig_file = _sigma
+            if _full:
+                # Same grid as the DSM file, so the two overlay exactly in GIS.
+                _sig_file = cv2.resize(np.nan_to_num(_sigma, nan=0.0),
+                                       (_full["shape"][1], _full["shape"][0]),
+                                       interpolation=cv2.INTER_LINEAR)
+                if _valid_src is not None and _valid_src.shape == _sig_file.shape:
+                    _sig_file = np.where(_valid_src, _sig_file, np.nan)
+                _sig_file = _sig_file.astype(np.float32)
             _dx.export_dsm_geotiff_affine(
-                _sigma, stem + "_sigma.tif", transform=_tf_out,
+                _sig_file, stem + "_sigma.tif", transform=_tf_dsm,
                 crs=src_crs if _georef else None,
                 tags={"PRODUCT": "height uncertainty (1 sigma, metres)",
                       "METHOD": _sigma_info["method"], "PIPELINE": "DepthWizard"})
@@ -2322,6 +2449,9 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
     meta = {
         "source_image": os.path.abspath(image_path),
         "resolution": [W, H],
+        "nodata_fraction": (round(float((~_valid).mean()), 5) if _valid is not None else 0.0),
+        "bands": ({"rgb": list(_band_idx), "how": _band_how}
+                  if "_band_how" in locals() else None),
         "tier": tier,
         "scale_source": scale_source,
         "gsd_m": px_m,
@@ -2486,7 +2616,8 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
         if _sigma is not None:
             # CONFIDENCE view: colour ramp of +/-sigma (0-8 m), plus a raw
             # channel the hover readout decodes as sigma = value/255*20 m.
-            _sd = cv2.resize(_sigma, (min(W, 2048), min(H, 2048)), interpolation=cv2.INTER_AREA)
+            _sd = cv2.resize(np.nan_to_num(_sigma, nan=0.0), (min(W, 2048), min(H, 2048)),
+                             interpolation=cv2.INTER_AREA)
             _ramp = cv2.applyColorMap(np.clip(_sd / 8.0 * 255, 0, 255).astype(np.uint8),
                                       cv2.COLORMAP_TURBO)
             cv2.imwrite(os.path.join(VIEWER_DIR, "terrain_confidence.png"), _ramp)

@@ -213,3 +213,7 @@ checkpoints/height_best_v1_base400/
 
 # Assembled desktop backend (packaging/build_backend.py)
 dist_backend/
+
+# run 03 upload staging (checkpoint copy) and downloaded LiDAR benchmark data
+training/kaggle_ckpt02/
+data/swiss_lidar/
