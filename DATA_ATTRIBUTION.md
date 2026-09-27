@@ -65,12 +65,22 @@ Delete the file to recalibrate. `progress.py` shows no ETA until a stage has
 been timed rather than displaying a fabricated one, so an empty calibration is
 handled correctly and is safer than an inherited wrong one.
 
+## Evaluation and training sources added September 2026
+
+| Source | Used for | Licence / terms |
+|---|---|---|
+| swisstopo SWISSIMAGE (orthophoto), swissSURFACE3D Raster (LiDAR DSM), swissALTI3D (LiDAR DTM) | four-landscape benchmark (`scripts/lidar_landscapes.py`, 4 tiles) and run-04 training tiles (`training/prepare_swiss.py`, built inside the Kaggle session, benchmark tiles + 1 km buffer excluded) | Swiss open government data, free use with attribution: (c) swisstopo |
+| Copernicus DEM GLO-30 | absolute elevation anchor; reference in `scripts/isro_protocol_eval.py` | (c) DLR e.V. 2010-2014 and (c) Airbus Defence and Space GmbH 2014-2018, provided under COPERNICUS by the European Union and ESA |
+| SRTM 1 arc-second (via the AWS terrain tiles) | alternative anchor and reference | NASA / USGS, public domain |
+| ICESat-2 ATL08 (via NASA OpenAltimetry) | independent spaceborne-LiDAR check over India | NASA, public |
+| EGM2008 geoid grid (`us_nga_egm08_25.tif`, PROJ CDN) | ellipsoid to orthometric conversion of ICESat-2 heights | NGA, public |
+| Esri World Imagery (zoom 18) | the four Indian evaluation scenes (`final_out/isro_eval/`) | Esri and its data providers; used for evaluation only, not redistributed |
+
 ## Not committed
 
-`checkpoints/` — fine-tuned model weights. The only checkpoint produced so far
-is from the smoke test (1 epoch, 2 tiles, CPU) and scored **worse than the
-pretrained baseline**: MAE 7.16 m against 6.68 m, correlation −0.121 against
-0.222. `train_height.py` refuses to recommend it. At 372 MB in a single file it
-also exceeds GitHub's 100 MB limit and would require Git LFS.
+`checkpoints/` weights (`model.safetensors`, ~99 MB each; ONNX exports) are
+not in git. The production checkpoint is `checkpoints/height_best/` (run 03,
+promoted 27 Sep 2026 on held-out evidence recorded in its `metric_ok.json`);
+its marker, uncertainty calibration and ONNX manifest are committed.
 
 `dfc2019_data/` — 16 GB, IEEE GRSS licensed.
