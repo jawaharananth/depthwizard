@@ -10,7 +10,8 @@ Everything real, fetched for the exact 2.45 km x 2.45 km square around the point
   imagery     Esri World Imagery z18 (4096 px, ~0.6 m) + z19 (~0.3 m) of the
               same bounds (display texture and the model's input) + a z16 and
               z14 context ring, flat, labelled as context
-  footprints  Microsoft Global ML Building Footprints (urban, hilly, sparse)
+  footprints  Microsoft Global ML Building Footprints + OpenStreetMap buildings
+              where Microsoft has none (urban, hilly, sparse)
   heights     the fine-tuned model on the z19 imagery, fused with Google Open
               Buildings 2.5D heights where they exist (pipeline default)
   canopy      Meta / WRI CHMv2 canopy height, one continuous displaced surface
@@ -111,6 +112,63 @@ def ms_footprints(tif, work):
     return polys
 
 
+def osm_footprints(tif, work):
+    """OpenStreetMap building outlines inside the scene, as pixel polygons.
+
+    Microsoft's India footprints are thin in dense cores (0 inside Lower
+    Parel's 2.4 km square), where OSM mappers have traced the towers.
+    """
+    import rasterio
+    out = os.path.join(work, "osm_polygons_px.json")
+    if os.path.exists(out):
+        return json.load(open(out))["polygons"]
+    with rasterio.open(tif) as ds:
+        inv, b = ~ds.transform, ds.bounds
+    to_ll = lambda x, y: (math.degrees(x / R), math.degrees(2 * math.atan(math.exp(y / R)) - math.pi / 2))
+    lon0, lat0 = to_ll(b.left, b.bottom)
+    lon1, lat1 = to_ll(b.right, b.top)
+    q = f'[out:json][timeout:180];(way["building"]({lat0},{lon0},{lat1},{lon1}););out geom;'
+    data = None
+    for host in ("https://overpass-api.de/api/interpreter", "https://overpass.kumi.systems/api/interpreter"):
+        try:
+            req = urllib.request.Request(host, data=("data=" + urllib.request.quote(q)).encode(), headers=UA)
+            data = json.loads(urllib.request.urlopen(req, timeout=240).read())
+            break
+        except Exception as e:
+            log(f"OSM buildings: {host} failed ({e})")
+    polys = []
+    for el in (data or {}).get("elements", []):
+        pts = el.get("geometry") or []
+        if len(pts) < 4:
+            continue
+        px = []
+        for p in pts:
+            x = R * math.radians(p["lon"])
+            y = R * math.log(math.tan(math.pi / 4 + math.radians(p["lat"]) / 2))
+            c, r_ = inv * (x, y)
+            px.append([float(c), float(r_)])
+        polys.append(px)
+    if data is not None:          # a failed query is not an answer: never cache it
+        json.dump({"source": "OpenStreetMap contributors (ODbL)", "polygons": polys}, open(out, "w"))
+    log(f"OSM buildings: {len(polys)}")
+    return polys
+
+
+def merge_footprints(primary, extra, size=4096):
+    """primary + every extra polygon whose centre is not already covered."""
+    import cv2
+    mask = np.zeros((size, size), np.uint8)
+    for p in primary:
+        cv2.fillPoly(mask, [np.array(p, np.int32)], 1)
+    out = list(primary)
+    for p in extra:
+        c = np.mean(np.array(p), axis=0).astype(int)
+        if 0 <= c[1] < size and 0 <= c[0] < size and mask[c[1], c[0]]:
+            continue
+        out.append(p)
+    return out
+
+
 def canopy(tif, work):
     """Meta/WRI CHMv2 canopy height on the scene grid (metres)."""
     import cv2
@@ -169,7 +227,7 @@ def main():
         run([PY, "tools/fetch_context.py", tif, far, "--zoom", 14, "--radius", 6])
 
     import cv2
-    polys = [] if a.kind == "forested" else ms_footprints(tif, work)
+    polys = [] if a.kind == "forested" else merge_footprints(ms_footprints(tif, work), osm_footprints(tif, work))
     chm = canopy(tif, work)
     if a.fetch_only:
         log(f"fetched {a.id}: {len(polys)} footprints, canopy {'yes' if chm is not None else 'no'}")
