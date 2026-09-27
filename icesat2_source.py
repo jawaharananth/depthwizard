@@ -196,3 +196,47 @@ def sample_scene(min_lon: float, min_lat: float, max_lon: float, max_lat: float,
                  "granules exist for this extent but returned no usable points "
                  "(track passed near, not through, the requested bbox)"),
     }
+
+
+def sample_scene_terrain(min_lon: float, min_lat: float, max_lon: float, max_lat: float,
+                         max_granules: int = 12) -> dict:
+    """ATL08 points with ground and canopy kept apart, heights on EGM2008.
+
+    sample_scene() returns one "top" value per point (canopy height where a
+    canopy was classified, otherwise terrain elevation), which mixes a height
+    above ground with an elevation. An absolute-accuracy check needs them
+    separate: `terrain_m` is the ATL08 best-fit ground elevation converted from
+    the WGS84 ellipsoid to EGM2008 orthometric height (the datum Copernicus
+    GLO-30 and our DSM use), and `canopy_m` is the segment's canopy height
+    above that ground, or None where no canopy was classified.
+
+    The geoid conversion needs PROJ's us_nga_egm08_25.tif grid in the PROJ
+    user data directory (https://cdn.proj.org/us_nga_egm08_25.tif).
+    """
+    from pyproj import Transformer
+    to_egm = Transformer.from_crs("EPSG:4979", "EPSG:4326+3855", always_xy=True)
+    granules = find_granules(min_lon, min_lat, max_lon, max_lat)
+    out, tried = [], 0
+    for g in granules[:max_granules]:
+        tried += 1
+        q = urllib.parse.urlencode({
+            "date": g["date"], "trackId": g["track_id"],
+            "minx": min_lon, "miny": min_lat, "maxx": max_lon, "maxy": max_lat,
+            "outputFormat": "json", "client": "depthwizard"})
+        try:
+            data = _http_json(f"{OA_BASE}?{q}")
+        except Exception:
+            continue
+        for series in data.get("series", []):
+            for row in series.get("lat_lon_elev_canopy", []):
+                if len(row) < 4 or abs(row[2]) >= _FILL_TOL:
+                    continue
+                lat, lon, elev, canopy = float(row[0]), float(row[1]), float(row[2]), row[3]
+                h = to_egm.transform(lon, lat, elev)[2]
+                if not np.isfinite(h):
+                    continue
+                out.append({"lat": lat, "lon": lon, "terrain_m": float(h),
+                            "canopy_m": float(canopy) if abs(canopy) < _FILL_TOL else None,
+                            "date": g["date"], "track": g["track_id"]})
+    return {"points": out, "n": len(out), "granules_tried": tried,
+            "vertical_datum": "EGM2008 (converted from WGS84 ellipsoid)"}

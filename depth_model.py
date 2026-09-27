@@ -475,7 +475,7 @@ class DepthBackbone:
 
     def predict_tiled(self, image: Image.Image, tile: int = 768,
                       overlap: float = 0.5, verbose: bool = False,
-                      raw_metric: bool = False) -> np.ndarray:
+                      raw_metric: bool = False, align: bool = None) -> np.ndarray:
         """
         Height field from overlapping crops, merged onto the whole-image
         prediction.
@@ -508,7 +508,20 @@ class DepthBackbone:
         edges, where the model is least reliable and where a hard cut would
         leave a ridge.
         """
-        base = self.predict(image, raw_metric=raw_metric)
+        # align: fit each crop's scale and shift to a whole-image prediction.
+        # Needed for a relative model, whose crops each come out on their own
+        # arbitrary scale. A metric model's crops are already in metres, and
+        # the whole-image reference is made at ~518 px: on a large scene it
+        # sees the ground shrunk so far that it is nearly flat, and fitting to
+        # it flattened every crop (HITEC 4096 px: p99 0.61 m). None = align
+        # only when the output is relative.
+        if align is None:
+            align = not (raw_metric and self.is_metric)
+        arr0 = np.asarray(image)
+        if align:
+            base = self.predict(image, raw_metric=raw_metric)
+        else:
+            base = np.zeros(arr0.shape[:2], np.float32)
         h, w = base.shape
         stride = max(1, int(tile * (1.0 - overlap)))
 
@@ -539,7 +552,7 @@ class DepthBackbone:
                 # reference's own spread; a near-constant crop (uniform field,
                 # e.g. open water) has no gradient to fit against, so leave it.
                 lv, rv = local.ravel(), ref.ravel()
-                if lv.std() > 1e-6:
+                if align and lv.std() > 1e-6:
                     a, b = np.polyfit(lv, rv, 1)
                     local = local * a + b
                 acc[y:y + th, x:x + tw] += local * window

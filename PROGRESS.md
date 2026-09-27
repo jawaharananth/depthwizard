@@ -24,13 +24,15 @@ SRTM / Copernicus**; PNG/JPG must still work; ranked against other teams; first 
 - [-] Time-machine change detection (left, by decision; uncommitted code stays in server.py / viewer)
 
 ## Today — the whole technical prototype
-- [~] 1. Cartosat input handling: B,G,R,NIR band order, per-band 16-bit stretch, nodata/black-collar mask, very large scenes, tests -- band order + nodata DONE (8 tests pass; synthetic 16-bit B,G,R,NIR Hyderabad file: bands read 3,2,1, 5.7% border masked, 44k mesh faces cut); full-resolution DSM for large scenes written, test pending
+- [~] 0. BUG FOUND: predict_tiled fitted metric crops to a ~518 px whole-image prediction -> large scenes flattened (HITEC 4096 px p99 0.61 m). Fix in depth_model.py (align off for metric); A/B on 18 held-out tiles running
+- [~] 0b. Run 04 RUNNING on Kaggle: run 03 recipe + ~330 km2 Swiss LiDAR tiles (tall buildings, 30-40 m forest, Alps), benchmark tiles + 1 km buffer held out
+- [~] 1. Cartosat input handling: B,G,R,NIR band order, per-band 16-bit stretch, nodata/black-collar mask, very large scenes, tests -- band order + nodata DONE (8 tests pass; synthetic 16-bit B,G,R,NIR Hyderabad file: bands read 3,2,1, 5.7% border masked, 44k mesh faces cut); full-resolution DSM for large scenes DONE (4096 px HITEC: DSM + sigma written at source grid, model at x1.9, 606 s CPU)
 - [ ] 2. Dark slab (HITEC): check if it is the unmasked border (fixed by 1)
-- [~] 3. 0.6 m test on the same held-out tiles (competitor: +15.4 %) -- running; also fixed: old table used 2 non-held-out tiles
+- [x] 3. 0.6 m test on the same held-out tiles (competitor: +15.4 %) -- 0.6 m upsampled +2.9 % per-building (1.92 vs 1.86 m), native pixels +7.3 %; also fixed: old table used 2 non-held-out tiles
 - [~] 4. Run 03 RUNNING on Kaggle (started 27 Sep ~11:45 IST), init run 02 (long job): GAMUS + DFC on disk + 0.3-1.0 m resolution + Cartosat-like colour augmentation
 - [~] 5. ISRO-style self-evaluation: absolute DSM vs Copernicus and SRTM over Indian scenes (urban HITEC, forest Periyar, hilly Shimla, sparse Telangana farmland) -- scenes fetched, script written
 - [ ] 6. Anchoring study: DSM that averages back to the reference over 30 m cells vs current anchoring; keep the better
-- [ ] 7. Hilly/forest/sparse LiDAR benchmark (NEON) replacing the flat-Jacksonville "hilly" class; four-landscape table
+- [~] 7. Four-landscape LiDAR benchmark -- NEON API now 403, switched to swisstopo LiDAR (open): Zurich 10.8 m, Zermatt 10.9 m, Sihlwald forest 31.2 m (predicts ~0 under 30-40 m trees), farmland 3.6 m; re-run pending the alignment fix. Was: (NEON) replacing the flat-Jacksonville "hilly" class; four-landscape table
 - [!] 8. DFC Track 1 RGB + Reference and Track 3 RGB-2 downloads (Track 1 not on disk yet)
 - [ ] 9. Head-to-head on the competitor's exact 80-tile protocol (per building, whole tile, buildings <= 20 m)
 - [~] 10. Tall-building physics fusion (relief displacement + shadows)
