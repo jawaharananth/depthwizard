@@ -82,7 +82,22 @@ History on the same blind protocol: previous Base checkpoint 4.97 m / 2.82 m / 0
 run 02 through the old post-processing 4.36 m / 2.36 m / 0.49; run 02 with the
 model's own height-above-ground as the product (post-processing now shapes only
 the 3D mesh) **2.82 m / 1.59 m / 0.787**. By terrain class: urban 3.83 m, forest
-4.41 m, "hilly" 1.53 m, sparse 1.86 m RMSE.
+4.41 m, "hilly" 1.53 m, sparse 1.86 m RMSE. ("Hilly" there is a slope class inside
+flat Jacksonville, not real hills; the real hilly case is Zermatt, below.)
+
+**At ISRO's evaluation conditions** (FAQ, 22 Sep 2026: Cartosat-2S at **0.6 m**,
+GeoTIFFs scored as an **absolute DSM**):
+
+| Test | Result | Where |
+|---|---|---|
+| 0.6 m input, 18 held-out DFC tiles, per building | 1.92 m vs 1.86 m native: **+2.9 %** (fed without upsampling: +7.3 %) | `BENCHMARK_RESOLUTION.md` |
+| Four landscapes vs airborne LiDAR at 0.6 m (swisstopo; height above ground) | urban 8.45 m, hilly 8.54 m, forest 25.15 m, sparse 3.08 m (zero-prediction floor 12.31 / 12.73 / 31.48 / 4.13 m) | `BENCHMARK_LANDSCAPES.md` |
+| Absolute DSM vs the same LiDAR elevations | urban 6.9 m, hilly 9.5 m, forest 8.8 m, sparse 2.9 m (Copernicus GLO-30 alone: 8.4 / 11.1 / 9.6 / 3.6 m) | `BENCHMARK_LANDSCAPES.md` |
+
+Measured weaknesses, stated plainly: tall forest (30-40 m trees) and dense tall
+blocks are under-called (bias -23 m in Sihlwald, -4.6 m in Zurich's old town);
+the training data (US towns) holds few of either. Run 04 adds Swiss LiDAR tiles
+(tall buildings, tall forest, mountains) to training to address exactly that.
 
 Projection accuracy (`scripts/projection_accuracy.py`, HITEC, 5,822 buildings): roof outlines as drawn sit a median 0.6 m (one pixel) from the image's edges, p75 0.84 m, p90 1.25 m with the measured relief-displacement correction (1.02 / 1.49 m without it); the ground drape is exact by construction.
 
@@ -101,7 +116,7 @@ assumed and declared, never claimed as metres).
 
 | Tier | Meaning | Source |
 |------|---------|--------|
-| **A** | DEM-anchored — real metric elevation | Copernicus GLO-30 (or SRTM) offset fitted over bare-ground pixels; on by default in `build_city_image.py` for projected-CRS GeoTIFFs. Forest mode (`terrain_from_dem`, opt-in): terrain = GLO-30, canopy-corrected, plus a real canopy-height map |
+| **A** | DEM-anchored — real metric elevation | Terrain from Copernicus GLO-30 (or SRTM) at 30 m, minus the measured fraction k of the model's height that the radar DEM already contains, plus the model's height above ground (`anchoring.py`; k = 0.4 GLO-30, 0.0 SRTM, measured on LiDAR). On by default for georeferenced GeoTIFFs. Forest mode (`terrain_from_dem`, opt-in): terrain = GLO-30, canopy-corrected, plus a real canopy-height map |
 | **B** | Metric heights | shadow calibration `h = L · tan(sun elevation)` (`build_city.py`), a metric checkpoint, or relative depth calibrated to Google Open Buildings heights by robust median log-ratio (`build_city_image.py`, needs >=20 control buildings) |
 | **C** | Relative — shape only, vertical scale assumed and declared | monocular depth alone |
 

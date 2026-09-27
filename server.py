@@ -97,7 +97,10 @@ def _upload_hash(path: str) -> str:
 # size are checked before anything touches them. The pipeline itself refuses
 # non-nadir imagery, but that check happens after a full decode.
 ALLOWED_EXT = {".tif", ".tiff", ".png", ".jpg", ".jpeg"}
-MAX_UPLOAD_BYTES = 200 * 1024 * 1024
+# A full Cartosat-2S scene (ISRO's evaluation sensor) can exceed 200 MB as a
+# 4-band 16-bit GeoTIFF; the pipeline's trained-scale pass is bounded by
+# DW_FULLRES_MAX_MPX, so the byte cap only guards the disk.
+MAX_UPLOAD_BYTES = int(os.environ.get("DW_MAX_UPLOAD_MB", "1024")) * 1024 * 1024
 
 # --- Cost-derived limits -----------------------------------------------------
 #
@@ -109,7 +112,9 @@ MAX_UPLOAD_BYTES = 200 * 1024 * 1024
 # server has been run enough to have real per-megapixel evidence, and
 # predict_total_seconds() is exactly the "no evidence, no guess" function
 # that already backs the progress UI.
-MAX_JOB_SECONDS = 600.0    # a queued build must credibly finish within this
+# The model runs on the source pixels at its trained 0.3 m scale; on a CPU a
+# large 0.6 m scene takes 10-15 min (4096 px HITEC: 606 s for that pass).
+MAX_JOB_SECONDS = float(os.environ.get("DW_MAX_JOB_SECONDS", "1800"))
 MAX_QUEUE_DEPTH = 3        # jobs allowed to be waiting (not counting the one running)
 IP_SPACING_SECONDS = 20.0  # minimum gap between accepted uploads from one address
 

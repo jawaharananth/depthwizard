@@ -133,7 +133,7 @@ def icesat_check(dsm_path, anchor):
     fwd = Transformer.from_crs("EPSG:4326", crs, always_xy=True)
     unit_per_m = 1 / math.cos(math.radians((lat0 + lat1) / 2)) if crs.to_epsg() == 3857 else 1.0
     r_px = max(1, int(round(15 * unit_per_m / abs(tf.a))))
-    ours, dem, truth = [], [], []
+    ours, dem, truth, track = [], [], [], []
     for p in pts:
         x, y = fwd.transform(p["lon"], p["lat"])
         col, row = ~tf * (x, y)
@@ -149,10 +149,24 @@ def icesat_check(dsm_path, anchor):
         ours.append(float(np.nanpercentile(win, 98)))
         dem.append(float(np.asarray(d["dem"]).ravel()[0]))
         truth.append(p["terrain_m"] + (p["canopy_m"] or 0.0))
-    ours, dem, truth = map(np.array, (ours, dem, truth))
+        track.append(f"{p['date']}_{p['track']}")
+    ours, dem, truth, track = map(np.array, (ours, dem, truth, track))
     if len(truth) < 5:
         return {"n": int(len(truth)), "note": "too few ICESat-2 points inside the image"}
-    return {"n": int(len(truth)), "ours": stats(ours, truth), "dem_only": stats(dem, truth)}
+    out = {"n": int(len(truth)), "tracks": int(len(set(track))),
+           "ours": stats(ours, truth), "dem_only": stats(dem, truth)}
+    # AUTOMATIC CONTROL POINTS, tested honestly: a vertical offset fitted on the
+    # other tracks (median of truth - ours) and applied to the held-out track,
+    # for every track in turn. Never evaluated on the points it was fitted on.
+    if len(set(track)) >= 2:
+        corrected = np.full_like(ours, np.nan)
+        for t in set(track):
+            fit = track != t
+            if fit.sum() >= 3:
+                corrected[~fit] = ours[~fit] + np.median(truth[fit] - ours[fit])
+        if np.isfinite(corrected).sum() >= 5:
+            out["ours_icesat_corrected_loto"] = stats(corrected, truth)
+    return out
 
 
 def stats(p, t):
@@ -208,14 +222,17 @@ def main():
                      f"{o['rmse']:.2f} m | {o['mae']:.2f} m | {o['bias']:+.2f} m | {o['corr']:.3f} | "
                      f"{o['n_cells']} | {c['rmse']:.2f} m |" if c else "| - |")
     lines += ["", "Independent check: ICESat-2 ATL08 top surface (ground + canopy, EGM2008)", "",
-              "| scene | anchored to | points | ours RMSE | ours bias | DEM-only RMSE | DEM-only bias |",
-              "|---|---|---|---|---|---|---|"]
+              "| scene | anchored to | points (tracks) | ours RMSE | ours bias | "
+              "ours + ICESat-2 offset, track held out | DEM-only RMSE | DEM-only bias |",
+              "|---|---|---|---|---|---|---|---|"]
     for r in rows:
         c = r.get("icesat2") or {}
         if c.get("ours") and c.get("dem_only"):
-            lines.append(f"| {r['scene']} | {r['anchored_to']} | {c['n']} | {c['ours']['rmse']:.2f} m | "
-                         f"{c['ours']['bias']:+.2f} m | {c['dem_only']['rmse']:.2f} m | "
-                         f"{c['dem_only']['bias']:+.2f} m |")
+            lo = c.get("ours_icesat_corrected_loto")
+            lines.append(f"| {r['scene']} | {r['anchored_to']} | {c['n']} ({c.get('tracks', '?')}) | "
+                         f"{c['ours']['rmse']:.2f} m | {c['ours']['bias']:+.2f} m | "
+                         f"{(format(lo['rmse'], '.2f') + ' m') if lo else '-'} | "
+                         f"{c['dem_only']['rmse']:.2f} m | {c['dem_only']['bias']:+.2f} m |")
         else:
             lines.append(f"| {r['scene']} | {r['anchored_to']} | {c.get('n', 0)} | "
                          f"{c.get('note', '-')} | | | |")

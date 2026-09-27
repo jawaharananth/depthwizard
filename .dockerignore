@@ -87,3 +87,7 @@ LICENSE
 !scenes/periyar_forest/**
 
 archive/private_notes/
+data/
+training/
+dist_backend/
+archive/

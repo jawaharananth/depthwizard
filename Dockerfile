@@ -31,6 +31,7 @@ COPY server.py prebuild.py progress.py build_city_image.py \
      ov_backend.py overlay_rejection.py region_footprints.py \
      roof_structure.py segmentation.py shadow_correction.py \
      sun_from_shadows.py terrain_classify.py terrain_maps.py vlm_audit.py \
+     anchoring.py change_detection.py input_bands.py terrain_analysis.py \
      dashboard.html ./
 
 # calibration/ is a package (conformal.py reads conformal_quantile.json).
@@ -38,6 +39,8 @@ COPY calibration/ ./calibration/
 # tools/build_context_city.py and tools/sr_texture.py are lazily imported
 # by build_city_image.py via sys.path.
 COPY tools/ ./tools/
+# measure_image_lean is lazily imported from scripts/ by build_city_image.py.
+COPY scripts/measure_image_lean.py ./scripts/
 COPY viewer/ ./viewer/
 COPY checkpoints/height_best/ ./checkpoints/height_best/
 # The two demo scenes served by /scenes/ (~520 MB together). Drop these
