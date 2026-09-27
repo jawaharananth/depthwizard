@@ -129,6 +129,7 @@
     <button id="btn-heatmap">HEATMAP</button>
     <button id="btn-conf">CONFIDENCE</button>
     <button id="btn-err">VS LiDAR</button>
+    <button id="btn-change" style="display:none;" title="Height change against an earlier upload of the same place (red = lost height, blue = gained)">CHANGE</button>
   </div>
   <div class="row">
     <button id="btn-measure">Measure Height</button>
@@ -1602,6 +1603,7 @@ function withTrueScale(fn) {
   return result;
 }
 let rgbTexture = null, heatmapTexture = null, confidenceTexture = null, errorTexture = null, normalTexture = null;
+let changeTexture = null;   // terrain_change.png, staged by /api/change
 // Read-only state probe for automated capture/diagnostics.
 const _dwT = { t0: performance.now() };
 window.__dwDebug = () => ({
@@ -2304,13 +2306,23 @@ document.getElementById("btn-collapse").addEventListener("click", () => {
 document.getElementById("btn-rgb").addEventListener("click", () => setTextureMode("rgb"));
 document.getElementById("btn-heatmap").addEventListener("click", () => setTextureMode("heatmap"));
 document.getElementById("btn-conf").addEventListener("click", () => setTextureMode("confidence"));
+// CHANGE view: only when this scene was compared with an earlier upload.
+if (SCENE_META && SCENE_META.change) {
+  const cbtn = document.getElementById("btn-change");
+  cbtn.style.display = "";
+  textureLoader.load(`${BASE}/terrain_change.png`, (t) => {
+    t.colorSpace = THREE.SRGBColorSpace; changeTexture = t;
+    if (new URLSearchParams(location.search).get("mode") === "change") setTextureMode("change");
+  });
+  cbtn.addEventListener("click", () => setTextureMode("change"));
+}
 document.getElementById("btn-err").addEventListener("click", () => setTextureMode("error"));
 
 function setTextureMode(mode) {
   if (!groundMesh) return;
   const byMode = { rgb: rgbTexture, heatmap: heatmapTexture,
                    confidence: confidenceTexture, error: errorTexture,
-                   slope: slopeTexture };
+                   slope: slopeTexture, change: changeTexture };
   // Fall back to RGB rather than returning early: a missing diagnostic
   // raster should still leave a usable scene on screen, not a dead button.
   const tex = byMode[mode] || rgbTexture;
@@ -2336,13 +2348,23 @@ function setTextureMode(mode) {
   // depend on where the sun happens to be.
   const sb = document.getElementById("btn-slope");
   if (sb) sb.classList.toggle("active", mode === "slope");
-  const diag = (mode === "confidence" || mode === "error" || mode === "slope");
+  const chb = document.getElementById("btn-change");
+  if (chb) chb.classList.toggle("active", mode === "change");
+  const diag = (mode === "confidence" || mode === "error" || mode === "slope" || mode === "change");
   if (groundMesh.material === groundDiagMat) groundDiagMat.envMapIntensity = diag ? 0.0 : 1.0;
   scene.traverse((o2) => {
     if (o2.isMesh && o2 !== groundMesh) o2.visible = !diag;
   });
   const note = document.getElementById("measure-panel");
-  if (note && mode === "confidence") {
+  if (note && mode === "change" && SCENE_META && SCENE_META.change) {
+    const c = SCENE_META.change;
+    note.textContent = `Change vs upload ${c.before_job}: red = lost height, blue = gained. `
+      + `Only change above ${c.threshold_m} m (the measurement noise of two surfaces) is shown. `
+      + `Lost ${Math.round(c.loss_area_m2)} m2, gained ${Math.round(c.gain_area_m2)} m2.`;
+  } else if (note && mode === "confidence" && SCENE_META && SCENE_META.uncertainty) {
+    note.textContent = "Uncertainty: blue = well constrained, red = uncertain (0-8 m). "
+      + "Hover for +/- metres (1 sigma, calibrated on held-out LiDAR).";
+  } else if (note && mode === "confidence") {
     note.textContent = "Confidence: green = views agree, height well constrained. "
       + "Red = weak photometric support (flat roof, shadow, water, single view). "
       + "This is the plane sweep's own NCC, not a model guess.";

@@ -680,6 +680,10 @@ class Handler(BaseHTTPRequestHandler):
                 shutil.copyfileobj(f, self.wfile, 1 << 20)
             return
 
+        if route == "/api/change":
+            self._change(urllib.parse.parse_qs(u.query))
+            return
+
         if route == "/api/calibration":
             self._json(200, {"summary": prog.calibration_summary()})
             return
@@ -811,10 +815,19 @@ class Handler(BaseHTTPRequestHandler):
         # ImageFile.LOAD_TRUNCATED_IMAGES, checked), so this is a real,
         # meaningful check, not a formality.
         try:
-            from PIL import Image
-            with Image.open(dest) as im:
-                w, h = im.size
-                im.load()
+            if ext in (".tif", ".tiff"):
+                # PIL cannot decode multi-band 16-bit TIFFs, which satellite
+                # products often are (and the pipeline reads fine), so TIFFs
+                # are validated with rasterio: every band is fully read.
+                import rasterio
+                with rasterio.open(dest) as ds:
+                    w, h = ds.width, ds.height
+                    ds.read()
+            else:
+                from PIL import Image
+                with Image.open(dest) as im:
+                    w, h = im.size
+                    im.load()
             megapixels = (w * h) / 1e6
         except Exception as e:
             os.remove(dest)
@@ -844,6 +857,55 @@ class Handler(BaseHTTPRequestHandler):
             _jobs[job_id] = {"job": job}
         threading.Thread(target=run_job, args=(job,), daemon=True).start()
         self._json(200, {"job": job_id})
+
+    def _change(self, qs) -> None:
+        """Change between two uploads of the same ground (e.g. before/after an
+        event). Stages a CHANGE view onto the AFTER scene and returns the stats.
+
+        The detection threshold comes from the measured per-building height
+        accuracy (change smaller than the measurement error is not reported);
+        change_detection.py documents why there is no default.
+        """
+        import change_detection as cd
+        from PIL import Image
+        before = (qs.get("before") or [None])[0]
+        after = (qs.get("after") or [None])[0]
+        try:
+            accuracy = float((qs.get("accuracy") or ["2.19"])[0])
+        except ValueError:
+            accuracy = 2.19
+        if not before or not after or before == after:
+            self._json(400, {"error": "pass ?before=<job id>&after=<job id> (two different uploads)"})
+            return
+        b_dsm, a_dsm = _job_dsm(before), _job_dsm(after)
+        if not b_dsm or not a_dsm:
+            self._json(404, {"error": "both jobs must have finished and produced a DSM"})
+            return
+        code, msg = _ensure_staged(after)
+        if code != 200:
+            self._json(code, {"error": msg})
+            return
+        try:
+            res = cd.difference(b_dsm, a_dsm, accuracy_m=accuracy)
+        except Exception as e:
+            self._json(400, {"error": f"could not compare these two DSMs: {e}"})
+            return
+        stats = dict(res["stats"], before_job=before, after_job=after,
+                     accuracy_source="held-out per-building RMSE of the current model"
+                     if accuracy == 2.19 else "caller-supplied")
+        rgb = cd.colourise(res)
+        Image.fromarray(rgb).save(os.path.join(OUTPUT_DIR, "terrain_change.png"))
+        sj = os.path.join(OUTPUT_DIR, "scene.json")
+        try:
+            with open(sj) as f:
+                meta = json.load(f)
+            meta["change"] = stats
+            with open(sj, "w") as f:
+                json.dump(meta, f, indent=2)
+        except Exception:
+            pass
+        stats["view"] = f"/viewer/index.html?job={urllib.parse.quote(after)}&mode=change"
+        self._json(200, stats)
 
     def _gcp(self, u) -> None:
         """Recalibrate a scene's DSM from Ground Control Points.
