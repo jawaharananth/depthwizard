@@ -2729,7 +2729,12 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
                            ("_heatmap.png", "terrain_heatmap.png")):
             if os.path.exists(stem + _suf):
                 shutil.copy2(stem + _suf, os.path.join(VIEWER_DIR, _dst))
-        shutil.copy2(stem + ".glb", os.path.join(VIEWER_DIR, "terrain.glb"))
+        # the viewer's copy is meshopt-compressed (~1/3 the bytes, same geometry
+        # to ~2 cm); the full-precision GLB stays in final_out/
+        import glb_compress
+        _how = glb_compress.compress(stem + ".glb", os.path.join(VIEWER_DIR, "terrain.glb"))
+        print(f"      3D model for the viewer: {_how} "
+              f"({os.path.getsize(os.path.join(VIEWER_DIR, 'terrain.glb')) / 1e6:.0f} MB)")
         # The PNG texture is always staged (other tools read it); a display
         # texture ships as JPEG -- photographic content, ~10x smaller -- and
         # scene.json names it so the viewer loads that instead.

@@ -43,10 +43,14 @@ COPY tools/ ./tools/
 COPY scripts/measure_image_lean.py ./scripts/
 COPY viewer/ ./viewer/
 COPY checkpoints/height_best/ ./checkpoints/height_best/
-# The two demo scenes served by /scenes/ (~520 MB together). Drop these
-# two lines for a smaller image; the dashboard then lists no scenes.
+# The seven showcase places served by /scenes/ (viewer/places.json).
 COPY scenes/hitec_2x2/ ./scenes/hitec_2x2/
 COPY scenes/periyar_forest/ ./scenes/periyar_forest/
+COPY scenes/mumbai_lower_parel/ ./scenes/mumbai_lower_parel/
+COPY scenes/darjeeling/ ./scenes/darjeeling/
+COPY scenes/gangtok/ ./scenes/gangtok/
+COPY scenes/kanha/ ./scenes/kanha/
+COPY scenes/jaisalmer_village/ ./scenes/jaisalmer_village/
 
 ENV PYTHONUNBUFFERED=1
 EXPOSE 8080

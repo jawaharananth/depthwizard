@@ -1,0 +1,6 @@
+{
+  "name": "depthwizard-gltfpack",
+  "private": true,
+  "description": "meshopt compression of the scene GLB (glb_compress.py)",
+  "dependencies": { "gltfpack": "0.24.0" }
+}

@@ -1,0 +1,13 @@
+#cloud-config
+# First boot of the DepthWizard VM: Docker Engine + compose plugin, and a
+# folder for the app bundle that deploy.ps1 copies in.
+package_update: true
+packages:
+  - ca-certificates
+  - curl
+runcmd:
+  - curl -fsSL https://get.docker.com | sh
+  - usermod -aG docker azureuser
+  - systemctl enable --now docker
+  - mkdir -p /opt/depthwizard
+  - chown azureuser:azureuser /opt/depthwizard

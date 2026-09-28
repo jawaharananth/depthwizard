@@ -98,6 +98,7 @@ SHIM = r"""<script>
   function key(u) {
     try {
       var p = decodeURIComponent(new URL(u, location.href).pathname);
+      if (p.slice(-19) === '/viewer/places.json') return '/viewer/places.json';
       var i = p.indexOf('/scenes/');
       return i >= 0 ? p.slice(i) : null;
     } catch (e) { return null; }
@@ -183,6 +184,15 @@ def main():
             typ = "model/gltf-binary"
         blobs.append(f'<script type="application/octet-stream" data-dwpath="/scenes/{name}/{f}" '
                      f'data-type="{typ}">{b64}</script>')
+
+    # the place list: just this place, so the panel shows it rather than an error
+    try:
+        _pl = [x for x in json.load(open(os.path.join(VIEWER, "places.json"), encoding="utf-8"))
+               if x.get("id") == name]
+    except Exception:
+        _pl = []
+    blobs.append('<script type="application/octet-stream" data-dwpath="/viewer/places.json" '
+                 'data-type="application/json">' + base64.b64encode(json.dumps(_pl).encode()).decode() + '</script>')
 
     html = re.sub(r'<script type="importmap">.*?</script>',
                   lambda _: '<script type="importmap">' + json.dumps(imap) + "</script>", html, count=1, flags=re.S)

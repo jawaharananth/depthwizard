@@ -16,6 +16,10 @@
 --extra-index-url https://download.pytorch.org/whl/cpu
 
 torch==2.13.0
+# the model's image transform runs through torchvision; ONNX Runtime is the
+# CPU fast path for the model's 518 px tiles (about 2x PyTorch, identical output)
+torchvision==0.28.0
+onnxruntime==1.30.0
 transformers==5.15.1
 numpy==2.5.2
 opencv-python-headless==5.0.0.93

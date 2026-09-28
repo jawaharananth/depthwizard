@@ -1615,6 +1615,14 @@ window.__dwDebug = () => ({
   rgb: rgbTexture ? [rgbTexture.image?.width, rgbTexture.image?.height] : null,
   normal: !!normalTexture, ao: !!aoTexture,
   groundMap: !!(groundMesh && groundMesh.material && groundMesh.material.map),
+  // a few ground vertices (position, uv) by index, to check the loaded grid against the file
+  groundProbe: groundMesh ? (() => {
+    const p = groundMesh.geometry.attributes.position, u = groundMesh.geometry.attributes.uv, n = p.count;
+    const side = Math.round(Math.sqrt(n));
+    return [0, 1, side, (n >> 1) + 7, n - 1].map((i) =>
+      [i, p.getX(i), p.getY(i), p.getZ(i), u ? u.getX(i) : null, u ? u.getY(i) : null]);
+  })() : null,
+  plinth: !!scene.getObjectByName("terrain_plinth"),
   buildingUV: (() => { let n = 0, u = 0; cityRoot?.traverse((c) => {
     if (c.isMesh && c.name?.startsWith("building_")) { n++; if (c.geometry.attributes.uv) u++; } });
     return [n, u]; })(),
@@ -1626,6 +1634,99 @@ const textureLoader = new THREE.TextureLoader();
 const gltfLoader = new GLTFLoader();
 // Scenes may ship meshopt-compressed (gltfpack): same geometry, ~5x smaller to load.
 gltfLoader.setMeshoptDecoder(MeshoptDecoder);
+// gltfpack keeps each object's name on a parent node and calls the mesh
+// itself mesh_N; every lookup below reads the mesh's own name, so it is
+// given back here, once, for every model this loader parses.
+{
+  const _parse = gltfLoader.parse.bind(gltfLoader);
+  gltfLoader.parse = (data, path, onLoad, onError) => _parse(data, path, (g) => {
+    g.scene.traverse((o) => {
+      if (o.isMesh && /^mesh_\d+$/.test(o.name) && o.parent && o.parent.name) o.name = o.parent.name;
+    });
+    unpackQuantized(g.scene);
+    onLoad(g);
+  }, onError);
+}
+
+// gltfpack also stores positions as 16-bit integers behind a node scale, UVs
+// scaled behind a KHR_texture_transform, and reorders vertices for the GPU
+// cache. The code below reads raw attributes in scene units, swaps materials
+// (dropping the texture transform) and walks the ground as a row-major grid
+// (plinth, flood fill), so each compressed mesh is given back as the plain
+// float geometry the pipeline wrote: same vertices, scene-space positions,
+// true UVs, and the ground in its original grid order.
+function unpackQuantized(root) {
+  root.updateMatrixWorld(true);
+  const toRoot = new THREE.Matrix4().copy(root.matrixWorld).invert();
+  const ident = new THREE.Matrix4();
+  const meshes = [];
+  root.traverse((o) => { if (o.isMesh) meshes.push(o); });
+  const toFloat = (attr) => {
+    const s = attr.itemSize, out = new Float32Array(attr.count * s);
+    const get = [attr.getX, attr.getY, attr.getZ, attr.getW];
+    for (let i = 0; i < attr.count; i++) for (let k = 0; k < s; k++) out[i * s + k] = get[k].call(attr, i);
+    return new THREE.Float32BufferAttribute(out, s);
+  };
+  for (const m of meshes) {
+    const geo = m.geometry;
+    const names = Object.keys(geo.attributes);
+    if (!names.some((k) => geo.attributes[k].isInterleavedBufferAttribute ||
+                           !(geo.attributes[k].array instanceof Float32Array))) continue;
+    for (const k of names) geo.setAttribute(k, toFloat(geo.attributes[k]));
+    const M = new THREE.Matrix4().multiplyMatrices(toRoot, m.matrixWorld);
+    geo.attributes.position.applyMatrix4(M);
+    if (geo.attributes.normal) geo.attributes.normal.applyNormalMatrix(new THREE.Matrix3().getNormalMatrix(M));
+    const mats = Array.isArray(m.material) ? m.material : [m.material];
+    const map = mats[0] && mats[0].map;
+    if (geo.attributes.uv && map) {
+      map.updateMatrix();
+      geo.attributes.uv.applyMatrix3(map.matrix);
+    }
+    for (const mat of mats) for (const key of ["map", "normalMap", "roughnessMap", "metalnessMap", "aoMap", "emissiveMap"]) {
+      const t = mat && mat[key];
+      if (t) { t.offset.set(0, 0); t.repeat.set(1, 1); t.rotation = 0; t.center.set(0, 0); t.updateMatrix(); }
+    }
+    m.position.set(0, 0, 0); m.quaternion.identity(); m.scale.set(1, 1, 1);
+    m.updateMatrix();
+    const parentToRoot = new THREE.Matrix4().multiplyMatrices(toRoot, m.parent.matrixWorld);
+    if (!parentToRoot.equals(ident)) root.add(m);
+    if (m.name === "ground") restoreGridOrder(geo);
+    geo.computeBoundingBox();
+    geo.computeBoundingSphere();
+  }
+  root.updateMatrixWorld(true);
+}
+
+// The ground is written one vertex per DTM cell, row-major: x rising along a
+// row, rows running from the north edge (largest z) south. Each vertex's cell
+// is recovered from its own position; anything that is not a full regular
+// grid is left in the order it came.
+function restoreGridOrder(geo) {
+  const p = geo.attributes.position, n = p.count, side = Math.round(Math.sqrt(n));
+  if (side < 2 || side * side !== n) return;
+  const bb = new THREE.Box3().setFromBufferAttribute(p);
+  const dx = (bb.max.x - bb.min.x) / (side - 1), dz = (bb.max.z - bb.min.z) / (side - 1);
+  if (!(dx > 0 && dz > 0)) return;
+  const dest = new Uint32Array(n), seen = new Uint8Array(n);
+  for (let i = 0; i < n; i++) {
+    const fc = (p.getX(i) - bb.min.x) / dx, fr = (bb.max.z - p.getZ(i)) / dz;
+    const c = Math.round(fc), r = Math.round(fr);
+    if (Math.abs(fc - c) > 0.3 || Math.abs(fr - r) > 0.3) return;
+    const k = r * side + c;
+    if (seen[k]) return;
+    seen[k] = 1; dest[i] = k;
+  }
+  for (const key of Object.keys(geo.attributes)) {
+    const a = geo.attributes[key], s = a.itemSize, src = a.array, out = new Float32Array(src.length);
+    for (let i = 0; i < n; i++) for (let j = 0; j < s; j++) out[dest[i] * s + j] = src[i * s + j];
+    geo.setAttribute(key, new THREE.Float32BufferAttribute(out, s));
+  }
+  if (geo.index) {
+    const src = geo.index.array, out = new Uint32Array(src.length);
+    for (let t = 0; t < src.length; t++) out[t] = dest[src[t]];
+    geo.setIndex(new THREE.BufferAttribute(out, 1));
+  }
+}
 
 // The problem statement asks for the ORIGINAL optical image on the mesh, so
 // that is the default; a sharper same-bounds display texture (when the scene
@@ -1845,7 +1946,8 @@ Promise.all([
       // Default is the modelled tile ALONE: nothing flat or simplified is
       // drawn outside it. The real surroundings are opt-in with ?context=1.
       const SHOW_CONTEXT = new URLSearchParams(location.search).get("context") === "1";
-      if (groundMesh) addTerrainPlinth(groundMesh, maxDim);
+      // presentation only: a failure here must never stop the scene loading
+      if (groundMesh) { try { addTerrainPlinth(groundMesh, maxDim); } catch (e) { console.warn("plinth skipped:", e); } }
       const ctx = SHOW_CONTEXT && SCENE_META && SCENE_META.context;
       if (groundMesh && ctx) {
         // Ground height along the tile's outer edge, so the flat context

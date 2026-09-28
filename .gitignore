@@ -221,3 +221,4 @@ dist/
 checkpoints/*/model*.onnx
 checkpoints/*/_sigma_fit_samples.npz
 work/
+tools/gltfpack/node_modules/

@@ -92,3 +92,13 @@ training/
 dist_backend/
 archive/
 work/
+!scenes/mumbai_lower_parel
+!scenes/mumbai_lower_parel/**
+!scenes/darjeeling
+!scenes/darjeeling/**
+!scenes/gangtok
+!scenes/gangtok/**
+!scenes/kanha
+!scenes/kanha/**
+!scenes/jaisalmer_village
+!scenes/jaisalmer_village/**
