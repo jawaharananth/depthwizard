@@ -67,6 +67,7 @@ RESULT_CACHE_DIR = os.path.join(ROOT, "cache", "uploads")
 # The checkpoint's licensing marker (with its behavioural fingerprint) is
 # hashed too: swapping in a retrained model must invalidate cached results.
 CODE_FILES = ("build_city_image.py", "dem_source.py", "depth_model.py", "city_model.py",
+              "hover_export.py", "anchoring.py", "input_bands.py",
               os.path.join("checkpoints", "height_best", "metric_ok.json"))
 
 
@@ -476,8 +477,9 @@ def run_job(job: Job) -> None:
         if _loaded_code_version is None:
             _loaded_code_version = _cv
         elif _cv != _loaded_code_version:
-            import importlib, dem_source
-            importlib.reload(dem_source)
+            import importlib, dem_source, hover_export, anchoring, input_bands
+            for _m in (dem_source, hover_export, anchoring, input_bands):
+                importlib.reload(_m)
             bci = importlib.reload(bci)
             _loaded_code_version = _cv
         try:

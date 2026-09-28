@@ -44,6 +44,13 @@ def _encode(a: np.ndarray) -> bytes:
     return q.astype("<u2").tobytes()
 
 
+def _decode(path: str, h: int, w: int) -> np.ndarray:
+    """Inverse of _encode: metres, NaN where the file says no data. Reading the
+    code as a number turned a masked image border into 655.35 m walls."""
+    q = np.fromfile(path, dtype="<u2").reshape(h, w)
+    return np.where(q == NODATA, np.nan, q.astype(np.float32) / 100).astype(np.float32)
+
+
 def write(out_dir: str, agl: np.ndarray, sigma: np.ndarray | None,
           ground: np.ndarray | None = None) -> dict:
     """Write hover_agl.u16 (+ hover_sigma.u16, + hover_ground.f32); returns the scene.json entry.
@@ -157,14 +164,15 @@ def burn_buildings(out_dir: str, geojson_path: str, affine6, image_wh) -> int:
     if not hs:
         return 0
     bh = rasterio.features.rasterize(hs, out_shape=(h, w), transform=tf, fill=np.nan, dtype="float32")
-    agl = np.fromfile(os.path.join(out_dir, hv["agl"]), dtype="<u2").reshape(h, w).astype(np.float32) / 100
-    agl = np.where(np.isfinite(bh), bh, agl)
+    agl = _decode(os.path.join(out_dir, hv["agl"]), h, w)
+    # a building only where there is image under it: no-data stays no-data
+    agl = np.where(np.isfinite(bh) & np.isfinite(agl), bh, agl)
     with open(os.path.join(out_dir, hv["agl"]), "wb") as f:
         f.write(_encode(agl))
     if ss and hv.get("sigma"):
         bs = rasterio.features.rasterize(ss, out_shape=(h, w), transform=tf, fill=np.nan, dtype="float32")
-        sg = np.fromfile(os.path.join(out_dir, hv["sigma"]), dtype="<u2").reshape(h, w).astype(np.float32) / 100
-        sg = np.where(np.isfinite(bs), bs, sg)
+        sg = _decode(os.path.join(out_dir, hv["sigma"]), h, w)
+        sg = np.where(np.isfinite(bs) & np.isfinite(sg), bs, sg)
         with open(os.path.join(out_dir, hv["sigma"]), "wb") as f:
             f.write(_encode(sg))
     else:

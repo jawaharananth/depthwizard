@@ -4,12 +4,12 @@ ISRO evaluates on Cartosat-2S at 0.6 m. Each held-out tile's 0.25 m ortho is are
 
 | input | per-pixel RMSE | MAE | pooled corr | per-building RMSE | bias | buildings <= 20 m | vs native |
 |---|---|---|---|---|---|---|---|
-| 0.25 m native | 2.81 m | 1.58 m | 0.754 | 1.86 m | -0.06 m | 1.86 m | +0.0 % |
-| 0.50 m, upsampled | 2.79 m | 1.57 m | 0.758 | 1.88 m | -0.19 m | 1.87 m | +1.0 % |
-| 0.60 m, upsampled | 2.79 m | 1.57 m | 0.758 | 1.92 m | -0.35 m | 1.89 m | +2.9 % |
-| 0.60 m, native pixels | 2.85 m | 1.52 m | 0.747 | 2.00 m | -0.07 m | 1.99 m | +7.3 % |
-| 0.75 m, upsampled | 2.81 m | 1.59 m | 0.756 | 2.00 m | -0.56 m | 1.95 m | +7.6 % |
-| 1.00 m, upsampled | 2.93 m | 1.68 m | 0.733 | 2.30 m | -1.00 m | 2.23 m | +23.6 % |
+| 0.25 m native | 2.80 m | 1.55 m | 0.758 | 1.88 m | -0.08 m | 1.87 m | +0.0 % |
+| 0.50 m, upsampled | 2.80 m | 1.55 m | 0.757 | 1.88 m | -0.08 m | 1.86 m | -0.4 % |
+| 0.60 m, upsampled | 2.81 m | 1.56 m | 0.756 | 1.87 m | -0.08 m | 1.86 m | -0.6 % |
+| 0.60 m, native pixels | 2.84 m | 1.52 m | 0.749 | 1.99 m | +0.09 m | 1.98 m | +5.4 % |
+| 0.75 m, upsampled | 2.81 m | 1.56 m | 0.756 | 1.85 m | -0.08 m | 1.84 m | -1.8 % |
+| 1.00 m, upsampled | 2.82 m | 1.57 m | 0.754 | 1.87 m | -0.06 m | 1.86 m | -0.5 % |
 
 Simulated by downsampling WorldView-3, so this measures the resolution gap, not the sensor gap.
 

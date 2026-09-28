@@ -90,7 +90,7 @@ GeoTIFFs scored as an **absolute DSM**):
 
 | Test | Result | Where |
 |---|---|---|
-| 0.6 m input, 18 held-out DFC tiles, per building | 1.92 m vs 1.86 m native: **+2.9 %** (fed without upsampling: +7.3 %) | `BENCHMARK_RESOLUTION.md` |
+| 0.6 m input, 18 held-out DFC tiles, per building (run 03) | 1.87 m vs 1.88 m native: **-0.6 %**, flat from 0.25 m to 1.0 m (fed without upsampling: +5.4 %). Run 02 was +2.9 %; the sensor-gap training closed it | `BENCHMARK_RESOLUTION.md` |
 | Four landscapes vs airborne LiDAR at 0.6 m (swisstopo; height above ground) | urban 8.45 m, hilly 8.54 m, forest 25.15 m, sparse 3.08 m (zero-prediction floor 12.31 / 12.73 / 31.48 / 4.13 m) | `BENCHMARK_LANDSCAPES.md` |
 | Absolute DSM vs the same LiDAR elevations | urban 6.9 m, hilly 9.5 m, forest 8.8 m, sparse 2.9 m (Copernicus GLO-30 alone: 8.4 / 11.1 / 9.6 / 3.6 m) | `BENCHMARK_LANDSCAPES.md` |
 
