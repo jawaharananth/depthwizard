@@ -112,6 +112,10 @@ def main():
     for ck in sys.argv[1:]:
         ck = os.path.abspath(ck)
         dm.DepthBackbone.METRIC_CKPT = ck
+        # the backbone is a flyweight keyed on its constructor args, not on
+        # METRIC_CKPT: without this every checkpoint after the first would be
+        # scored with the first one's weights
+        dm.DepthBackbone._instances.clear()
         bb = dm.DepthBackbone(metric=True)
         tag = os.path.basename(ck)
         print(f"== {tag}", flush=True)
