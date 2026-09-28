@@ -76,6 +76,8 @@ GROUND_GRID = 700
 # Relief (1st-99th percentile of the 30 m-smoothed terrain map) from which a
 # scene's 3D ground follows the terrain instead of a flat plane.
 RELIEF_MODE_M = 20.0
+# Smallest side an image may have: 256 px at 0.6 m is ~150 m, a few blocks.
+MIN_SIDE_PX = 256
 
 
 MIN_EDGE_PROBES = 20   # below this the direction scan has too little signal to trust
@@ -110,11 +112,25 @@ def _poly_crop_mask(poly, H: int, W: int):
     return (slice(y0, y1), slice(x0, x1)), mask.astype(bool)
 
 
-def _mask_shift(a: np.ndarray, b: np.ndarray, max_shift: int):
-    """(dx, dy, peak): integer shift that best aligns mask b onto mask a."""
-    fa = np.fft.rfft2(a - a.mean())
-    fb = np.fft.rfft2(b - b.mean())
-    xc = np.fft.fftshift(np.fft.irfft2(fa * np.conj(fb), s=a.shape))
+def _analysis_stretch(img: np.ndarray, valid: np.ndarray = None) -> np.ndarray:
+    """Per-band 2-98th percentile stretch over the valid pixels (uint8 RGB)."""
+    out = np.empty_like(img)
+    for b in range(img.shape[2]):
+        band = img[..., b].astype(np.float32)
+        v = band[valid] if (valid is not None and valid.shape == band.shape and valid.any()) else band
+        lo, hi = np.percentile(v[::7] if v.size > 4_000_000 else v, [2, 98])
+        out[..., b] = np.clip((band - lo) / max(hi - lo, 1.0) * 255.0, 0, 255).astype(np.uint8)
+    return out
+
+
+def _mask_shift(a: np.ndarray, b: np.ndarray, max_shift: int, fa=None):
+    """(dx, dy, peak): integer shift that best aligns mask b onto mask a.
+    fa: a's transform, when the caller aligns several b against one a."""
+    import scipy.fft as _sfft                      # same double-precision FFT, all cores
+    if fa is None:
+        fa = _sfft.rfft2(a - a.mean(), workers=-1)
+    fb = _sfft.rfft2(b - b.mean(), workers=-1)
+    xc = np.fft.fftshift(_sfft.irfft2(fa * np.conj(fb), s=a.shape, workers=-1))
     cy, cx = a.shape[0] // 2, a.shape[1] // 2
     win = xc[cy - max_shift:cy + max_shift + 1, cx - max_shift:cx + max_shift + 1]
     iy, ix = np.unravel_index(np.argmax(win), win.shape)
@@ -152,11 +168,13 @@ def estimate_ob_alignment(ob_grid: np.ndarray, footprints: list, gsd_m: float):
         return None
     max_shift = int(min(160, 60.0 / max(gsd_m, 1e-6)))
     hs, dxs, dys, ws = [], [], [], []
+    import scipy.fft as _sfft
+    _fa = _sfft.rfft2(roofs - roofs.mean(), workers=-1)      # the roofs, transformed once
     for lo, hi in [(8, 16), (16, 24), (24, 34), (34, 46), (46, 60), (60, 120)]:
         band = ((ob_grid >= lo) & (ob_grid < hi)).astype(np.float32)
         if band.sum() < 1500:
             continue
-        dx, dy, peak = _mask_shift(roofs, band, max_shift)
+        dx, dy, peak = _mask_shift(roofs, band, max_shift, fa=_fa)
         hs.append(0.5 * (lo + hi)); dxs.append(dx); dys.append(dy); ws.append(peak)
     if len(hs) < 3:
         return None
@@ -281,26 +299,25 @@ def _fuse_ob_grid(dsm, ground, footprints, src_transform, src_crs, info, r, epsg
             # ground), so it is left to the depth model rather than
             # inheriting a neighbour's 70 m.
             (ox, oy), (vx, vy) = align["offset_px"], align["lean_px_per_m"]
-            consistent = []
             min_ok = max(4, int(OPEN_BUILDINGS_MIN_FOOTPRINT_COVERAGE * ys.size))
-            # Neighbouring candidate heights usually round to the same pixel
-            # shift, so each shift's sample median is computed once.
-            shift_f = {}
-            for h in cand:
-                sx, sy = int(round(ox + vx * h)), int(round(oy + vy * h))
-                if (sx, sy) not in shift_f:
-                    f = None
-                    yy, xx = ys - sy, xs - sx
-                    ok = (yy >= 0) & (yy < H) & (xx >= 0) & (xx < W)
-                    if ok.sum() >= min_ok:
-                        v = dst[yy[ok], xx[ok]]
-                        v = v[np.isfinite(v)]
-                        if v.size >= 4:
-                            f = float(np.median(v))
-                    shift_f[(sx, sy)] = f
-                f = shift_f[(sx, sy)]
-                if f is not None and abs(f - h) <= max(2.0, 0.12 * h):
-                    consistent.append(f)
+            # Every candidate height at once: neighbouring heights round to
+            # the same pixel shift, so each distinct shift's sample median is
+            # computed once, for all shifts in one array (same rounding --
+            # round-half-even -- and same candidate order as a loop).
+            sxy = np.stack([np.rint(ox + vx * cand), np.rint(oy + vy * cand)], 1).astype(np.int64)
+            uniq, inv = np.unique(sxy, axis=0, return_inverse=True)
+            yy = ys[None, :] - uniq[:, 1:2]
+            xx = xs[None, :] - uniq[:, 0:1]
+            ok = (yy >= 0) & (yy < H) & (xx >= 0) & (xx < W)
+            vals = np.where(ok, dst[np.clip(yy, 0, H - 1), np.clip(xx, 0, W - 1)], np.nan)
+            n_fin = np.isfinite(vals).sum(1)
+            use = (ok.sum(1) >= min_ok) & (n_fin >= 4)
+            med = np.full(len(uniq), np.nan)
+            if use.any():
+                med[use] = np.nanmedian(vals[use], axis=1)
+            f_all = med[np.asarray(inv).ravel()]
+            keep = np.isfinite(f_all) & (np.abs(f_all - cand) <= np.maximum(2.0, 0.12 * cand))
+            consistent = [float(v) for v in f_all[keep]]
             real_h = None
             if consistent:
                 # Tie-break with the depth model's own metric height, which is
@@ -660,11 +677,12 @@ def check_nadir(image_np: np.ndarray) -> dict:
 
     n, lab, stats, _ = cv2.connectedComponentsWithStats(mask, 8)
     best_i, span = None, 0.0
-    for i in range(1, n):
-        comp = lab == i
-        if not comp[0].any():          # sky must touch the top edge
+    for i in np.unique(lab[0]):        # sky must touch the top edge: only those are tested
+        if i == 0:
             continue
-        s_i = comp.any(axis=0).sum() / float(w)
+        x, y, bw_, bh_ = (stats[i, cv2.CC_STAT_LEFT], stats[i, cv2.CC_STAT_TOP],
+                          stats[i, cv2.CC_STAT_WIDTH], stats[i, cv2.CC_STAT_HEIGHT])
+        s_i = (lab[y:y + bh_, x:x + bw_] == i).any(axis=0).sum() / float(w)
         if s_i > span:
             span, best_i = s_i, i
 
@@ -727,7 +745,8 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
           canopy_mask_from_chm: bool = False,
           capture_utc: str = None,
           canopy_blur_m: float = None,
-          fix_projection_scale: bool = None) -> dict:
+          fix_projection_scale: bool = None,
+          gsd_assumed: bool = False) -> dict:
     """
     return_arrays: additive, off by default -- every existing caller (server.py,
     the CLI) is unaffected. When True, meta["_ndsm"] carries the predicted
@@ -1009,11 +1028,11 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
             _prefetch["dem"] = (_dem_args, _dem_kw, _pfx.submit(dem_mod.sample_grid, *_dem_args, **_dem_kw))
         _prefetch["ob"] = _pfx.submit(ob_fetch, (H, W), src_transform, src_crs)
         _pfx.shutdown(wait=False)
-    if min(W, H) < 800:
+    if min(W, H) < MIN_SIDE_PX:
         raise SystemExit(
-            f"image is {W}x{H} -- too small to resolve buildings. This pipeline "
-            "needs roughly 2000px of nadir imagery; below ~800px a building is a "
-            "handful of pixels and every footprint is noise.")
+            f"image is {W}x{H} pixels -- too small to build from: at least "
+            f"{MIN_SIDE_PX} x {MIN_SIDE_PX} is needed (about 150 m at 0.6 m). "
+            "Upload a larger crop of the scene.")
 
     nad = check_nadir(image_np)
     if not nad["likely_nadir"]:
@@ -1155,7 +1174,13 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
                   "screenshot with labels on. Turn map labels OFF at the source; "
                   "inpainting restores appearance, not the data the graphic hid.")
 
-    seg_labels, _ = seg.segment(image_np, height=height)
+    # Buildings are found on a contrast-normalised copy: the same per-band
+    # 2-98th percentile stretch a 16-bit file already gets on reading. On one
+    # HITEC scene the unstretched 8-bit file gave 318 buildings and the same
+    # pixels read from 16-bit gave 1,629 (~1,900 per km2 are there). The 3D
+    # texture keeps the original colours; only segmentation and outlines see this.
+    image_an = _analysis_stretch(image_np, _valid)
+    seg_labels, _ = seg.segment(image_an, height=height)
     if _valid is not None:
         seg_labels = seg_labels.copy()
         seg_labels[~_valid] = seg.CLASS_IDX["bare_earth"]
@@ -1705,7 +1730,7 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
             # existing GT footprint, so real GT shapes are never replaced or
             # duplicated by a coarser discovered one -- this only fills gaps.
             _drres = region_footprints.extract(
-                image_np, ndsm, gsd, seg_labels=seg_labels,
+                image_an, ndsm, gsd, seg_labels=seg_labels,
                 min_area_m2=6.0, min_height_m=1.5)
             _discovered, _sthr = region_footprints.drop_low_regions(
                 _drres["polygons"], ndsm)
@@ -1757,7 +1782,7 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
         # metres -- the surface was rescaled so the tallest structure reads
         # TARGET_TALL_M, so a 2 m threshold means "2 units on that assumed scale".
         rres = region_footprints.extract(
-            image_np, ndsm, gsd, seg_labels=seg_labels,
+            image_an, ndsm, gsd, seg_labels=seg_labels,
             min_area_m2=6.0, min_height_m=1.5)
         footprints = rres["polygons"]
         # Drop the flattest share of candidates, judged against this scene's own
@@ -2416,8 +2441,10 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
     # Computed at <= 1024 px to keep uploads quick, then upsampled.
     _sigma, _sigma_info = None, None
     _cal_p = os.path.join(DepthBackbone.METRIC_CKPT, "sigma_calibration.json")
-    if (_metric and _bb.is_metric and os.path.exists(_cal_p)
-            and not os.environ.get("DW_NO_SIGMA")):
+    # Needs a metric height field, not a georeference: a PNG's heights are
+    # metres too, and its cursor must show the same +/-.
+    if ((_metric or "metric depth model" in (scale_source or "")) and _bb.is_metric
+            and os.path.exists(_cal_p) and not os.environ.get("DW_NO_SIGMA")):
         try:
             _cal = json.load(open(_cal_p))
             _sw = min(1.0, 1024.0 / max(W, H))
@@ -2800,6 +2827,7 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
                     "centre_lonlat": _centre,
                     "crs": str(src_crs) if src_crs is not None else None,
                     "elevation_reference": _datum if _abs_datum else None,
+                    "pixel_assumed": True if (gsd_assumed and not _georef) else None,
                     "model": json.load(open(os.path.join(DepthBackbone.METRIC_CKPT, "metric_ok.json")))
                     .get("checkpoint", "metric") if _bb.is_metric else "relative",
                 })

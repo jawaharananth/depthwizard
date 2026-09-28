@@ -159,7 +159,18 @@ def detect_shadow_mask(image_np: np.ndarray) -> np.ndarray:
     stays sunlit.
     """
     val = cv2.cvtColor(image_np, cv2.COLOR_RGB2HSV)[:, :, 2].astype(np.float32)
-    local = cv2.GaussianBlur(val, (0, 0), sigmaX=max(image_np.shape[0], 64) / 32.0)
+    sig = max(image_np.shape[0], 64) / 32.0
+    # The reference is a wide low-pass (sigma ~H/32, 128 px at 4096 px): blur
+    # a copy reduced so sigma is ~8 px there, then bring it back. Same field
+    # to within a fraction of a grey level, a small part of the cost.
+    f = max(1, int(sig // 8))
+    if f > 1:
+        small = cv2.resize(val, (max(1, val.shape[1] // f), max(1, val.shape[0] // f)),
+                           interpolation=cv2.INTER_AREA)
+        local = cv2.resize(cv2.GaussianBlur(small, (0, 0), sigmaX=sig / f),
+                           (val.shape[1], val.shape[0]), interpolation=cv2.INTER_LINEAR)
+    else:
+        local = cv2.GaussianBlur(val, (0, 0), sigmaX=sig)
     shadow = val < 0.62 * local
 
     # Real shadows are contiguous. Closing bridges the cars, kerbs and bright

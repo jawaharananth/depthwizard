@@ -331,8 +331,19 @@ def bake_terrain_maps(dsm: np.ndarray, seg_labels: np.ndarray, gsd_m: float,
     }
     n_dir, max_r, n_steps = presets.get(quality, presets["high"])
 
-    svf = sky_view_factor(dsm, gsd_m=gsd_m, n_directions=n_dir,
-                          max_radius_px=max_r, n_steps=n_steps)
+    # Sky-view is soft, broad shading: past 2048 px it is computed on a
+    # halved grid (same ground radius) and brought back -- a quarter of the
+    # cost on a full-resolution 4096 px scene. Fine edges come from curvature.
+    if max(dsm.shape) > 2048:
+        import cv2
+        h, w = dsm.shape
+        small = cv2.resize(dsm.astype(np.float32), (w // 2, h // 2), interpolation=cv2.INTER_AREA)
+        svf = sky_view_factor(small, gsd_m=gsd_m * 2, n_directions=n_dir,
+                              max_radius_px=max(2, max_r // 2), n_steps=n_steps)
+        svf = cv2.resize(svf.astype(np.float32), (w, h), interpolation=cv2.INTER_LINEAR)
+    else:
+        svf = sky_view_factor(dsm, gsd_m=gsd_m, n_directions=n_dir,
+                              max_radius_px=max_r, n_steps=n_steps)
     curv = curvature_map(dsm, gsd_m=gsd_m)
 
     # Stretch first, so the broad occlusion term actually occupies a visible

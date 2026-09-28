@@ -220,23 +220,30 @@ def _overlap_pairs(footprints: Sequence[np.ndarray], shape,
     scale = 4                       # coarse grid: this is a duplicate test
     hh, ww = max(H // scale, 1), max(W // scale, 1)
     occupancy = np.zeros((hh, ww), np.int32)
-    areas, masks = [], []
-    for poly in footprints:
-        m = np.zeros((hh, ww), np.uint8)
-        cv2.fillPoly(m, [(poly / scale).astype(np.int32)], 1)
-        masks.append(m.astype(bool))
-        areas.append(int(m.sum()))
-
+    # Each footprint is rasterised and compared inside its own bounding box
+    # only -- the same pixels as a full-canvas mask (fillPoly clips to the
+    # canvas either way), without touching the other ~million per footprint.
     dup = []
-    for i, m in enumerate(masks):
-        if areas[i] == 0:
+    for i, poly in enumerate(footprints):
+        q = (np.asarray(poly) / scale).astype(np.int32).reshape(-1, 2)
+        if q.size == 0:
             continue
-        prior = occupancy > 0
-        inter = int((m & prior).sum())
-        if inter / areas[i] > max_frac:
+        x0, y0 = np.maximum(q.min(0), 0)
+        x1, y1 = np.minimum(q.max(0) + 1, [ww, hh])
+        if x1 <= x0 or y1 <= y0:
+            continue
+        m = np.zeros((y1 - y0, x1 - x0), np.uint8)
+        cv2.fillPoly(m, [q - [x0, y0]], 1)
+        m = m.astype(bool)
+        area = int(m.sum())
+        if area == 0:
+            continue
+        occ = occupancy[y0:y1, x0:x1]
+        inter = int((m & (occ > 0)).sum())
+        if inter / area > max_frac:
             dup.append(i)
         else:
-            occupancy[m] += 1
+            occ[m] += 1
     return dup
 
 

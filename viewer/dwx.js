@@ -180,7 +180,7 @@ export function installDWX(ctx) {
       + `${esc(p.region || "")}</div>`;
     html += '<div class="dwx-group"><h4>Ground in view</h4>';
     if (f.ground_m) html += `<div class="dwx-row"><span>Footprint</span><span class="dwx-num">${km(f.ground_m[0])} × ${km(f.ground_m[1])}</span></div>`;
-    if (f.pixel_m) html += `<div class="dwx-row"><span>Image pixel</span><span class="dwx-num">${fmt(f.pixel_m, 2)} m</span></div>`;
+    if (f.pixel_m) html += `<div class="dwx-row"><span>Image pixel</span><span class="dwx-num">${fmt(f.pixel_m, 2)} m${f.pixel_assumed ? " (assumed)" : ""}</span></div>`;
     if (f.height_p99_m !== undefined) html += `<div class="dwx-row"><span>Tall end (99th pct)</span><span class="dwx-num">${fmt(f.height_p99_m)} m</span></div>`;
     if (f.above_2p5m_share !== undefined) html += `<div class="dwx-row"><span>Standing above 2.5 m</span><span class="dwx-num">${Math.round(f.above_2p5m_share * 100)} %</span></div>`;
     html += "</div>";

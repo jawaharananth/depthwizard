@@ -413,11 +413,23 @@ def validate_reference(dsm_path: str, ref_path: str, out_dir: str) -> dict:
     return v
 
 
+DEFAULT_UPLOAD_GSD_M = float(os.environ.get("DW_DEFAULT_GSD", "0.6"))
+
+
+def _is_georeferenced(path: str) -> bool:
+    try:
+        import rasterio
+        with rasterio.open(path) as s:
+            return s.crs is not None and not s.transform.is_identity
+    except Exception:
+        return False
+
+
 def upload_build_kwargs() -> dict:
     """What an uploaded image is built with. PBR material maps (normal, AO,
     roughness) as the showcase scenes have; the working grid follows the
     image up to DW_MAX_PX."""
-    return dict(max_px=int(os.environ.get("DW_MAX_PX", "2048")),
+    return dict(max_px=int(os.environ.get("DW_MAX_PX", "4096")),
                 pbr_maps=os.environ.get("DW_UPLOAD_PBR", "1") != "0")
 
 
@@ -495,8 +507,11 @@ def run_job(job: Job) -> None:
                              "eta_known": False, "overrunning": False})
                 _worker.restart()
                 _loaded_code_version = _cv
-            task = {"job": job.id, "path": job.path, "name": job.name, "mp": mp,
-                    "kw": upload_build_kwargs()}
+            kw = upload_build_kwargs()
+            if not _is_georeferenced(job.path):
+                kw.update(gsd_m=getattr(job, "gsd", None) or DEFAULT_UPLOAD_GSD_M,
+                          gsd_assumed=getattr(job, "gsd", None) is None)
+            task = {"job": job.id, "path": job.path, "name": job.name, "mp": mp, "kw": kw}
             res = None
             for attempt in (1, 2):
                 try:
@@ -884,6 +899,15 @@ class Handler(BaseHTTPRequestHandler):
             _ip_last_accept[client_ip] = time.time()
 
         job = Job(job_id, dest, "upload_" + job_id)
+        # Pixel size for an image that carries no georeference (PNG, JPEG, a
+        # bare TIFF): ?gsd= if the uploader states it, else ISRO's Cartosat-2S
+        # 0.6 m -- the model must run at its trained scale to read metres
+        # right, and it can only get there knowing how big a pixel is.
+        try:
+            _g = float((qs.get("gsd") or [""])[0])
+            job.gsd = _g if 0.05 <= _g <= 10.0 else None
+        except ValueError:
+            job.gsd = None
         with _jobs_lock:
             _jobs[job_id] = {"job": job}
         threading.Thread(target=run_job, args=(job,), daemon=True).start()

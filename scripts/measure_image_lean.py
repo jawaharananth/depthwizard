@@ -29,6 +29,7 @@ import rasterio
 
 MIN_H = 25.0
 SEARCH_PX = 32
+MAX_TOWERS = 300
 
 
 def outline_points(px):
@@ -64,10 +65,13 @@ def main(scene_dir, tif):
     dyy, dxx = np.meshgrid(np.arange(-S, S + 1), np.arange(-S, S + 1), indexing="ij")
     dyy, dxx = dyy.ravel(), dxx.ravel()               # dy-major, as the old loop ran
     rows = []
-    for f in g["features"]:
+    # the tallest towers carry the most lean signal; 300 of them fit the line
+    # as well as thousands, at a bounded cost on a dense full-resolution scene
+    feats = sorted((f for f in g["features"] if (f["properties"].get("height_m") or 0) >= MIN_H
+                    and f["geometry"]["type"] == "Polygon"),
+                   key=lambda f: -(f["properties"].get("height_m") or 0))[:MAX_TOWERS]
+    for f in feats:
         h = f["properties"].get("height_m") or 0
-        if h < MIN_H or f["geometry"]["type"] != "Polygon":
-            continue
         px = np.array([inv * (x, y) for x, y in f["geometry"]["coordinates"][0]], np.float32)
         pts = outline_points(px)
         if len(pts) < 40:

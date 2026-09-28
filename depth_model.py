@@ -115,6 +115,15 @@ def backbone_tag(model_name: str = None) -> str:
     return "x"
 
 
+# Share of each 768 px crop that overlaps its neighbour (see predict_tiled).
+# Measured on the four swisstopo LiDAR landscapes at the trained scale
+# (3,300 px scenes, iGPU): 0.5 / 0.33 / 0.25 overlap give AGL RMSE urban
+# 7.84 / 7.84 / 7.86, hilly 7.90 / 7.89 / 7.90, forest 26.31 / 26.34 / 26.35,
+# sparse 2.94 / 2.96 / 2.96 m and absolute RMSE within 0.02 m -- the same
+# accuracy for 2.25x fewer tiles at 0.25.
+TILE_OVERLAP = float(os.environ.get("DW_TILE_OVERLAP", "0.25"))
+
+
 class DepthBackbone:
     # Base, not Large.
     #
@@ -648,7 +657,7 @@ class DepthBackbone:
         return (height - height.min()) / (rng + 1e-8)
 
     def predict_tiled(self, image: Image.Image, tile: int = 768,
-                      overlap: float = 0.5, verbose: bool = False,
+                      overlap: float = None, verbose: bool = False,
                       raw_metric: bool = False, align: bool = None) -> np.ndarray:
         """
         Height field from overlapping crops, merged onto the whole-image
@@ -690,6 +699,8 @@ class DepthBackbone:
         # shrunk so far that it is nearly flat -- fitting to it flattened every
         # crop (HITEC 4096 px: p99 0.61 m). So a large metric scene is split
         # into ~2048 px blocks, each aligned within itself, and blended.
+        if overlap is None:
+            overlap = TILE_OVERLAP
         if align is None:
             if raw_metric and self.is_metric and max(image.size) > int(self.BLOCK_PX * 1.125):
                 return self._predict_blocks(image, tile, overlap, verbose, raw_metric)
