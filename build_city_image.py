@@ -73,6 +73,9 @@ import mesh_generation as mg
 OUT_DIR = "final_out"
 VIEWER_DIR = "viewer/output"
 GROUND_GRID = 700
+# Relief (1st-99th percentile of the 30 m-smoothed terrain map) from which a
+# scene's 3D ground follows the terrain instead of a flat plane.
+RELIEF_MODE_M = 20.0
 
 
 MIN_EDGE_PROBES = 20   # below this the direction scan has too little signal to trust
@@ -191,6 +194,17 @@ def fuse_open_buildings_heights(dsm: np.ndarray, ground: np.ndarray,
         return 0
 
     H, W = dsm.shape
+    r, epsg = ob_fetch(dsm.shape, src_transform, src_crs)
+    print(f"      Open Buildings height fusion: {r['note']}")
+    if r["heights"] is None or r["coverage"] < OPEN_BUILDINGS_MIN_SCENE_COVERAGE:
+        return 0
+    return _fuse_ob_grid(dsm, ground, footprints, src_transform, src_crs, info, r, epsg)
+
+
+def ob_fetch(shape, src_transform, src_crs):
+    """The Open Buildings heights for a scene's extent (fetched once: see
+    open_buildings_source.sample_height_grid), and the UTM zone they are in."""
+    H, W = shape
     corners_px = [(0, 0), (W, 0), (0, H), (W, H)]
     corners_crs = [src_transform * p for p in corners_px]
     xs = [c[0] for c in corners_crs]
@@ -214,11 +228,11 @@ def fuse_open_buildings_heights(dsm: np.ndarray, ground: np.ndarray,
     _zone = int((_clon + 180) // 6) + 1
     epsg = (32600 if _clat >= 0 else 32700) + _zone
 
-    r = obs.sample_height_grid(min(lons), min(lats), max(lons), max(lats), epsg=epsg)
-    print(f"      Open Buildings height fusion: {r['note']}")
-    if r["heights"] is None or r["coverage"] < OPEN_BUILDINGS_MIN_SCENE_COVERAGE:
-        return 0
+    return obs.sample_height_grid(min(lons), min(lats), max(lons), max(lats), epsg=epsg), epsg
 
+
+def _fuse_ob_grid(dsm, ground, footprints, src_transform, src_crs, info, r, epsg) -> int:
+    H, W = dsm.shape
     # Warp the fetched grid onto THIS image's own pixel grid. Both
     # transforms are real Affines in a real CRS -- a genuine reprojection,
     # not a resize or a guess at alignment.
@@ -980,6 +994,21 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
     print(f"[1/5] {os.path.basename(image_path)}  {W}x{H}")
     if tracker is not None:
         tracker.megapixels = (W * H) / 1e6
+    # The terrain tile and the Open Buildings heights depend only on where the
+    # image is, so both downloads start now and run beside the height model
+    # (12-20 s of network each, previously after it). Each is collected where
+    # it was always used; any failure there falls back to fetching in line.
+    _prefetch = {}
+    if src_transform is not None and src_crs is not None and not os.environ.get("DW_NO_PREFETCH"):
+        from concurrent.futures import ThreadPoolExecutor as _TPE
+        _pfx = _TPE(max_workers=2, thread_name_prefix="dw-prefetch")
+        if (use_dem or dem_path) and src_is_projected_m:
+            _dem_args = (src_transform.c, src_transform.f, H, abs(src_transform.a), f"EPSG:{src_epsg_code}")
+            _dem_kw = dict(dem_path=dem_path, dem_source=dem_source, width_px=W,
+                           gsd_y_m=abs(src_transform.e))
+            _prefetch["dem"] = (_dem_args, _dem_kw, _pfx.submit(dem_mod.sample_grid, *_dem_args, **_dem_kw))
+        _prefetch["ob"] = _pfx.submit(ob_fetch, (H, W), src_transform, src_crs)
+        _pfx.shutdown(wait=False)
     if min(W, H) < 800:
         raise SystemExit(
             f"image is {W}x{H} -- too small to resolve buildings. This pipeline "
@@ -1365,10 +1394,17 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
     def _sample_dem():
         # The working grid exactly: origin + per-axis pixel size in the
         # source CRS's own units, rows x cols (non-square scenes included).
-        return dem_mod.sample_grid(
-            src_transform.c, src_transform.f, ground.shape[0], abs(src_transform.a),
-            f"EPSG:{src_epsg_code}", dem_path=dem_path, dem_source=dem_source,
-            width_px=ground.shape[1], gsd_y_m=abs(src_transform.e))
+        args = (src_transform.c, src_transform.f, ground.shape[0], abs(src_transform.a),
+                f"EPSG:{src_epsg_code}")
+        kw = dict(dem_path=dem_path, dem_source=dem_source,
+                  width_px=ground.shape[1], gsd_y_m=abs(src_transform.e))
+        pf = _prefetch.get("dem")
+        if pf is not None and pf[0] == args and pf[1] == kw:
+            try:
+                return pf[2].result()
+            except Exception:
+                pass                           # fetch it in line instead
+        return dem_mod.sample_grid(*args, **kw)
 
     dem_info = None
     d = None
@@ -1420,6 +1456,34 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
                      "reason": "source is not a GeoTIFF with a projected metric CRS "
                                "-- no UTM grid to anchor a DEM onto"}
         print(f"      Tier A not attempted: {dem_info['reason']}")
+
+    # HILLS IN 3D. The metric model reads height ABOVE GROUND and carries no
+    # terrain, so on its own a hillside is drawn flat (the DSM export already
+    # stands on the terrain; the 3D scene did not). When the terrain map shows
+    # real relief across the scene, the 3D ground becomes that terrain --
+    # smoothed to the DEM's own 30 m and corrected for the share of buildings
+    # and trees the DEM already counts (anchoring.py, k measured on LiDAR) --
+    # and the model's heights stand on it. A flat scene is left as it was.
+    if (not terrain_from_dem and _bb.is_metric and d is not None and d.get("dem") is not None
+            and tier.startswith("A") and not os.environ.get("DW_FLAT_GROUND")):
+        import anchoring as _anc
+        _dm = np.asarray(d["dem"], np.float32)
+        if _dm.shape != ground.shape:
+            _dm = cv2.resize(_dm, (ground.shape[1], ground.shape[0]), interpolation=cv2.INTER_LINEAR)
+        _sm = _anc.smooth(_dm, gsd)
+        _fin = np.isfinite(_sm)
+        _relief = float(np.percentile(_sm[_fin], 99) - np.percentile(_sm[_fin], 1)) if _fin.any() else 0.0
+        if _relief >= RELIEF_MODE_M:
+            _nd = np.maximum(dsm - ground, 0.0)
+            _k = _anc.DEFAULT_K.get(dem_source, 0.4)
+            _, _g = _anc.absolute_surface(np.where(_fin, _dm, np.nanmedian(_dm)), _nd, gsd, _k)
+            _g = np.where(np.isfinite(_g), _g, np.nanmedian(_g)).astype(np.float32)
+            terrain = _g + (terrain - ground)
+            dsm = _g + _nd
+            ground = _g
+            dem_info = {**(dem_info or {}), "relief_mode": True, "relief_m": round(_relief, 1), "k": _k}
+            print(f"      relief {_relief:.0f} m: 3D ground follows the terrain map "
+                  f"({d.get('source')}, k = {_k}); model heights stand on it")
 
     if terrain_from_dem and (use_dem or dem_path) and src_is_projected_m:
         # Landscape mode: the terrain IS the DEM. The monocular depth field
@@ -1616,7 +1680,7 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
                 # calibration, with thousands of controls instead of a handful.
                 _cal_ob = calibrate_to_reference_heights(
                     dsm, ground, _pre_rel, _unmeasured_fp, roof_dsm=roof_dsm,
-                    relative=not tier.startswith("B (metric depth model"))
+                    relative=not (_bb.is_metric and "metric depth model" in (scale_source or "")))   # the field itself, not the tier label: Tier A (terrain-anchored) is metric too
                 if _cal_ob is not None:
                     _ob_info["calibration"] = _cal_ob
                 if _cal_ob is not None and _cal_ob["applied"]:
@@ -1741,7 +1805,7 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
             # Open Buildings does not cover.
             _cal_ob = calibrate_to_reference_heights(
                 dsm, ground, _pre_rel_up, footprints, roof_dsm=roof_dsm,
-                relative=not tier.startswith("B (metric depth model"))
+                relative=not (_bb.is_metric and "metric depth model" in (scale_source or "")))   # the field itself, not the tier label: Tier A (terrain-anchored) is metric too
             if _cal_ob is not None:
                 _ob_info["calibration"] = _cal_ob
             if _cal_ob is not None and _cal_ob["applied"]:

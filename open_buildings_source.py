@@ -136,7 +136,40 @@ def find_tile(lat: float, lon: float, epsg: int, year: int = 2023) -> dict | Non
     return None
 
 
+_memo: dict = {}
+_memo_lock = __import__("threading").Lock()
+
+
 def sample_height_grid(min_lon: float, min_lat: float, max_lon: float, max_lat: float,
+                        epsg: int, year: int = 2023) -> dict:
+    """sample_height_grid, fetched once per extent: a build starts it in the
+    background as soon as the image's location is known, and the fusion step
+    later collects the same result instead of downloading it again."""
+    import concurrent.futures as cf
+    key = (round(min_lon, 7), round(min_lat, 7), round(max_lon, 7), round(max_lat, 7), int(epsg), int(year))
+    with _memo_lock:
+        fut = _memo.get(key)
+        mine = fut is None
+        if mine:
+            fut = cf.Future()
+            _memo[key] = fut
+            if len(_memo) > 16:                       # a long-running server: keep it small
+                _memo.pop(next(iter(_memo)))
+    if mine:
+        try:
+            r = _sample_height_grid(min_lon, min_lat, max_lon, max_lat, epsg, year)
+            if r.get("heights") is None and "fail" in str(r.get("note", "")):
+                with _memo_lock:
+                    _memo.pop(key, None)              # a network failure is retried next time
+            fut.set_result(r)
+        except BaseException as e:
+            with _memo_lock:
+                _memo.pop(key, None)                  # a failure is not remembered
+            fut.set_exception(e)
+    return fut.result()
+
+
+def _sample_height_grid(min_lon: float, min_lat: float, max_lon: float, max_lat: float,
                         epsg: int, year: int = 2023) -> dict:
     """Real building-height raster for a scene's actual extent, or an
     honest empty result if no tile covers it / the tile has no data there

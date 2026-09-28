@@ -299,6 +299,11 @@ class DepthBackbone:
             self._verify_checkpoint_behaviour()
         if self.is_metric and self.device == "cpu" and not os.environ.get("DW_NO_ONNX"):
             self._onnx = self._load_onnx()
+        self._ovg = None              # OpenVINO on the Intel iGPU, 518 x 518 tiles
+        if self.is_metric and self.device == "cpu" and self._onnx is not None \
+                and not os.environ.get("DW_NO_OV_GPU"):
+            self._ovg = self._load_ov_gpu()
+        self._fast_px = self._check_fast_pixels() if self.is_metric else False
 
     def _load_onnx(self):
         """ONNX Runtime session for 518 x 518 metric inference, or None.
@@ -337,6 +342,128 @@ class DepthBackbone:
         except Exception as e:
             print(f"      ONNX unavailable ({type(e).__name__}) -- using PyTorch")
             return None
+
+    # The iGPU must reproduce PyTorch on a real input to within these, or it is
+    # not used. Measured for run 03 at f16 on 518 x 518 HITEC crops: max
+    # 0.36 m, mean 0.027 m -- against 1.87 m per-building error; and 132 ms
+    # per tile against 572 ms (ONNX CPU) and 1,162 ms (PyTorch).
+    OV_MAX_ABS_M = 0.75
+    OV_MEAN_ABS_M = 0.06
+
+    def _load_ov_gpu(self):
+        """OpenVINO session on the iGPU for 518 x 518 metric tiles, or None.
+
+        Built from the same verified model.onnx as the CPU session. Compiled
+        kernels are cached on disk, so only the first start pays the ~30 s
+        compile. Refused (PyTorch/ONNX stay in charge) unless it reproduces
+        PyTorch within OV_MAX_ABS_M / OV_MEAN_ABS_M on a real image.
+        """
+        try:
+            import openvino as ov
+            core = ov.Core()
+            if "GPU" not in core.available_devices:
+                return None
+            cache = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache", "ov_gpu")
+            os.makedirs(cache, exist_ok=True)
+            core.set_property({"CACHE_DIR": cache})
+            prec = os.environ.get("DW_OV_PRECISION", "f16")
+            model = core.read_model(os.path.join(self.METRIC_CKPT, "model.onnx"))
+            comp = core.compile_model(model, "GPU", {"INFERENCE_PRECISION_HINT": prec,
+                                                     "PERFORMANCE_HINT": "THROUGHPUT"})
+            # a real scene, not noise: the check must look like the work
+            probe = os.path.join(os.path.dirname(os.path.abspath(__file__)), "docs", "deck", "s3_input.jpg")
+            img = (Image.open(probe).convert("RGB").crop((0, 0, 600, 600)) if os.path.exists(probe)
+                   else _canary_input().resize((518, 518)))
+            px = self.pipe.image_processor(images=img, return_tensors="pt")["pixel_values"]
+            with torch.inference_mode():
+                ref = self.pipe.model(pixel_values=px).predicted_depth.numpy()
+            got = comp([px.numpy()])[0]
+            d = np.abs(np.asarray(got).reshape(ref.shape) - ref)
+            if d.max() > self.OV_MAX_ABS_M or d.mean() > self.OV_MEAN_ABS_M:
+                print(f"      iGPU ({prec}) differs from PyTorch by max {d.max():.2f} m / "
+                      f"mean {d.mean():.3f} m -- not used")
+                return None
+            print(f"      iGPU inference on ({prec}): matches PyTorch to max {d.max():.2f} m, "
+                  f"mean {d.mean():.3f} m")
+            return comp
+        except Exception as e:
+            print(f"      iGPU unavailable ({type(e).__name__}) -- using CPU")
+            return None
+
+    _MEAN = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
+    _STD = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
+
+    def _fast_pixels(self, image: Image.Image) -> torch.Tensor:
+        """The processor's own transform for a square crop, without its
+        per-call overhead (0.12 s a tile): the same torchvision uint8 bicubic
+        antialiased resize to 518, then 1/255 and ImageNet normalisation."""
+        from torchvision.transforms.v2 import functional as TF
+        from torchvision.transforms import InterpolationMode
+        t = torch.from_numpy(np.array(image.convert("RGB"), dtype=np.uint8)).permute(2, 0, 1)
+        t = TF.resize(t, [518, 518], interpolation=InterpolationMode.BICUBIC, antialias=True)
+        t = t.unsqueeze(0).to(torch.float32) * (1.0 / 255.0)
+        return (t - self._MEAN) / self._STD
+
+    def _check_fast_pixels(self) -> bool:
+        """Use _fast_pixels only if it reproduces the processor exactly here."""
+        try:
+            rng = np.random.RandomState(5)
+            for n in (768, 1024, 600):
+                im = Image.fromarray((rng.rand(n, n, 3) * 255).astype(np.uint8))
+                a = self.pipe.image_processor(images=im, return_tensors="pt")["pixel_values"]
+                b = self._fast_pixels(im)
+                if a.shape != b.shape or float((a - b).abs().max()) > 1e-5:
+                    return False
+            return True
+        except Exception:
+            return False
+
+    def _pixels(self, image: Image.Image) -> torch.Tensor:
+        w, h = image.size
+        if self._fast_px and w == h and w >= 518:
+            return self._fast_pixels(image)
+        return self.pipe.image_processor(images=image, return_tensors="pt")["pixel_values"]
+
+    def predict_many(self, images, raw_metric: bool = False):
+        """predict() over many crops. Square metric crops go to the iGPU as one
+        queue (preprocessing the next while the GPU runs); anything else, or no
+        iGPU, falls back to predict() one at a time -- same numbers either way."""
+        if not (self._ovg is not None and raw_metric and self.is_metric and self._ov is None
+                and all(im.size[0] == im.size[1] and im.size[0] >= 518 for im in images)):
+            return [self.predict(im, raw_metric=raw_metric) for im in images]
+        # A few infer requests in rotation: while the GPU runs one, the next
+        # crop is prepared. No Python callbacks -- a callback runs on
+        # OpenVINO's own thread and needs the interpreter lock, which inside
+        # the multi-threaded server deadlocked the whole process. req.wait()
+        # is plain C++ and releases the lock.
+        n_req = max(2, min(4, int(self._ovg.get_property("OPTIMAL_NUMBER_OF_INFER_REQUESTS"))))
+        if not hasattr(self, "_ovg_reqs") or len(self._ovg_reqs) != n_req:
+            self._ovg_reqs = [self._ovg.create_infer_request() for _ in range(n_req)]
+        reqs = self._ovg_reqs
+        owner = [None] * n_req                         # which image each request is working on
+        out = [None] * len(images)
+
+        def collect(k):
+            if owner[k] is not None:
+                reqs[k].wait()
+                out[owner[k]] = np.array(reqs[k].get_output_tensor(0).data, dtype=np.float32, copy=True)
+                owner[k] = None
+
+        for i, im in enumerate(images):
+            k = i % n_req
+            px = self._pixels(im).numpy()
+            collect(k)
+            reqs[k].start_async({0: px})
+            owner[k] = i
+        for k in range(n_req):
+            collect(k)
+        res = []
+        for im, raw in zip(images, out):
+            t = torch.from_numpy(raw.reshape(1, 1, 518, 518))
+            w, h = im.size
+            t = torch.nn.functional.interpolate(t, size=(h, w), mode="bicubic", align_corners=False)
+            res.append(t.squeeze().numpy().astype(np.float32))
+        return res
 
     def _verify_checkpoint_behaviour(self) -> None:
         """Refuses a licensed checkpoint whose OUTPUT no longer matches what
@@ -467,8 +594,11 @@ class DepthBackbone:
         # own [0,1] normalisation -- two separate ways the real scale was
         # being thrown away, not one.
         if self._ov is None and raw_metric and self.is_metric:
-            px = self.pipe.image_processor(images=image, return_tensors="pt")["pixel_values"]
-            if self._onnx is not None and tuple(px.shape[-2:]) == (518, 518):
+            px = (self._pixels(image) if getattr(self, "_fast_px", False)
+                  else self.pipe.image_processor(images=image, return_tensors="pt")["pixel_values"])
+            if getattr(self, "_ovg", None) is not None and tuple(px.shape[-2:]) == (518, 518):
+                raw = torch.from_numpy(np.asarray(self._ovg([px.numpy()])[0], np.float32).reshape(1, 518, 518))
+            elif self._onnx is not None and tuple(px.shape[-2:]) == (518, 518):
                 raw = torch.from_numpy(self._onnx.run(None, {"pixel_values": px.numpy()})[0])
             else:
                 with torch.inference_mode():
@@ -589,23 +719,28 @@ class DepthBackbone:
         wsum = np.zeros_like(base)
         arr = np.asarray(image)
         total = len(ys) * len(xs)
-        for i, y in enumerate(ys):
-            for j, x in enumerate(xs):
-                th, tw = min(tile, h), min(tile, w)
-                crop = arr[y:y + th, x:x + tw]
-                local = self.predict(Image.fromarray(crop), raw_metric=raw_metric)
-                ref = base[y:y + th, x:x + tw]
-                # Affine-align local to the global reference. Fit on the
-                # reference's own spread; a near-constant crop (uniform field,
-                # e.g. open water) has no gradient to fit against, so leave it.
-                lv, rv = local.ravel(), ref.ravel()
-                if align and lv.std() > 1e-6:
-                    a, b = np.polyfit(lv, rv, 1)
-                    local = local * a + b
-                acc[y:y + th, x:x + tw] += local * window
-                wsum[y:y + th, x:x + tw] += window
-                if verbose:
-                    print(f"    tile {i*len(xs)+j+1}/{total}", flush=True)
+        th, tw = min(tile, h), min(tile, w)
+        spots = [(y, x) for y in ys for x in xs]
+        # all crops in one call: the iGPU takes them as a queue
+        locals_ = self.predict_many([Image.fromarray(arr[y:y + th, x:x + tw]) for y, x in spots],
+                                    raw_metric=raw_metric)
+        for n, ((y, x), local) in enumerate(zip(spots, locals_)):
+            ref = base[y:y + th, x:x + tw]
+            # Affine-align local to the global reference. Fit on the
+            # reference's own spread; a near-constant crop (uniform field,
+            # e.g. open water) has no gradient to fit against, so leave it.
+            # Closed-form least squares: the same line np.polyfit(lv, rv, 1)
+            # fits, without its overhead (0.08 s a tile on 590k points).
+            lv, rv = local.ravel().astype(np.float64), ref.ravel().astype(np.float64)
+            if align and lv.std() > 1e-6:
+                lm, rm = lv.mean(), rv.mean()
+                a = float(np.dot(lv - lm, rv - rm) / np.dot(lv - lm, lv - lm))
+                b = float(rm - a * lm)
+                local = local * a + b
+            acc[y:y + th, x:x + tw] += local * window
+            wsum[y:y + th, x:x + tw] += window
+            if verbose:
+                print(f"    tile {n + 1}/{total}", flush=True)
 
         merged = np.where(wsum > 1e-6, acc / np.maximum(wsum, 1e-6), base)
         if raw_metric and self.is_metric:

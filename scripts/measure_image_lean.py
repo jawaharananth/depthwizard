@@ -53,6 +53,16 @@ def main(scene_dir, tif):
                                     cv2.Sobel(gray, cv2.CV_32F, 0, 1)), (0, 0), 1.0)
     H, W = mag.shape
     inv = ~T
+    S = SEARCH_PX
+    # Every shift at once, exactly: gather the edge strength under every
+    # outline point at every offset (points x offsets), with the image padded
+    # so out-of-image points read as absent. Same scores, same tie-breaking as
+    # shifting the points one offset at a time -- which, 4,225 offsets per
+    # tower in a Python loop, took 48 s of an upload build.
+    magp = cv2.copyMakeBorder(mag, S, S, S, S, cv2.BORDER_CONSTANT, value=0)
+    valp = cv2.copyMakeBorder(np.ones_like(mag), S, S, S, S, cv2.BORDER_CONSTANT, value=0)
+    dyy, dxx = np.meshgrid(np.arange(-S, S + 1), np.arange(-S, S + 1), indexing="ij")
+    dyy, dxx = dyy.ravel(), dxx.ravel()               # dy-major, as the old loop ran
     rows = []
     for f in g["features"]:
         h = f["properties"].get("height_m") or 0
@@ -62,18 +72,19 @@ def main(scene_dir, tif):
         pts = outline_points(px)
         if len(pts) < 40:
             continue
-        best, bs = None, -1.0
-        for dy in range(-SEARCH_PX, SEARCH_PX + 1):
-            for dx in range(-SEARCH_PX, SEARCH_PX + 1):
-                q = np.round(pts + [dx, dy]).astype(int)
-                ok = (q[:, 0] >= 0) & (q[:, 0] < W) & (q[:, 1] >= 0) & (q[:, 1] < H)
-                if ok.mean() < 0.9:
-                    continue
-                s = mag[q[ok, 1], q[ok, 0]].mean()
-                if s > bs:
-                    bs, best = s, (dx, dy)
-        if best is not None:
-            rows.append((h, best[0], best[1]))
+        qx = np.round(pts[:, 0:1] + dxx[None, :]).astype(np.int64) + S     # points x offsets
+        qy = np.round(pts[:, 1:2] + dyy[None, :]).astype(np.int64) + S
+        inside = (qx >= 0) & (qx < magp.shape[1]) & (qy >= 0) & (qy < magp.shape[0])
+        qx, qy = np.clip(qx, 0, magp.shape[1] - 1), np.clip(qy, 0, magp.shape[0] - 1)
+        ok_pt = inside & (valp[qy, qx] > 0)                              # inside the real image
+        n_ok = ok_pt.sum(0)
+        ok = n_ok >= 0.9 * len(pts)                                      # old: skip if ok.mean() < 0.9
+        if not ok.any():
+            continue
+        s = np.where(ok_pt, magp[qy, qx], 0.0).sum(0, dtype=np.float64) / np.maximum(n_ok, 1)
+        s = np.where(ok, s, -1.0)
+        k = int(np.argmax(s))                                            # first max, dy-major like before
+        rows.append((h, int(dxx[k]), int(dyy[k])))
     if len(rows) < 20:
         sys.exit(f"only {len(rows)} buildings >= {MIN_H} m -- too few to measure a lean")
     h, dx, dy = np.array(rows).T

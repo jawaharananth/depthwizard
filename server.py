@@ -413,10 +413,18 @@ def validate_reference(dsm_path: str, ref_path: str, out_dir: str) -> dict:
     return v
 
 
+def upload_build_kwargs() -> dict:
+    """What an uploaded image is built with. PBR material maps (normal, AO,
+    roughness) as the showcase scenes have; the working grid follows the
+    image up to DW_MAX_PX."""
+    return dict(max_px=int(os.environ.get("DW_MAX_PX", "2048")),
+                pbr_maps=os.environ.get("DW_UPLOAD_PBR", "1") != "0")
+
+
 def run_job(job: Job) -> None:
     global _queue_depth, _current_job
-    import build_city_image as bci
     from PIL import Image
+    import build_worker
 
     try:
         with Image.open(job.path) as im:
@@ -424,8 +432,6 @@ def run_job(job: Job) -> None:
         mp = (w * h) / 1e6
     except Exception:
         mp = 4.0
-
-    tracker = prog.StageTracker(job.id, megapixels=mp, sink=job.publish)
 
     content_hash = None
     try:
@@ -470,22 +476,49 @@ def run_job(job: Job) -> None:
             except Exception:
                 pass   # cache is corrupt/partial -- fall through and rebuild for real
 
-        # The cache key follows the code on disk; make sure the build does
-        # too, or a post-edit key would be filled by the pre-edit pipeline.
+        def fail(detail: str) -> None:
+            job.publish({"job": job.id, "phase": "error", "elapsed_total": None,
+                         "message": detail, "eta": None, "eta_known": False, "overrunning": False})
+
+        # The cache key follows the code on disk; the worker must run that
+        # same code, so a changed pipeline means a fresh worker.
         global _loaded_code_version
         _cv = _code_version()
-        if _loaded_code_version is None:
-            _loaded_code_version = _cv
-        elif _cv != _loaded_code_version:
-            import importlib, dem_source, hover_export, anchoring, input_bands
-            for _m in (dem_source, hover_export, anchoring, input_bands):
-                importlib.reload(_m)
-            bci = importlib.reload(bci)
-            _loaded_code_version = _cv
         try:
-            bci.build(job.path, job.name, max_px=int(os.environ.get("DW_MAX_PX", "2048")),
-                      tracker=tracker,
-                      stage=True)
+            if _worker is None:
+                raise RuntimeError("the build worker is not running")
+            if _loaded_code_version is None:
+                _loaded_code_version = _cv
+            elif _cv != _loaded_code_version:
+                job.publish({"job": job.id, "phase": "queued", "stage": None,
+                             "message": "Loading the updated pipeline...", "eta": None,
+                             "eta_known": False, "overrunning": False})
+                _worker.restart()
+                _loaded_code_version = _cv
+            task = {"job": job.id, "path": job.path, "name": job.name, "mp": mp,
+                    "kw": upload_build_kwargs()}
+            res = None
+            for attempt in (1, 2):
+                try:
+                    res = _worker.run(task, job.publish, max_seconds=MAX_JOB_SECONDS)
+                    break
+                except build_worker.Stalled as e:
+                    print(f"  job {job.id}: build worker stalled ({e}) -- restarting it"
+                          + (", retrying the job" if attempt == 1 else ""), flush=True)
+                    job.publish({"job": job.id, "phase": "progress", "stage": None,
+                                 "message": "The build stalled -- restarting it and trying again.",
+                                 "note": f"build restarted ({e})", "eta": None,
+                                 "eta_known": False, "overrunning": False})
+                    _worker.restart()
+            if res is None:
+                fail("The build stalled twice and was stopped. Try a smaller crop of the image.")
+                return
+        except Exception as e:
+            traceback.print_exc()
+            fail(f"{type(e).__name__}: {e}")
+            return
+
+        if res.get("ok"):
             _current_job = job.id
             dsm_path = _find_dsm_in(FINAL_OUT, f"city_{job.name}_")
             _patch_staged_meta(job.id, dsm_path)
@@ -499,15 +532,7 @@ def run_job(job: Job) -> None:
                         _jobs[job.id]["cache_dir"] = cache_dir
                 except Exception:
                     pass   # caching failure must never fail an otherwise-successful build
-            tracker.finish(ok=True)
-        except SystemExit as e:
-            # The pipeline refuses obliques and undersized images on purpose,
-            # and that refusal is a real answer, not a crash. Pass its reasoning
-            # through verbatim.
-            tracker.finish(ok=False, detail=str(e))
-        except Exception as e:
-            traceback.print_exc()
-            tracker.finish(ok=False, detail=f"{type(e).__name__}: {e}")
+        job.publish(res["final"])
 
 
 # ---------------------------------------------------------------------------
@@ -580,8 +605,7 @@ class Handler(BaseHTTPRequestHandler):
             # Readiness: is this instance actually fit to take new work.
             # Checked, not assumed -- both the model-loaded flag and the
             # memory reading below are real measurements, not a hardcoded 200.
-            import depth_model
-            model_loaded = bool(depth_model.DepthBackbone._instances)
+            model_loaded = bool(_worker is not None and _worker.ready and _worker.proc.is_alive())
             rss = _rss_mb()
             over = _over_capacity()
             ok = model_loaded and not over and not _shutting_down
@@ -1077,6 +1101,21 @@ class Handler(BaseHTTPRequestHandler):
             job.unsubscribe(q)
 
 
+_worker = None
+
+
+def _start_worker() -> None:
+    """Start the build worker at boot and wait until its model is loaded, so
+    the first judge's upload does not pay for it."""
+    global _worker, _loaded_code_version
+    import build_worker
+    t0 = time.time()
+    _loaded_code_version = _code_version()       # the code the worker is about to import
+    _worker = build_worker.Worker()
+    _worker.wait_ready()
+    print(f"  build worker ready in {time.time()-t0:.1f}s (model and iGPU loaded)", flush=True)
+
+
 def _warm_load_model() -> None:
     """Load the depth model once at boot, not on the first judge's upload.
 
@@ -1132,7 +1171,7 @@ def main() -> None:
     print("stage timing calibration:")
     print(prog.calibration_summary())
     print()
-    _warm_load_model()
+    _start_worker()
     srv = ThreadingHTTPServer((a.host, a.port), Handler)
     _install_shutdown_handler(srv)
     try:
