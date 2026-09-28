@@ -208,6 +208,7 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { MeshoptDecoder } from "three/addons/libs/meshopt_decoder.module.js";
 import { installDWX } from "./dwx.js";
 
 // ---------------------------------------------------------------------
@@ -1623,6 +1624,8 @@ let aoTexture = null, roughnessTexture = null, metalnessTexture = null;
 
 const textureLoader = new THREE.TextureLoader();
 const gltfLoader = new GLTFLoader();
+// Scenes may ship meshopt-compressed (gltfpack): same geometry, ~5x smaller to load.
+gltfLoader.setMeshoptDecoder(MeshoptDecoder);
 
 // The problem statement asks for the ORIGINAL optical image on the mesh, so
 // that is the default; a sharper same-bounds display texture (when the scene

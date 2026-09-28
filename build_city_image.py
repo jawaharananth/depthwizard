@@ -746,7 +746,8 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
           capture_utc: str = None,
           canopy_blur_m: float = None,
           fix_projection_scale: bool = None,
-          gsd_assumed: bool = False) -> dict:
+          gsd_assumed: bool = False,
+          fetch_canopy: bool = False) -> dict:
     """
     return_arrays: additive, off by default -- every existing caller (server.py,
     the CLI) is unaffected. When True, meta["_ndsm"] carries the predicted
@@ -1027,6 +1028,10 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
                            gsd_y_m=abs(src_transform.e))
             _prefetch["dem"] = (_dem_args, _dem_kw, _pfx.submit(dem_mod.sample_grid, *_dem_args, **_dem_kw))
         _prefetch["ob"] = _pfx.submit(ob_fetch, (H, W), src_transform, src_crs)
+        if fetch_canopy and canopy_height_map is None:
+            # real tree heights (Meta/WRI CHMv2, 1 m) for the trees in 3D
+            import canopy_source as _cs
+            _prefetch["chm"] = _pfx.submit(_cs.fetch, src_transform, src_crs, W, H)
         _pfx.shutdown(wait=False)
     if min(W, H) < MIN_SIDE_PX:
         raise SystemExit(
@@ -1920,6 +1925,16 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
               f"pass time assumed): azimuth {_az:.0f} deg, elevation {_el:.0f} deg")
 
     normal_surface = None
+    if canopy_height_map is None and _prefetch.get("chm") is not None:
+        try:
+            canopy_height_map = _prefetch["chm"].result(timeout=60)
+        except Exception:
+            canopy_height_map = None
+        if canopy_height_map is not None:
+            print(f"      tree heights from the Meta/WRI canopy map (CHMv2): "
+                  f"p90 {np.percentile(canopy_height_map[canopy_height_map > 1], 90) if (canopy_height_map > 1).any() else 0:.1f} m")
+        else:
+            print("      canopy map unavailable -- trees from the image alone")
     if canopy_height_map is not None:
         # Real per-pixel vegetation height (Meta HighResCanopyHeight / CHMv2,
         # DINOv2 backbone, US-LiDAR-trained) replaces the scene's own noisy

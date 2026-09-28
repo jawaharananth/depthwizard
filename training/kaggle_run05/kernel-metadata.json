@@ -1,0 +1,18 @@
+{
+  "id": "jawaharananth/depthwizard-height-train-run05",
+  "title": "depthwizard-height-train-run05",
+  "code_file": "kaggle_kernel_run05.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_internet": true,
+  "dataset_sources": [
+    "jawaharananth/depthwizard-train-code",
+    "jawaharananth/depthwizard-run03-ckpt",
+    "jawaharananth/depthwizard-dfc-tiles",
+    "jawaharananth/depthwizard-dfc-track1"
+  ],
+  "competition_sources": [],
+  "kernel_sources": []
+}

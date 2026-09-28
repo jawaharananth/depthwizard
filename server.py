@@ -430,7 +430,8 @@ def upload_build_kwargs() -> dict:
     roughness) as the showcase scenes have; the working grid follows the
     image up to DW_MAX_PX."""
     return dict(max_px=int(os.environ.get("DW_MAX_PX", "4096")),
-                pbr_maps=os.environ.get("DW_UPLOAD_PBR", "1") != "0")
+                pbr_maps=os.environ.get("DW_UPLOAD_PBR", "1") != "0",
+                fetch_canopy=os.environ.get("DW_UPLOAD_CANOPY", "1") != "0")
 
 
 def run_job(job: Job) -> None:
