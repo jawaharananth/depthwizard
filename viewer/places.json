@@ -12,5 +12,40 @@
     "region": "Kerala, India",
     "landscape": "forested",
     "lidar": false
+  },
+  {
+    "id": "mumbai_lower_parel",
+    "name": "Lower Parel",
+    "region": "Mumbai, Maharashtra, India",
+    "landscape": "urban",
+    "lidar": false
+  },
+  {
+    "id": "gangtok",
+    "name": "Gangtok",
+    "region": "Sikkim, India",
+    "landscape": "hilly",
+    "lidar": false
+  },
+  {
+    "id": "kanha",
+    "name": "Kanha National Park",
+    "region": "Madhya Pradesh, India",
+    "landscape": "forested",
+    "lidar": false
+  },
+  {
+    "id": "jaisalmer_village",
+    "name": "Desert village",
+    "region": "Jaisalmer, Rajasthan, India",
+    "landscape": "sparse",
+    "lidar": false
+  },
+  {
+    "id": "darjeeling",
+    "name": "Darjeeling",
+    "region": "West Bengal, India",
+    "landscape": "hilly",
+    "lidar": false
   }
 ]

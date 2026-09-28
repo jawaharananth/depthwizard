@@ -1,5 +1,5 @@
 mumbai_lower_parel|19.0000|72.8260|urban|Lower Parel|Mumbai, Maharashtra, India
-darjeeling|27.0417|88.2631|hilly|Darjeeling|West Bengal, India
 gangtok|27.3314|88.6138|hilly|Gangtok|Sikkim, India
 kanha|22.2800|80.6400|forested|Kanha National Park|Madhya Pradesh, India
 jaisalmer_village|26.6100|70.7100|sparse|Desert village|Jaisalmer, Rajasthan, India
+darjeeling|27.0417|88.2631|hilly|Darjeeling|West Bengal, India

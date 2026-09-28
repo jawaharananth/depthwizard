@@ -11,7 +11,10 @@ busy() {
 }
 while IFS='|' read -r id lat lon kind name region; do
   while busy; do sleep 60; done
-  if [ -f "scenes/$id/hover_agl.u16" ]; then echo "[queue] $id already built"; continue; fi
+  # Built means metric: a scene that fell back to assumed heights is rebuilt.
+  if [ -f "scenes/$id/hover_agl.u16" ] && grep -q '"height_is_metric": true' "scenes/$id/scene.json"; then
+    echo "[queue] $id already built"; continue
+  fi
   ./venv/Scripts/python.exe build_showcase.py "$id" --lat "$lat" --lon "$lon" --kind "$kind" \
       --name "$name" --region "$region" < /dev/null
 done < scripts/showcase_places.txt

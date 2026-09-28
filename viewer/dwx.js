@@ -203,8 +203,11 @@ export function installDWX(ctx) {
     if (!f.centre_lonlat && !f.crs && Object.keys(f).length && !(meta && meta.affine_transform))
       html += '<div class="dwx-foot">The image carried no coordinates: heights are relative (rDSM).</div>';
     html += "</div>";
-    html += '<div class="dwx-group"><h4>On this screen</h4>'
-      + '<div class="dwx-row"><span>Frame rate</span><span class="dwx-num" id="dwx-fps">—</span></div></div>';
+    // A still (&dwxshot=) is captured by a software renderer whose frame rate
+    // says nothing about the viewer on real hardware -- leave it out there.
+    if (!new URLSearchParams(location.search).has("dwxshot"))
+      html += '<div class="dwx-group"><h4>On this screen</h4>'
+        + '<div class="dwx-row"><span>Frame rate</span><span class="dwx-num" id="dwx-fps">—</span></div></div>';
     sheet.innerHTML = html;
   }
 

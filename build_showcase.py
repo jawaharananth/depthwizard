@@ -62,6 +62,52 @@ def tile_xy(lat, lon, z):
     return int(x), int(y)
 
 
+def z19_coverage(path):
+    """Share of the 256 px tiles in a z19 mosaic that are real imagery: the
+    placeholder tile repeats byte for byte, real tiles never do."""
+    from collections import Counter
+    from PIL import Image
+    Image.MAX_IMAGE_PIXELS = None
+    im = Image.open(path).convert("L")
+    w, h = im.size
+    small = np.asarray(im.resize((w // 16, h // 16), Image.BOX))
+    tiles = small.reshape(h // 256, 16, w // 256, 16).transpose(0, 2, 1, 3).reshape(-1, 256)
+    top = Counter(t.tobytes() for t in tiles).most_common(1)[0][1]
+    return 1.0 - (top / len(tiles) if top > 1 else 0.0)
+
+
+def esri_capture(lat, lon, work):
+    """Capture date and satellite of the Esri World Imagery under a point, from
+    its own metadata layers. The pass time is not published: sun-synchronous
+    optical satellites cross near 10:30 local mean solar time, so that is
+    assumed (and disclosed as assumed in the scene notes)."""
+    cp = os.path.join(work, "capture.json")
+    if os.path.exists(cp):
+        return json.load(open(cp))
+    d = 0.01
+    url = ("https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/identify?"
+           f"geometry={lon},{lat}&geometryType=esriGeometryPoint&sr=4326&layers=all&tolerance=2"
+           f"&mapExtent={lon - d},{lat - d},{lon + d},{lat + d}&imageDisplay=800,800,96"
+           "&returnGeometry=false&f=json")
+    try:
+        req = urllib.request.Request(url, headers=UA)
+        res = json.load(urllib.request.urlopen(req, timeout=30)).get("results", [])
+    except Exception as e:
+        log(f"imagery metadata unavailable ({e}) -- sun left to the shadows")
+        return None
+    for r in res:
+        at = r.get("attributes", {})
+        s = str(at.get("SRC_DATE") or "")
+        if "Resolution Metadata" in r.get("layerName", "") and len(s) == 8 and s.isdigit():
+            date = f"{s[:4]}-{s[4:6]}-{s[6:]}"
+            h = 10.5 - lon / 15.0
+            out = {"date": date, "utc": f"{date}T{int(h):02d}:{round(h % 1 * 60):02d}",
+                   "sensor": at.get("SRC_DESC"), "res_m": at.get("SRC_RES"), "product": at.get("NICE_NAME")}
+            json.dump(out, open(cp, "w"))
+            return out
+    return None
+
+
 def quadkey(x, y, z):
     s = ""
     for i in range(z, 0, -1):
@@ -226,6 +272,14 @@ def main():
     if not os.path.exists(far + ".png"):
         run([PY, "tools/fetch_context.py", tif, far, "--zoom", 14, "--radius", 6])
 
+    # Esri has no zoom-19 capture over much of the hills; there it serves one
+    # "map data not yet available" tile over and over, and the model reads that
+    # as flat ground (Darjeeling came out 0.00 m everywhere). Such a mosaic is
+    # not used at all: the build falls back to the trained-scale pass on z18.
+    hires = z19 if z19_coverage(z19) >= 0.9 else None
+    if hires is None:
+        log(f"{a.id}: zoom-19 imagery is placeholder tiles ({z19_coverage(z19):.0%} real) -- using zoom 18")
+
     import cv2
     polys = [] if a.kind == "forested" else merge_footprints(ms_footprints(tif, work), osm_footprints(tif, work))
     chm = canopy(tif, work)
@@ -243,9 +297,13 @@ def main():
               gt_building_mask=mask.astype(bool), gt_building_polygons=polys,
               canopy_height_map=chm, continuous_vegetation=chm is not None,
               ground_grid=1400, pbr_maps=True, crown_radius_ratio=0.18,
-              display_texture_path=z19, depth_image_path=z19,
+              display_texture_path=hires, depth_image_path=hires,
               context_image=ctx, context_far_image=far,
               osm_structures=a.kind in ("urban", "hilly"))
+    cap = esri_capture(a.lat, a.lon, work)
+    if cap:
+        kw.update(capture_date=cap["date"], capture_utc=cap["utc"])
+        log(f"{a.id}: imagery {cap['product']} {cap['sensor']} captured {cap['date']} (pass ~10:30 LMT assumed)")
     if landscape:
         # Hills and forest stand on the real terrain: the model's height above
         # ground carries no terrain, so the ground mesh is Copernicus GLO-30.
@@ -254,6 +312,11 @@ def main():
     bci.build(tif, a.id, **kw)
 
     run([PY, "-c", f"import scenes; scenes.save({a.id!r}, {a.name + ', ' + a.region!r})"])
+    # The DSM and sigma files travel with the scene (rooftop and water tools read them).
+    import glob
+    import shutil
+    for f in glob.glob(os.path.join(ROOT, "final_out", f"city_{a.id}_*DSM.tif")) +             glob.glob(os.path.join(ROOT, "final_out", f"city_{a.id}_sigma.tif")):
+        shutil.copy2(f, os.path.join(ROOT, "scenes", a.id, os.path.basename(f)))
     if polys:
         subprocess.run([PY, "tools/roof_details.py", a.id], cwd=ROOT)
     subprocess.run([PY, "tools/water_mask.py", "--scene", os.path.join("scenes", a.id)], cwd=ROOT)
