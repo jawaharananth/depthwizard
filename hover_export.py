@@ -105,6 +105,13 @@ def scene_facts(agl: np.ndarray, sigma: np.ndarray | None, gsd_m: float | None,
     if sigma is not None:
         s = np.asarray(sigma, np.float32)
         sf = np.isfinite(s)
+        # Typical +/- on what stands above the ground (> 1 m): over every
+        # pixel, a bare desert scene reports +/-0.02 m -- true of flat sand,
+        # but not the figure anyone hovering a roof or tree will meet.
+        if s.shape == a.shape:
+            raised = sf & fin & (a > 1.0)
+            if raised.mean() >= 0.005:
+                sf = raised
         if sf.any():
             facts["sigma_median_m"] = round(float(np.median(s[sf])), 2)
     if extra:

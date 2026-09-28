@@ -185,7 +185,7 @@ export function installDWX(ctx) {
     if (f.above_2p5m_share !== undefined) html += `<div class="dwx-row"><span>Standing above 2.5 m</span><span class="dwx-num">${Math.round(f.above_2p5m_share * 100)} %</span></div>`;
     html += "</div>";
     html += '<div class="dwx-group"><h4>Uncertainty</h4>';
-    html += `<div class="dwx-row"><span>Typical ± (1 sigma)</span><span class="dwx-num">${fmt(f.sigma_median_m, 2)} m</span></div>`;
+    html += `<div class="dwx-row"><span>Typical ± on objects (1σ)</span><span class="dwx-num">${fmt(f.sigma_median_m, 2)} m</span></div>`;
     html += '<div class="dwx-foot">Every height carries its own ±, calibrated on held-out airborne LiDAR. Hover anywhere to read both.</div></div>';
     if (f.lidar) {
       const L = f.lidar;
