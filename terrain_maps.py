@@ -173,14 +173,32 @@ def flatten_water(dsm: np.ndarray, seg_labels: np.ndarray,
     return out, levelled, rejected
 
 
-def roughness_from_segmentation(seg_labels: np.ndarray) -> np.ndarray:
+WATER_MAX_SLOPE_DEG = 6.0
+
+
+def trusted_water(seg_labels: np.ndarray, surface: np.ndarray | None,
+                  gsd_m: float | None) -> np.ndarray:
+    """Water-class pixels that can be water: standing water is flat. On RGB
+    alone deep shadow on a forested hillside classifies as water (Darjeeling:
+    5 % of the scene, on slopes of 20-40 deg), and shaded as a mirror every
+    facet of it glints the sun. The surface slope, lightly smoothed, decides."""
+    water = seg_labels == seg.CLASS_IDX["water"]
+    if surface is None or not gsd_m or surface.shape != seg_labels.shape or not water.any():
+        return water
+    z = np.nan_to_num(np.asarray(surface, np.float32), nan=float(np.nanmedian(surface)))
+    z = cv2.GaussianBlur(z, (0, 0), sigmaX=2.0)
+    gy, gx = np.gradient(z, float(gsd_m))
+    slope = np.degrees(np.arctan(np.hypot(gx, gy)))
+    return water & (slope < WATER_MAX_SLOPE_DEG)
+
+
+def roughness_from_segmentation(seg_labels: np.ndarray, water: np.ndarray | None = None) -> np.ndarray:
     """
     Per-class PBR roughness in [0, 1]. Values chosen to match real surface
     behaviour under image-based lighting rather than for stylistic effect:
     water is near-specular, vegetation fully diffuse, built surfaces between.
     """
     table = {
-        seg.CLASS_IDX["water"]: 0.04,        # near-mirror; picks up sky reflection
         seg.CLASS_IDX["road"]: 0.55,         # asphalt: slight sheen
         seg.CLASS_IDX["building"]: 0.70,     # roofing membrane / tile
         seg.CLASS_IDX["bare_earth"]: 0.88,
@@ -189,6 +207,9 @@ def roughness_from_segmentation(seg_labels: np.ndarray) -> np.ndarray:
     out = np.full(seg_labels.shape, 0.85, dtype=np.float32)
     for idx, val in table.items():
         out[seg_labels == idx] = val
+    if water is None:
+        water = seg_labels == seg.CLASS_IDX["water"]
+    out[water] = 0.04                        # near-mirror; picks up sky reflection
     # soften class boundaries so materials transition instead of stair-stepping
     return cv2.GaussianBlur(out, (0, 0), sigmaX=1.5)
 
@@ -377,8 +398,9 @@ def bake_terrain_maps(dsm: np.ndarray, seg_labels: np.ndarray, gsd_m: float,
         Image.fromarray(ao_u8).save(ao_path)
         stats["ao_path"] = ao_path
 
+    water = trusted_water(seg_labels, dsm, gsd_m)
     if roughness_path:
-        rough = roughness_from_segmentation(seg_labels)
+        rough = roughness_from_segmentation(seg_labels, water)
         Image.fromarray((rough * 255).astype(np.uint8)).save(roughness_path)
         stats["roughness_path"] = roughness_path
         stats["roughness_mean"] = float(rough.mean())
@@ -392,7 +414,7 @@ def bake_terrain_maps(dsm: np.ndarray, seg_labels: np.ndarray, gsd_m: float,
         # shading choice on the water class only -- no geometry or elevation
         # is affected, and every other surface stays fully dielectric.
         metal = np.zeros(seg_labels.shape, dtype=np.float32)
-        metal[seg_labels == seg.CLASS_IDX["water"]] = 0.55
+        metal[water] = 0.55
         metal = cv2.GaussianBlur(metal, (0, 0), sigmaX=1.5)
         Image.fromarray((metal * 255).astype(np.uint8)).save(metalness_path)
         stats["metalness_path"] = metalness_path

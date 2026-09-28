@@ -407,6 +407,7 @@ try {
 } catch (e) { /* best-effort only */ }
 
 const scene = new THREE.Scene();
+window.__dwScene = scene;   // for automated checks (tools/test_offline_html.py)
 const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.1, 20000);
 camera.position.set(0, 300, 400);
 
