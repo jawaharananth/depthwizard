@@ -106,6 +106,69 @@ def microsoft(bbox):
     return rings
 
 
+OVERTURE_STAC = "https://stac.overturemaps.org"
+
+
+def _overture_index():
+    """(release, [(bbox, parquet url)]) for Overture buildings, cached a week.
+    Overture's STAC catalogue gives every file's bounding box, so a scene
+    reads only the one or two files that cover it (~14 s) instead of
+    scanning the world (~4 min)."""
+    os.makedirs(CACHE, exist_ok=True)
+    p = os.path.join(CACHE, "overture_index.json")
+    if os.path.exists(p) and time.time() - os.path.getmtime(p) < 7 * 86400:
+        return json.load(open(p))
+    root = json.loads(_get(OVERTURE_STAC + "/catalog.json", 60))
+    rels = sorted(l["href"] for l in root["links"] if l["rel"] == "child")
+    rel = rels[-1].rsplit("/", 2)[-2]
+    base = f"{OVERTURE_STAC}/{rel}/buildings/building/"
+    col = json.loads(_get(base + "collection.json", 60))
+    bbs = col["extent"]["spatial"]["bbox"][1:]
+    items = [l["href"] for l in col["links"] if l["rel"] == "item"]
+    # the item order matches the per-file boxes; the file URL follows the
+    # release's own naming, read from the first item
+    first = json.loads(_get(items[0], 60))
+    url0 = first["assets"]["aws"]["href"]
+    idx = {"release": rel, "items": items, "boxes": bbs, "urls": [url0] + [None] * (len(bbs) - 1)}
+    json.dump(idx, open(p, "w"))
+    return idx
+
+
+def overture(bbox):
+    """Overture buildings (OpenStreetMap + Microsoft + Google Open Buildings,
+    conflated) as lon/lat rings. Google's outlines cover Indian cities
+    densely where Microsoft's are thin."""
+    import duckdb
+    from shapely import wkb
+    idx = _overture_index()
+    lon0, lat0, lon1, lat1 = bbox
+    hits = [i for i, (x0, y0, x1, y1) in enumerate(idx["boxes"])
+            if x0 <= lon1 and x1 >= lon0 and y0 <= lat1 and y1 >= lat0]
+    urls = []
+    for i in hits:
+        u = idx["urls"][i]
+        if u is None:
+            u = json.loads(_get(idx["items"][i], 60))["assets"]["aws"]["href"]
+            idx["urls"][i] = u
+        urls.append(u)
+    json.dump(idx, open(os.path.join(CACHE, "overture_index.json"), "w"))
+    if not urls:
+        return []
+    con = duckdb.connect()
+    con.sql("INSTALL httpfs; LOAD httpfs;")
+    lst = ", ".join(f"'{u}'" for u in urls)
+    rows = con.sql(f"""SELECT geometry FROM read_parquet([{lst}])
+                       WHERE bbox.xmin < {lon1} AND bbox.xmax > {lon0}
+                         AND bbox.ymin < {lat1} AND bbox.ymax > {lat0}""").fetchall()
+    rings = []
+    for (g,) in rows:
+        geom = wkb.loads(bytes(g))
+        for part in getattr(geom, "geoms", [geom]):
+            if part.geom_type == "Polygon":
+                rings.append([list(c) for c in part.exterior.coords])
+    return rings
+
+
 def openstreetmap(bbox, timeout=25):
     lon0, lat0, lon1, lat1 = bbox
     q = f'[out:json][timeout:{timeout}];(way["building"]({lat0},{lon0},{lat1},{lon1}););out geom;'
@@ -178,11 +241,26 @@ def fetch(src_transform, src_crs, width, height):
             _log(f"{name} unavailable ({type(e).__name__}: {e})")
 
     t0 = time.time()
-    th = [threading.Thread(target=run, args=("microsoft", microsoft), daemon=True),
-          threading.Thread(target=run, args=("osm", openstreetmap), daemon=True)]
+    # Overture first (OSM + Microsoft + Google Open Buildings, conflated);
+    # Microsoft + OSM directly in parallel as the fallback
+    th = [threading.Thread(target=run, args=(k, f), daemon=True)
+          for k, f in (("overture", overture), ("microsoft", microsoft), ("osm", openstreetmap))]
     for t in th:
         t.start()
-    for t in th:
+    th[0].join(max(1.0, TIME_BUDGET_S - (time.time() - t0)))
+    if got.get("overture"):
+        ov = [p for p in _to_pixels(got["overture"], src_transform, src_crs) if len(p) >= 4]
+        W_, H_ = width, height
+
+        def _in(p):
+            a = np.asarray(p)
+            return a[:, 0].max() >= 0 and a[:, 0].min() < W_ and a[:, 1].max() >= 0 and a[:, 1].min() < H_
+        ov = [p for p in ov if _in(p)]
+        if ov:
+            _log(f"{len(ov)} Overture outlines (OpenStreetMap + Microsoft + Google Open Buildings, "
+                 f"{time.time() - t0:.0f} s)")
+            return ov
+    for t in th[1:]:
         t.join(max(1.0, TIME_BUDGET_S - (time.time() - t0)))
     ms = _to_pixels(got.get("microsoft") or [], src_transform, src_crs)
     osm = _to_pixels(got.get("osm") or [], src_transform, src_crs)
@@ -194,6 +272,6 @@ def fetch(src_transform, src_crs, width, height):
     ms = [p for p in ms if len(p) >= 4 and inside(p)]
     osm = [p for p in osm if len(p) >= 4 and inside(p)]
     polys = _merge(ms, osm, width, height)
-    _log(f"{len(ms)} Microsoft + {len(polys) - len(ms)} OpenStreetMap outlines "
+    _log(f"Overture unavailable; {len(ms)} Microsoft + {len(polys) - len(ms)} OpenStreetMap outlines "
          f"({time.time() - t0:.0f} s)")
     return polys

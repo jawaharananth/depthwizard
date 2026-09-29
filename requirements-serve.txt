@@ -34,3 +34,5 @@ huggingface-hub==1.28.0
 # shapely -- tools/build_context_city.py (context-city LOD1 layer).
 pyproj==3.7.2
 shapely==2.1.2
+# duckdb -- footprint_sources.py reads Overture building outlines (GeoParquet over HTTPS)
+duckdb==1.5.5

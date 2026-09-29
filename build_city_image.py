@@ -79,6 +79,11 @@ GROUND_GRID = 700
 NDVI_TREE = 0.25
 # Traced candidates whose height std / median reaches this are crowns, not roofs
 TRACED_MAX_ROUGHNESS = 0.40
+# A traced candidate is drawn as a building block only with all of these;
+# otherwise its height stays in the smooth surface (no ragged shards)
+BLOCK_MIN_RECT = 0.65        # area / minimum rotated rectangle
+BLOCK_MIN_HEIGHT_M = 2.5     # a storey
+BLOCK_MIN_AREA_M2 = 12.0     # a room
 # Relief (1st-99th percentile of the 30 m-smoothed terrain map) from which a
 # scene's 3D ground follows the terrain instead of a flat plane.
 RELIEF_MODE_M = 20.0
@@ -1978,6 +1983,37 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
             print(f"      rough-topped candidates (tree crowns): {len(footprints) - len(_kept)} dropped, "
                   f"{len(_kept)} kept")
         footprints = _kept
+        # Two tiers, as production 3D maps do: a traced candidate becomes a
+        # crisp block only on strong evidence -- roughly rectangular, a real
+        # storey tall, big enough to be a room. Everything else (the ragged
+        # low fragments of sheds, yards and bare earth that rendered as dark
+        # shards) keeps its height in the smooth ground surface instead of
+        # becoming a box: nothing is deleted from the model, it is just not
+        # asserted as a building outline it does not have.
+        _strong = []
+        _weak_mask = np.zeros(ndsm.shape, np.uint8)
+        for _p in footprints:
+            _a = np.asarray(_p, np.float32).reshape(-1, 2)
+            _area = abs(cv2.contourArea(_a))
+            (_, (_rw, _rh), _) = cv2.minAreaRect(_a)
+            _rect = _area / max(_rw * _rh, 1e-6)
+            _ai = np.round(_a).astype(np.int32)
+            _x0, _y0 = np.maximum(_ai.min(0), 0)
+            _x1, _y1 = np.minimum(_ai.max(0) + 1, [ndsm.shape[1], ndsm.shape[0]])
+            _med = 0.0
+            if _x1 > _x0 and _y1 > _y0:
+                _m = np.zeros((_y1 - _y0, _x1 - _x0), np.uint8)
+                cv2.fillPoly(_m, [_ai - [_x0, _y0]], 1)
+                _hh = ndsm[_y0:_y1, _x0:_x1][_m > 0]
+                _med = float(np.median(_hh)) if _hh.size else 0.0
+            if (_rect >= BLOCK_MIN_RECT and _med >= BLOCK_MIN_HEIGHT_M
+                    and _area * gsd * gsd >= BLOCK_MIN_AREA_M2):
+                _strong.append(_p)
+            else:
+                cv2.fillPoly(_weak_mask, [_ai], 1)
+        print(f"      blocks: {len(_strong)} traced candidates drawn as buildings, "
+              f"{len(footprints) - len(_strong)} weak ones kept as surface relief")
+        footprints = _strong
         if _prefetch.get("fp") is not None:
             try:
                 _real = _prefetch["fp"].result(timeout=90)
@@ -2241,6 +2277,13 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
                 _prism_mask.astype(np.float32), (0, 0), sigmaX=_feather_px) * 2.0, 0.0, 1.0)
             _keep[_prism_mask > 0] = 0.0
             ground_display = ground + _bump_smooth * _keep
+            _wm = locals().get("_weak_mask")
+            if _wm is not None and _wm.any():
+                # weak structures (see the two-tier note in discovery): their
+                # own height, softened ~0.6 m, as relief in the ground surface
+                _wh = np.where(_wm > 0, np.clip(dsm - ground, 0.0, 60.0), 0.0).astype(np.float32)
+                _ws = cv2.GaussianBlur(_wh, (0, 0), sigmaX=max(1.0, 0.6 / max(gsd, 1e-6)))
+                ground_display = np.maximum(ground_display, ground + _ws * _keep)
             # Leaf-clump scale detail for the NORMAL MAP only: the mesh stays
             # on the smoothed crown surface, but per-texel lighting follows the
             # real CHM at ~0.6 m, so crowns shade as clumped foliage rather
