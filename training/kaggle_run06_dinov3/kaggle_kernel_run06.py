@@ -43,7 +43,7 @@ import numpy as np
 
 T0 = time.time()
 SESSION_H = float(os.environ.get("RUN_HOURS", "11.2"))   # Kaggle kills at 12 h
-TRAIN_H = float(os.environ.get("TRAIN_HOURS", "3.4"))    # wall time spent in the loop
+TRAIN_H = float(os.environ.get("TRAIN_HOURS", "2.8"))    # wall time spent in the loop
 WORK = "/kaggle/working"
 TMP = "/kaggle/tmp" if os.path.isdir("/kaggle") else "/tmp/run06"
 os.makedirs(TMP, exist_ok=True)
@@ -163,9 +163,19 @@ STAC = "https://planetarycomputer.microsoft.com/api/stac/v1/search"
 CROPAPI = "https://planetarycomputer.microsoft.com/api/data/v1/item/bbox"
 
 
+def _open(req, timeout):
+    for k in range(4):
+        try:
+            return urllib.request.urlopen(req, timeout=timeout).read()
+        except Exception:
+            if k == 3:
+                raise
+            time.sleep(5 * (k + 1) + random.random() * 5)
+
+
 def _post(q):
     req = urllib.request.Request(STAC, data=json.dumps(q).encode(), headers={"Content-Type": "application/json"})
-    return json.loads(urllib.request.urlopen(req, timeout=60).read())["features"]
+    return json.loads(_open(req, 60))["features"]
 
 
 def naip_site(site, per_site=9, tile_m=307.2):
@@ -199,9 +209,9 @@ def naip_site(site, per_site=9, tile_m=307.2):
             n2 = int(round(tile_m / 2.0))
             hag_u = (f"{CROPAPI}/{l},{b},{r},{t}/{n2}x{n2}.tif?collection=3dep-lidar-hag&item={hag[0]['id']}"
                      f"&assets=data&coord_crs={c}&dst_crs={c}&resampling=average")
-            with rasterio.MemoryFile(urllib.request.urlopen(img_u, timeout=120).read()) as mf, mf.open() as s:
+            with rasterio.MemoryFile(_open(img_u, 120)) as mf, mf.open() as s:
                 im = s.read()
-            with rasterio.MemoryFile(urllib.request.urlopen(hag_u, timeout=120).read()) as mf, mf.open() as s:
+            with rasterio.MemoryFile(_open(hag_u, 120)) as mf, mf.open() as s:
                 h = s.read(1).astype(np.float32)
                 m = s.read_masks(1) > 0
             if im.shape[0] > 3:
@@ -221,7 +231,7 @@ def naip_site(site, per_site=9, tile_m=307.2):
 
 
 def naip_all():
-    with cf.ThreadPoolExecutor(8) as ex:
+    with cf.ThreadPoolExecutor(4) as ex:
         res = [p for lst in ex.map(naip_site, SITES) for p in lst]
     print(f"[{el()}] NAIP+3DEP {len(res)} tiles from {len(SITES)} sites", flush=True)
     return res
@@ -231,7 +241,7 @@ def load(item):
     kind, a, b = item
     if kind == "npz":
         z = np.load(a)
-        return z["rgb"], z["agl"].astype(np.float32), 2.0   # label pixel 2 m
+        return z["rgb"], np.maximum(z["agl"].astype(np.float32), 0), 2.0   # label pixel 2 m
     import h5py
     with h5py.File(a, "r") as h:
         rgb = h["image"][:]
@@ -241,6 +251,9 @@ def load(item):
         rgb = rgb.transpose(1, 2, 0)
     if rgb.dtype != np.uint8:
         rgb = np.clip(rgb, 0, 255).astype(np.uint8)
+    # height above ground is >= 0; GAMUS carries some negative values, and the
+    # log term of the loss is NaN below -1 m (run 06 v3 went NaN at step 150)
+    agl = np.where(np.isfinite(agl), np.maximum(agl, 0), np.nan).astype(np.float32)
     return rgb, agl, None                                   # label on the image grid
 
 
@@ -434,7 +447,8 @@ def main():
     scaler = torch.amp.GradScaler("cuda")
     dl = torch.utils.data.DataLoader(make_dataset(train), batch_size=BATCH, shuffle=True, num_workers=4,
                                      drop_last=True, persistent_workers=True)
-    t_start, step, best, hist = time.time(), 0, 1e9, []
+    t_start, step, best, hist, skipped = time.time(), 0, 1e9, [], 0
+    use_amp = True
     budget = min(TRAIN_H, SESSION_H - (time.time() - T0) / 3600 - 0.8) * 3600
     last_eval = time.time()
     print(f"[{el()}] training for {budget / 3600:.2f} h", flush=True)
@@ -447,10 +461,18 @@ def main():
             warm = min(1.0, step / 300)
             for gi, base in enumerate((2e-5, 2e-4)):
                 opt.param_groups[gi]["lr"] = base * warm * 0.5 * (1 + math.cos(math.pi * min(frac, 1)))
-            with torch.autocast("cuda", dtype=torch.float16):
+            with torch.autocast("cuda", dtype=torch.float16, enabled=use_amp):
                 p = net(x.to(dev, non_blocking=True))
             l = loss_fn(p.float(), y.to(dev), c)
             opt.zero_grad(set_to_none=True)
+            if not torch.isfinite(l):
+                skipped += 1
+                if use_amp and skipped >= 30 and skipped > 0.5 * (step + skipped):
+                    use_amp = False
+                    print(f"[{el()}] fp16 unstable ({skipped} bad steps): continuing in fp32", flush=True)
+                if skipped % 20 == 1:
+                    print(f"[{el()}] non-finite loss skipped ({skipped} so far)", flush=True)
+                continue
             scaler.scale(l).backward()
             scaler.unscale_(opt)
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -459,21 +481,23 @@ def main():
             if step % 50 == 0:
                 print(f"[{el()}] step {step} loss {float(l):.3f} ({frac * 100:.0f}% of budget)", flush=True)
             if time.time() - last_eval > 40 * 60 or (frac > 0.97 and time.time() - last_eval > 300):
+                torch.save({k: v.half() for k, v in model.state_dict().items()}, os.path.join(WORK, "run06_last.pt"))
                 r = evaluate(model, val, dev); r["step"] = step; hist.append(r); last_eval = time.time()
                 print(f"[{el()}] VAL {r}", flush=True)
-                if r["mae_m"] < best:
+                if math.isfinite(r["mae_m"]) and r["mae_m"] < best:
                     best = r["mae_m"]
                     sd = {k: v.half() for k, v in model.state_dict().items()}
                     torch.save(sd, os.path.join(WORK, "run06_best.pt"))
                     print(f"    saved best (val MAE {best:.3f})", flush=True)
+    torch.save({k: v.half() for k, v in model.state_dict().items()}, os.path.join(WORK, "run06_last.pt"))
     r = evaluate(model, val, dev); r["step"] = step; hist.append(r)
-    if r["mae_m"] < best:
+    if math.isfinite(r["mae_m"]) and r["mae_m"] < best:
         best = r["mae_m"]
         torch.save({k: v.half() for k, v in model.state_dict().items()}, os.path.join(WORK, "run06_best.pt"))
     json.dump({"encoder": "DINOv3 ViT-L/16 SAT-493M (Meta, DINOv3 License)", "head": "DPT-style 4-level fusion",
                "layers": [4, 11, 17, 23], "crop": CROP, "steps": step, "best_val_mae_m": best,
                "val": "DFC2019 Track 3 validation tiles (as runs 03-05)", "history": hist,
-               "train_items": len(train), "gamus_tiles": len(g), "naip_3dep_tiles": len(nai),
+               "train_items": len(train), "skipped_steps": skipped, "amp_at_end": use_amp, "gamus_tiles": len(g), "naip_3dep_tiles": len(nai),
                "normalisation": {"mean": [0.430, 0.411, 0.296], "std": [0.213, 0.156, 0.143]}},
               open(os.path.join(WORK, "training_report.json"), "w"), indent=1)
     shutil.copy(__file__, os.path.join(WORK, "kaggle_kernel_run06.py"))
