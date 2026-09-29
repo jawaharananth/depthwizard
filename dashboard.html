@@ -32,6 +32,9 @@
   #drop:hover, #drop.over { border-color: var(--accent); background: #131b20; }
   #drop strong { display: block; margin-bottom: 6px; }
   #drop span { color: var(--dim); font-size: 13px; }
+  #demrow { display: block; margin: 10px 0 0; color: var(--dim); font-size: 13px; }
+  #demrow select { margin-left: 6px; background: #131b20; color: inherit;
+                   border: 1px solid #2a353d; border-radius: 4px; padding: 3px 6px; font: inherit; }
   input[type=file] { display: none; }
 
   #panel { display: none; background: var(--panel); border: 1px solid var(--line);
@@ -108,6 +111,12 @@
     <span>GeoTIFF, PNG or JPEG &middot; at least 800&nbsp;px &middot; must be top-down</span>
     <input type="file" id="file" accept=".tif,.tiff,.png,.jpg,.jpeg">
   </div>
+  <label id="demrow">GeoTIFF heights in metres, scaled to
+    <select id="dem">
+      <option value="glo30">Copernicus GLO-30 DEM</option>
+      <option value="srtm">SRTM 30 m DEM</option>
+    </select>
+  </label>
 
   <section id="panel">
     <div class="toprow">
@@ -256,7 +265,8 @@ function start(file) {
   $("panel").style.display = "block";
   renderStages(null);
 
-  fetch("/api/upload?name=" + encodeURIComponent(file.name),
+  $("demrow").style.display = "none";
+  fetch("/api/upload?name=" + encodeURIComponent(file.name) + "&dem=" + $("dem").value,
         { method: "POST", body: file })
     .then((r) => r.json())
     .then((d) => {
@@ -306,6 +316,7 @@ function reset() {
   $("fill").style.width = "0";
   $("panel").style.display = "none";
   $("drop").style.display = "block";
+  $("demrow").style.display = "block";
   $("file").value = "";
 }
 
