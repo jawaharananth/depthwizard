@@ -224,3 +224,4 @@ work/
 tools/gltfpack/node_modules/
 
 stage_timings.json
+third_party/dinov3/
