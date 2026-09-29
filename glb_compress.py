@@ -42,10 +42,21 @@ def compress(src: str, dst: str, timeout_s: int = 300) -> str:
         return "copied (gltfpack not installed)"
     tmp = dst + ".tmp.glb"
     try:
-        r = subprocess.run([tool, "-i", src, "-o", tmp] + ARGS, capture_output=True, text=True,
-                           timeout=timeout_s)
-        if r.returncode != 0 or not os.path.exists(tmp) or os.path.getsize(tmp) < 1024:
-            raise RuntimeError((r.stderr or r.stdout or "no output").strip()[:200])
+        pr = subprocess.Popen([tool, "-i", src, "-o", tmp] + ARGS, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, text=True)
+        try:
+            out, err = pr.communicate(timeout=timeout_s)
+        except subprocess.TimeoutExpired:
+            # on Windows the tool is a .cmd wrapper around node: killing the
+            # wrapper alone leaves node holding the pipes, so end the whole tree
+            if os.name == "nt":
+                subprocess.run(["taskkill", "/F", "/T", "/PID", str(pr.pid)], capture_output=True)
+            else:
+                pr.kill()
+            pr.communicate(timeout=30)
+            raise
+        if pr.returncode != 0 or not os.path.exists(tmp) or os.path.getsize(tmp) < 1024:
+            raise RuntimeError((err or out or "no output").strip()[:200])
         os.replace(tmp, dst)
         return "meshopt"
     except Exception as e:

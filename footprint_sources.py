@@ -134,6 +134,12 @@ def _overture_index():
     return idx
 
 
+OVERTURE_MAX_ROWS = 250000
+# the running Overture query, so a late one can be cancelled instead of
+# holding the interpreter after the build has moved on
+_overture_live = {}
+
+
 def overture(bbox):
     """Overture buildings (OpenStreetMap + Microsoft + Google Open Buildings,
     conflated) as lon/lat rings. Google's outlines cover Indian cities
@@ -155,13 +161,17 @@ def overture(bbox):
     if not urls:
         return []
     con = duckdb.connect()
+    _overture_live["con"] = con          # fetch() interrupts it when the time budget ends
     con.sql("INSTALL httpfs; LOAD httpfs;")
     lst = ", ".join(f"'{u}'" for u in urls)
     rows = con.sql(f"""SELECT geometry FROM read_parquet([{lst}])
                        WHERE bbox.xmin < {lon1} AND bbox.xmax > {lon0}
-                         AND bbox.ymin < {lat1} AND bbox.ymax > {lat0}""").fetchall()
+                         AND bbox.ymin < {lat1} AND bbox.ymax > {lat0}
+                       LIMIT {OVERTURE_MAX_ROWS}""").fetchall()
     rings = []
     for (g,) in rows:
+        if _overture_live.get("stop"):
+            return []
         geom = wkb.loads(bytes(g))
         for part in getattr(geom, "geoms", [geom]):
             if part.geom_type == "Polygon":
@@ -247,7 +257,15 @@ def fetch(src_transform, src_crs, width, height):
           for k, f in (("overture", overture), ("microsoft", microsoft), ("osm", openstreetmap))]
     for t in th:
         t.start()
+    _overture_live.clear()
     th[0].join(max(1.0, TIME_BUDGET_S - (time.time() - t0)))
+    if th[0].is_alive():
+        _log("Overture over time budget, cancelled")
+        _overture_live["stop"] = True
+        try:
+            _overture_live["con"].interrupt()
+        except Exception:
+            pass
     if got.get("overture"):
         ov = [p for p in _to_pixels(got["overture"], src_transform, src_crs) if len(p) >= 4]
         W_, H_ = width, height
