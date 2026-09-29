@@ -135,9 +135,32 @@ def _overture_index():
 
 
 OVERTURE_MAX_ROWS = 250000
-# the running Overture query, so a late one can be cancelled instead of
-# holding the interpreter after the build has moved on
-_overture_live = {}
+
+
+def overture_isolated(bbox, timeout_s=None):
+    """overture() in a child process. DuckDB turns its result into Python
+    objects while holding the interpreter lock, so a slow read run on a thread
+    stalls the whole build, time budgets included; a child process is killed
+    at the budget instead."""
+    import subprocess
+    import sys
+    import tempfile
+    fd, out = tempfile.mkstemp(suffix=".json")
+    os.close(fd)
+    code = ("import json, sys; import footprint_sources as f; "
+            "json.dump(f.overture(tuple(json.loads(sys.argv[1]))), open(sys.argv[2], 'w'))")
+    try:
+        r = subprocess.run([sys.executable, "-c", code, json.dumps(list(bbox)), out], cwd=ROOT,
+                           capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           timeout=timeout_s or TIME_BUDGET_S)
+        if r.returncode != 0:
+            raise RuntimeError((r.stderr or "").strip().splitlines()[-1:] or "failed")
+        return json.load(open(out))
+    finally:
+        try:
+            os.remove(out)
+        except OSError:
+            pass
 
 
 def overture(bbox):
@@ -161,7 +184,6 @@ def overture(bbox):
     if not urls:
         return []
     con = duckdb.connect()
-    _overture_live["con"] = con          # fetch() interrupts it when the time budget ends
     con.sql("INSTALL httpfs; LOAD httpfs;")
     lst = ", ".join(f"'{u}'" for u in urls)
     rows = con.sql(f"""SELECT geometry FROM read_parquet([{lst}])
@@ -170,8 +192,6 @@ def overture(bbox):
                        LIMIT {OVERTURE_MAX_ROWS}""").fetchall()
     rings = []
     for (g,) in rows:
-        if _overture_live.get("stop"):
-            return []
         geom = wkb.loads(bytes(g))
         for part in getattr(geom, "geoms", [geom]):
             if part.geom_type == "Polygon":
@@ -254,18 +274,10 @@ def fetch(src_transform, src_crs, width, height):
     # Overture first (OSM + Microsoft + Google Open Buildings, conflated);
     # Microsoft + OSM directly in parallel as the fallback
     th = [threading.Thread(target=run, args=(k, f), daemon=True)
-          for k, f in (("overture", overture), ("microsoft", microsoft), ("osm", openstreetmap))]
+          for k, f in (("overture", overture_isolated), ("microsoft", microsoft), ("osm", openstreetmap))]
     for t in th:
         t.start()
-    _overture_live.clear()
     th[0].join(max(1.0, TIME_BUDGET_S - (time.time() - t0)))
-    if th[0].is_alive():
-        _log("Overture over time budget, cancelled")
-        _overture_live["stop"] = True
-        try:
-            _overture_live["con"].interrupt()
-        except Exception:
-            pass
     if got.get("overture"):
         ov = [p for p in _to_pixels(got["overture"], src_transform, src_crs) if len(p) >= 4]
         W_, H_ = width, height
