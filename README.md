@@ -8,7 +8,7 @@ single-view satellite or aerial image, with a visualisation layer.
 ![pixel](https://img.shields.io/badge/held--out%20pixel%20RMSE%20at%200.6%20m-2.81%20m%20(corr%200.76)-blue)
 ![per-building](https://img.shields.io/badge/held--out%20per--building%20RMSE%20at%200.6%20m-1.87%20m%20(18%20tiles%2C%20458%20bldgs)-blue)
 ![isro](https://img.shields.io/badge/ISRO%20protocol%20vs%20chosen%20DEM-0.66%E2%80%931.07%20m-green)
-![interval](https://img.shields.io/badge/90%25%20interval-%C2%B14.53%20m-informational)
+![interval](https://img.shields.io/badge/per--building%2090%25%20interval-%C2%B13.02%20m%20(90.2%25%20held--out%20coverage)-informational)
 
 Held-out DFC2019 LiDAR, images degraded to ISRO's 0.6 m, production model
 (run 03), `scripts/compare_ckpt.py` -> `final_out/tta_eval.json`. Older

@@ -42,7 +42,7 @@ def dfc(bb):
     tiles = [t for t in sorted(glob.glob(os.path.join(ROOT, "final_out", "blind_input", "JAX_*.tif")))
              if os.path.basename(t)[:7] in held]
     sq = ab = n = 0.0
-    P, T, Bl = [], [], []
+    P, T, Bl, Bt = [], [], [], []
     for tp in tiles:
         tile = os.path.basename(tp)[:7]
         with rasterio.open(tp) as s:
@@ -63,12 +63,15 @@ def dfc(bb):
             if st[i, cv2.CC_STAT_AREA] >= 40:
                 bi = lab == i
                 Bl.append((float(np.median(t[bi])), float(np.median(p[bi]))))
+                Bt.append(tile)
         print(f"  dfc {tile}", flush=True)
     b = np.array(Bl); be = b[:, 1] - b[:, 0]
     return {"rmse": (sq / n) ** 0.5, "mae": ab / n,
             "corr": float(np.corrcoef(np.concatenate(P), np.concatenate(T))[0, 1]),
             "bldg_rmse": float(np.sqrt(np.mean(be ** 2))), "bldg_bias": float(be.mean()),
-            "n_buildings": int(len(b))}
+            "n_buildings": int(len(b)),
+            # per building: tile, LiDAR median, predicted median (for calibration)
+            "buildings": [[tl, round(x, 3), round(y, 3)] for tl, (x, y) in zip(Bt, Bl)]}
 
 
 def swiss(bb, tag):
