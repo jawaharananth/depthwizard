@@ -110,17 +110,31 @@ def roof_features(rgb: np.ndarray, m: np.ndarray) -> dict:
     coh = float(np.sqrt((Jxx - Jyy) ** 2 + 4 * Jxy ** 2) / tr)
     per, period = _periodicity(g, m)
     exg = 2 * G - R - B
+    Hh = hsv[:, 0]                                   # OpenCV hue 0..180
+    # Vegetation must be lit, saturated and green-hued: shadowed concrete in
+    # this imagery is a dark blue-green and passed a bare excess-green test.
+    # (the capture has a green cast: grey concrete reads ~(117,124,124), so a
+    # plain G>R test is not enough)
+    veg = ((G - R > 18) & (G - B > 12) & (Hh >= 30) & (Hh <= 85)
+           & (S > 0.22) & (V > 60))
     return {
         "n_px": int(m.sum()),
         "v_med": float(np.median(V)), "v_std": float(np.std(V)),
         "s_med": float(np.median(S)),
         "rgb_med": [float(np.median(R)), float(np.median(G)), float(np.median(B))],
-        "veg_frac": float(np.mean((exg > 18) & (G > R) & (G > B - 5))),
-        "blue_tarp_frac": float(np.mean((B > R + 45) & (B > G + 10) & (V > 110) & (S > 0.35))),
-        "panel_frac": float(np.mean((V < 115) & (B >= R + 3) & (B >= G - 6) & (S < 0.45))),
+        "veg_frac": float(np.mean(veg)),
+        "shadow_frac": float(np.mean((V < 80) & ~veg)),
+        # blue/green-blue PE tarps; a swimming pool is cyan (G ~ B), so B must
+        # clearly exceed G as well as R
+        "blue_tarp_frac": float(np.mean((B > R + 45) & (B > G + 22) & (V > 100) & (S > 0.35))),
+        "cyan_frac": float(np.mean((B > R + 40) & (np.abs(B - G) < 25) & (S > 0.35))),
+        "panel_frac": float(np.mean((V > 40) & (V < 115) & (B >= R + 8) & (B >= G - 4) & (S < 0.5))),
+        # swimming-pool water: deep saturated cyan-blue, R very low
+        "water_frac": float(np.mean((R < 60) & (B > R + 60) & (G > R + 35) & (S > 0.5))),
         "dark_frac": float(np.mean(V < 70)),
         "bright_frac": float(np.mean(V > 235)),
-        "grad": float(np.hypot(gx, gy)[m].mean()),
+        # Sobel-3 magnitude / 8 -> grey levels per pixel
+        "grad": float(np.hypot(gx, gy)[m].mean() / 8.0),
         "coherence": coh, "periodicity": per, "period_px": period,
     }
 
@@ -129,22 +143,45 @@ def classify(f: dict, area_m2: float):
     """(class, confidence) from the features above. Order matters: the most
     specific evidence is tested first."""
     sc = {}
-    sc["vegetation"] = np.clip((f["veg_frac"] - 0.30) / 0.30, 0, 1)
-    sc["tarp/membrane"] = np.clip((f["blue_tarp_frac"] - 0.20) / 0.30, 0, 1)
+    sc["vegetation"] = np.clip((f["veg_frac"] - 0.40) / 0.30, 0, 1)
+    sc["tarp/membrane"] = (np.clip((f["blue_tarp_frac"] - 0.20) / 0.30, 0, 1)
+                           * (1.0 if f["water_frac"] < 0.25 else 0.0))
     # solar: dark blue-grey panels, regular rows
     sc["solar panel"] = (np.clip((f["panel_frac"] - 0.30) / 0.35, 0, 1)
                          * (0.6 + 0.4 * np.clip(f["periodicity"] / 0.08, 0, 1))
-                         * (1.0 if f["veg_frac"] < 0.2 else 0.3))
+                         * (1.0 if f["veg_frac"] < 0.2 else 0.3)
+                         * (1.0 if f["v_med"] > 60 and f["shadow_frac"] < 0.5 else 0.0))
     # metal sheet: one strong stripe direction + a periodic seam pattern,
     # smooth colour, a roof big enough to be a shed/industrial span
     sc["metal sheet"] = (np.clip((f["coherence"] - 0.25) / 0.35, 0, 1)
                          * np.clip(f["periodicity"] / 0.06, 0, 1)
                          * np.clip((area_m2 - 30) / 120, 0, 1)
+                         # a sheet roof is one smooth colour; parapets, water
+                         # tanks and stair rooms make a slab roof busy
+                         * np.clip((34 - f["v_std"]) / 14, 0, 1)
+                         * np.clip((16 - f["grad"]) / 8, 0, 1)
                          * (1.0 if f["panel_frac"] < 0.35 else 0.4)
-                         * (1.0 if f["veg_frac"] < 0.2 else 0.2))
+                         * (1.0 if f["veg_frac"] < 0.2 else 0.2)
+                         * (1.0 if f["v_med"] > 90 else 0.0))
+    # Colour temperature, checked on this capture's crops: slab concrete /
+    # plaster reads WARM (R - B = +20..+40), galvanised or blue/grey painted
+    # sheet reads COOL-neutral (R - B <= ~+8) at mid-high brightness. Very
+    # bright neutral white (V > 225) is left alone -- heat-reflective white
+    # paint on slab roofs is common and indistinguishable by colour.
+    warmth = f["rgb_med"][0] - f["rgb_med"][2]
+    cool = (np.clip((14 - warmth) / 10, 0, 1)
+            * np.clip((f["v_med"] - 135) / 25, 0, 1)
+            * (1.0 if f["v_med"] <= 225 else 0.0)
+            * np.clip((24 - f["grad"]) / 10, 0, 1)
+            * np.clip((area_m2 - 25) / 60, 0, 1)
+            * (1.0 if f["veg_frac"] < 0.2 and f["water_frac"] < 0.1 else 0.0))
+    sc["metal sheet"] = max(sc["metal sheet"], 0.9 * cool)
     # glass roof / skylight / atrium: dark, smooth, low saturation, not panels
+    # (a roof in cast shadow is equally dark and smooth: require it not be
+    # a tinted-green shadow, i.e. neutral-to-blue)
     sc["glass/curtain wall"] = (np.clip((70 - f["v_med"]) / 30, 0, 1)
-                                * np.clip((14 - f["grad"]) / 8, 0, 1)
+                                * np.clip((8 - f["grad"]) / 5, 0, 1)
+                                * (1.0 if f["rgb_med"][2] >= f["rgb_med"][1] else 0.0)
                                 * (1.0 if f["panel_frac"] < 0.5 else 0.3))
     best = max(sc, key=sc.get)
     if sc[best] < 0.35:
@@ -212,6 +249,10 @@ def run(scene_dir: str, display_path: str, sheet_dir: str = None, limit: int = N
         rec["roof"] = {"class": cls, "confidence": round(conf, 3),
                        "roughness": rgh, "metalness": met, "specular": spec,
                        "scores": {kk: round(float(v), 3) for kk, v in sc.items()},
+                       # pool water is not a roof class: the polygon is most
+                       # likely a footprint error over a swimming pool
+                       "flags": (["water-like pixels (pool?) -- footprint suspect"]
+                                 if fr["water_frac"] >= 0.25 else []),
                        "features": {kk: (round(v, 4) if isinstance(v, float) else v)
                                     for kk, v in fr.items()}}
         # Facade: the swept strip between the roof outline and its base,
