@@ -459,6 +459,8 @@ def run_job(job: Job) -> None:
     content_hash = None
     try:
         content_hash = _upload_hash(job.path)
+        if getattr(job, "dem", "glo30") != "glo30":
+            content_hash += "_" + job.dem       # a different DEM is a different result
     except Exception:
         pass   # caching is an optimisation, never a requirement -- proceed without it
 
@@ -519,6 +521,7 @@ def run_job(job: Job) -> None:
                 _worker.restart()
                 _loaded_code_version = _cv
             kw = upload_build_kwargs()
+            kw["dem_source"] = getattr(job, "dem", "glo30")
             if not _is_georeferenced(job.path):
                 kw.update(gsd_m=getattr(job, "gsd", None) or DEFAULT_UPLOAD_GSD_M,
                           gsd_assumed=getattr(job, "gsd", None) is None)
@@ -919,6 +922,10 @@ class Handler(BaseHTTPRequestHandler):
             job.gsd = _g if 0.05 <= _g <= 10.0 else None
         except ValueError:
             job.gsd = None
+        # DEM that scales a GeoTIFF to absolute metres: ?dem=glo30 (Copernicus,
+        # default) or ?dem=srtm (SRTM 30 m, the source ISRO's statement names)
+        _d = (qs.get("dem") or [os.environ.get("DW_UPLOAD_DEM", "glo30")])[0].lower()
+        job.dem = _d if _d in ("glo30", "srtm") else "glo30"
         with _jobs_lock:
             _jobs[job_id] = {"job": job}
         threading.Thread(target=run_job, args=(job,), daemon=True).start()
