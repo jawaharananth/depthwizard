@@ -981,6 +981,7 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
     # Skipped when max_px would immediately shrink the upsampled image back
     # (upsample then downsample is a lossy round trip, not a gain), or when
     # the caller turns it off.
+    _input_gsd_m = gsd_m   # what the file itself has -- the panel reports this, not the working grid
     _would_undo = gsd_m is not None and max(pil.size) * min(3.0, gsd_m / NATIVE_TRAIN_GSD_M) > max_px * 1.05
     if auto_zoom and not _would_undo and gsd_m is not None and gsd_m > NATIVE_TRAIN_GSD_M * 1.15:
         _zoom = min(3.0, gsd_m / NATIVE_TRAIN_GSD_M)
@@ -2848,6 +2849,8 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
                     "crs": str(src_crs) if src_crs is not None else None,
                     "elevation_reference": _datum if _abs_datum else None,
                     "pixel_assumed": True if (gsd_assumed and not _georef) else None,
+                    # the uploaded file's pixel, not the x2 grid it is upsampled to
+                    **({"pixel_m": round(float(_input_gsd_m), 3)} if _input_gsd_m else {}),
                     "model": json.load(open(os.path.join(DepthBackbone.METRIC_CKPT, "metric_ok.json")))
                     .get("checkpoint", "metric") if _bb.is_metric else "relative",
                 })

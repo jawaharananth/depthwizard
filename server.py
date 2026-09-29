@@ -67,7 +67,8 @@ RESULT_CACHE_DIR = os.path.join(ROOT, "cache", "uploads")
 # The checkpoint's licensing marker (with its behavioural fingerprint) is
 # hashed too: swapping in a retrained model must invalidate cached results.
 CODE_FILES = ("build_city_image.py", "dem_source.py", "depth_model.py", "city_model.py",
-              "hover_export.py", "anchoring.py", "input_bands.py",
+              "hover_export.py", "anchoring.py", "input_bands.py", "terrain_maps.py",
+              "glb_compress.py", "canopy_source.py", "open_buildings_source.py",
               os.path.join("checkpoints", "height_best", "metric_ok.json"))
 
 

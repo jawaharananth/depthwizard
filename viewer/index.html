@@ -1503,6 +1503,14 @@ function addTerrainPlinth(mesh, maxDim) {
   for (let i = 1; i < n; i++) { if (pos.getX(i) < pos.getX(i - 1)) { w = i; break; } }
   if (!w || n % w) return;
   const h = n / w;
+  if (h < 2) return;
+  // Only a true grid gets walls: its four corners must be the ground's own
+  // bounding corners. Anything else would draw walls across the model.
+  const gb = new THREE.Box3().setFromBufferAttribute(pos);
+  const tol = 0.01 * Math.max(gb.max.x - gb.min.x, gb.max.z - gb.min.z);
+  const onEdge = (i) => Math.min(Math.abs(pos.getX(i) - gb.min.x), Math.abs(pos.getX(i) - gb.max.x)) < tol &&
+                        Math.min(Math.abs(pos.getZ(i) - gb.min.z), Math.abs(pos.getZ(i) - gb.max.z)) < tol;
+  if (![0, w - 1, (h - 1) * w, n - 1].every(onEdge)) return;
   const ring = [];
   for (let c = 0; c < w; c++) ring.push(c);                       // first row
   for (let r = 1; r < h; r++) ring.push(r * w + (w - 1));         // last column
@@ -1703,17 +1711,23 @@ function unpackQuantized(root) {
 // is recovered from its own position; anything that is not a full regular
 // grid is left in the order it came.
 function restoreGridOrder(geo) {
-  const p = geo.attributes.position, n = p.count, side = Math.round(Math.sqrt(n));
-  if (side < 2 || side * side !== n) return;
+  const p = geo.attributes.position, n = p.count;
+  // Grid width = number of distinct column positions (every vertex of a
+  // column shares one x, bit for bit, through quantisation). Uploads are
+  // rarely square: a 1025 x 911 m image is a 646 x 586 grid.
+  const xs = new Set();
+  for (let i = 0; i < n; i++) xs.add(p.getX(i));
+  const w = xs.size, h = n / w;
+  if (w < 2 || !Number.isInteger(h) || h < 2) return;
   const bb = new THREE.Box3().setFromBufferAttribute(p);
-  const dx = (bb.max.x - bb.min.x) / (side - 1), dz = (bb.max.z - bb.min.z) / (side - 1);
+  const dx = (bb.max.x - bb.min.x) / (w - 1), dz = (bb.max.z - bb.min.z) / (h - 1);
   if (!(dx > 0 && dz > 0)) return;
   const dest = new Uint32Array(n), seen = new Uint8Array(n);
   for (let i = 0; i < n; i++) {
     const fc = (p.getX(i) - bb.min.x) / dx, fr = (bb.max.z - p.getZ(i)) / dz;
     const c = Math.round(fc), r = Math.round(fr);
     if (Math.abs(fc - c) > 0.3 || Math.abs(fr - r) > 0.3) return;
-    const k = r * side + c;
+    const k = r * w + c;
     if (seen[k]) return;
     seen[k] = 1; dest[i] = k;
   }
@@ -3729,17 +3743,19 @@ function floodBuildGrid() {
   if (floodGrid || !groundMesh) return floodGrid;
   const pos = groundMesh.geometry.attributes.position;
   const n = pos.count;
-  // The grid is square in the pipeline (GROUND_GRID x GROUND_GRID); recover the
-  // side rather than assuming a constant, so a differently sized build works.
-  const side = Math.round(Math.sqrt(n));
-  if (side * side !== n) return null;
+  // Row length from where x wraps back (showcases are square, uploads follow
+  // the image's own aspect), so any grid size works.
+  let w = 0;
+  for (let i = 1; i < n; i++) { if (pos.getX(i) < pos.getX(i - 1)) { w = i; break; } }
+  if (w < 2 || n % w) return null;
+  const h = n / w;
 
   const y = new Float32Array(n);
   for (let i = 0; i < n; i++) y[i] = pos.getY(i);
   const x0 = pos.getX(0), z0 = pos.getZ(0);
   const dx = pos.getX(1) - x0;                 // step along a row
-  const dz = pos.getZ(side) - z0;              // step between rows
-  floodGrid = { w: side, h: side, y, x0, z0, dx, dz };
+  const dz = pos.getZ(w) - z0;                 // step between rows
+  floodGrid = { w, h, y, x0, z0, dx, dz };
   return floodGrid;
 }
 
