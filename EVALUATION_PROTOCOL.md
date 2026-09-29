@@ -59,9 +59,10 @@ scale.**
 | 2026-09-19 | 3 (per-building) | 50 | 1,063 | ~~4.219m~~ | ~~2.998m~~ | ~~+1.465m~~ | **VOID — predates raw_metric fix** |
 | 2026-09-20 | 3 (per-building) | 18 | 461 | 2.164m | 1.597m | -0.596m | provisional, superseded by 50-tile row below |
 | 2026-09-20 | 3 (per-building) | 50 | 1,063 | **3.132m** | **1.870m** | **-0.608m** | superseded: previous Base checkpoint; tiles 19-50 overlap run-02 training tiles |
-| 2026-09-26 | 3 (per-building) | 18 held-out | 461 | **2.185m** | **1.580m** | **-1.190m** | **CURRENT (run 02, Small/Apache); only held-out tiles are valid now** |
+| 2026-09-26 | 3 (per-building) | 18 held-out | 461 | **2.185m** | **1.580m** | **-1.190m** | run 02 (Small/Apache); run 03 is scored in the 09-30 row |
 | 2026-09-26 | 2 (whole-tile, blind) | 10 held-out | -- | 4.36m | 2.36m | -- | superseded: run 02 through mesh post-processing |
-| 2026-09-27 | 2 (whole-tile, blind) | 10 held-out | -- | **2.82m** | **1.59m** | -- | **CURRENT: run 02, model AGL as product; pooled corr 0.787; zero floor 5.14m / 2.36m** |
+| 2026-09-27 | 2 (whole-tile, blind) | 10 held-out | -- | **2.82m** | **1.59m** | -- | run 02 (production model is now run 03, row below), model AGL as product; pooled corr 0.787; zero floor 5.14m / 2.36m** |
+| 2026-09-30 | `scripts/compare_ckpt.py` (image degraded to 0.6 m, ISRO's GSD) | 18 held-out | 458 | **2.81m** pixel, **1.87m** per-building | **1.56m** pixel | **-0.08m** per-building | **CURRENT: run 03 (production), raw model heights; pixel corr 0.756; `final_out/tta_eval.json` views=1** |
 
 **The 3.132m / 50-tile / 1,063-building row is the number to cite.** It
 survived the exact test that broke the earlier 3.063m claim: RMSE widened

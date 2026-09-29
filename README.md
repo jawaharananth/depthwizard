@@ -5,11 +5,14 @@ Single satellite image → navigable 3D city model.
 Built for SIH26175 (ISRO): reconstruct elevation and a 3D terrain model from a
 single-view satellite or aerial image, with a visualisation layer.
 
-![whole-tile](https://img.shields.io/badge/blind%20whole--tile%20RMSE-2.82%20m%20(corr%200.79)-blue)
-![per-building](https://img.shields.io/badge/held--out%20per--building%20RMSE-2.19%20m%20(18%20tiles%2C%20461%20bldgs)-blue)
-![tier](https://img.shields.io/badge/heights-Tier%20A%20when%20anchorable-green)
+![pixel](https://img.shields.io/badge/held--out%20pixel%20RMSE%20at%200.6%20m-2.81%20m%20(corr%200.76)-blue)
+![per-building](https://img.shields.io/badge/held--out%20per--building%20RMSE%20at%200.6%20m-1.87%20m%20(18%20tiles%2C%20458%20bldgs)-blue)
+![isro](https://img.shields.io/badge/ISRO%20protocol%20vs%20chosen%20DEM-0.66%E2%80%931.07%20m-green)
 ![interval](https://img.shields.io/badge/90%25%20interval-%C2%B14.53%20m-informational)
 
+Held-out DFC2019 LiDAR, images degraded to ISRO's 0.6 m, production model
+(run 03), `scripts/compare_ckpt.py` -> `final_out/tta_eval.json`. Older
+figures (2.82 m whole-tile, 2.19 m per-building) are run 02 on other protocols.
 Two different, non-comparable numbers — see `EVALUATION_PROTOCOL.md` before
 citing either one; that file exists because this project once conflated them.
 
