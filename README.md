@@ -13,6 +13,15 @@ single-view satellite or aerial image, with a visualisation layer.
 Two different, non-comparable numbers — see `EVALUATION_PROTOCOL.md` before
 citing either one; that file exists because this project once conflated them.
 
+![HITEC City, Hyderabad, built from one image](docs/deck/s5v5_hitec_2x2.png)
+
+**ISRO's GeoTIFF protocol** (exported DSM vs a public 30 m DEM, block-averaged
+to 30 m; `scripts/isro_protocol_eval.py`), four uploads in three CRSs
+(Web Mercator, UTM 44N, WGS84 lat/lon): RMSE **0.78–1.07 m**, bias within
+±0.02 m against Copernicus GLO-30; **3.3–4.7 m** against SRTM. The DSM's
+ground is anchored to GLO-30, so the first figure is partly by construction;
+the SRTM figure is the independent one.
+
 ---
 
 ## What it does
