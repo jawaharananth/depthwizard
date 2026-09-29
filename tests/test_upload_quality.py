@@ -142,3 +142,13 @@ def test_rotated_geotiff_made_north_up(tmp_path, monkeypatch):
         assert abs(s.transform.b) < 1e-9 and abs(s.transform.d) < 1e-9
         assert abs(s.transform.a - 0.6) < 1e-6
     assert b._north_up(q, "again") == q                     # north-up input untouched
+
+
+def test_conformal_artifact_has_fields_the_build_reads():
+    from calibration.conformal import load_fitted
+    c = load_fitted()
+    assert c is not None
+    for k in ("q", "alpha", "variant", "held_out_coverage"):
+        assert k in c, k
+    assert c["held_out_coverage"] >= 0.89
+    assert "tile" in c.get("fitted_on", {})

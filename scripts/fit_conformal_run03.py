@@ -62,7 +62,8 @@ fit.update({"variant": "constant", "normalised": False, "held_out_coverage": cov
             "held_out_method": "leave-one-tile-out over 18 tiles; nominal level widened until it reached 0.90",
             "held_out_n": int(e_all.size),
             "mean_half_width_m": fit["q"], "median_abs_error": float(np.median(np.abs(e_cal))),
-            "fitted_on": {"tiles_calibration": sorted(cal_t), "tiles_held_out": "each tile in turn",
+            "fitted_on": {"tile": "18 held-out DFC2019 tiles (leave-one-tile-out)",
+                          "tiles_calibration": sorted(cal_t), "tiles_held_out": "each tile in turn",
                           "n_calibration": int(e_cal.size), "split": "by tile, seed 0",
                           "height_source": "monocular model run 03 (production), raw metric heights, "
                                            "input degraded to 0.6 m",

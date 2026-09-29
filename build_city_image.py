@@ -3042,7 +3042,7 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
             "variant": _cal["variant"],
             "coverage_nominal": _iv_nominal,
             "half_width_m": _cal["q"] if _cal["variant"] == "constant" else None,
-            "fitted_on": _cal["fitted_on"]["tile"],
+            "fitted_on": _cal.get("fitted_on", {}).get("tile", "?"),
             "held_out_coverage": _cal.get("held_out_coverage"),
             "omitted_reason": (None if _metric_tier else
                                f"tier {tier[0]}: heights are relative, not metres"),

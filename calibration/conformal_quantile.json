@@ -35,7 +35,8 @@
     "n_calibration": 458,
     "split": "by tile, seed 0",
     "height_source": "monocular model run 03 (production), raw metric heights, input degraded to 0.6 m",
-    "truth": "DFC2019 Track 3 airborne LiDAR, per-building median"
+    "truth": "DFC2019 Track 3 airborne LiDAR, per-building median",
+    "tile": "18 held-out DFC2019 tiles (leave-one-tile-out)"
   },
   "fitted_utc": "2026-09-29T23:25:33+00:00",
   "fitted_by": "scripts/fit_conformal_run03.py",

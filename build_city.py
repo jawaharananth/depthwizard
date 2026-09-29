@@ -794,7 +794,7 @@ def build(tile: str, out_px: int = 2048, stage: bool = True,
     else:
         print(f"      conformal interval: {_cal['variant']}, "
               f"{_iv_nominal*100:.0f}% nominal, {len(_iv_half)} buildings banded "
-              f"(fitted on {_cal['fitted_on']['tile']}, held-out coverage "
+              f"(fitted on {_cal.get('fitted_on', {}).get('tile', '?')}, held-out coverage "
               f"{_cal['held_out_coverage']*100:.1f}%)")
 
     import json as _json
@@ -883,7 +883,7 @@ def build(tile: str, out_px: int = 2048, stage: bool = True,
             "variant": _cal["variant"],
             "coverage_nominal": _iv_nominal,
             "half_width_m": _cal["q"] if _cal["variant"] == "constant" else None,
-            "fitted_on": _cal["fitted_on"]["tile"],
+            "fitted_on": _cal.get("fitted_on", {}).get("tile", "?"),
             "held_out_coverage": _cal.get("held_out_coverage"),
             "omitted_reason": (None if _metric_tier else
                                f"tier {tier[0]}: heights are relative, not metres"),
