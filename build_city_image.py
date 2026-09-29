@@ -1643,7 +1643,7 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
         _relief = float(np.percentile(_sm[_fin], 99) - np.percentile(_sm[_fin], 1)) if _fin.any() else 0.0
         if _relief >= RELIEF_MODE_M:
             _nd = np.maximum(dsm - ground, 0.0)
-            _k = _anc.DEFAULT_K.get(dem_source, 0.4)
+            _k = _anc.LIDAR_K.get(dem_source, 0.4)   # 3D ground: best match to real terrain
             _, _g = _anc.absolute_surface(np.where(_fin, _dm, np.nanmedian(_dm)), _nd, gsd, _k)
             _g = np.where(np.isfinite(_g), _g, np.nanmedian(_g)).astype(np.float32)
             terrain = _g + (terrain - ground)
@@ -2661,6 +2661,8 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
                 and not os.environ.get("DW_OLD_ANCHOR")):
             import anchoring as _anc
             _k = _anc.DEFAULT_K.get(dem_source, 0.5)
+            if os.environ.get("DW_ANCHOR_K"):
+                _k = float(os.environ["DW_ANCHOR_K"])
             _dem_p = np.asarray(_dem_w, np.float32)
             if _dem_p.shape != _shape_p:
                 _dem_p = cv2.resize(_dem_p, (_shape_p[1], _shape_p[0]), interpolation=cv2.INTER_LINEAR)

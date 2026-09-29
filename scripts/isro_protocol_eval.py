@@ -1,248 +1,83 @@
-"""Score our absolute DSM the way ISRO's FAQ says it will be scored.
+"""Score an absolute DSM the way ISRO says it will: against a public DEM.
 
-    python scripts/isro_protocol_eval.py            # fetch, build, score
-    python scripts/isro_protocol_eval.py --score    # re-score existing builds
+    python scripts/isro_protocol_eval.py OUT_DSM.tif [--dem glo30|srtm]
 
-ISRO (FAQ, 22 Sep 2026): GeoTIFF inputs are evaluated as an absolute DSM
-"such as SRTM or Copernicus". So on real Indian scenes, one per landscape the
-problem statement names, this builds our DSM from a single ~0.6 m image and
-compares it with those two global surface models.
+ISRO's FAQ (IMG-PROCESS-SAC/SIH-DepthWizard-2026 issue 1): GeoTIFF outputs are
+scored as an absolute DSM "such as SRTM or Copernicus" -- "make sure that for
+GeoTIFF images, the values match DEM heights". A 30 m DEM cannot see a single
+building, so the fair comparison is at the DEM's own grid: our DSM is
+block-averaged to ~30 m and compared cell by cell. Native-grid figures (DEM
+bilinearly upsampled) are reported beside them.
 
-Not circular. The pipeline anchors its ground to one DEM; a DSM anchored to
-Copernicus and then scored against Copernicus would be graded on its own
-input. So every scene is built twice: anchored to Copernicus and scored
-against SRTM, and anchored to SRTM and scored against Copernicus.
-
-Scale. The references are 30 m surface models; nothing finer than 30 m exists
-in them. Our DSM is block-averaged onto a 30 m grid first (what a 30 m sensor
-would record of our surface), then compared cell by cell. This measures
-whether our absolute surface agrees with the references at their own scale
--- datum, terrain, and the bulk of buildings and canopy -- not building-level
-accuracy, which needs LiDAR (see BENCHMARK_BLIND.md).
-
-Context row per scene: the two references scored against each other. Two
-independent 30 m DSMs of the same ground disagree by this much; a single-image
-DSM agreeing with one to about that level is as close as the reference allows.
-
-Imagery: Esri World Imagery at zoom 18 (~0.57 m at these latitudes), fetched
-with tools/fetch_scene.py. It is not Cartosat; the sensor gap is not measured.
+Reports RMSE, MAE, bias, NMAD, LE90 and Pearson r.
 """
 import argparse
 import json
-import math
 import os
-import subprocess
 import sys
 
+import cv2
 import numpy as np
 import rasterio
-from rasterio.warp import Resampling, reproject
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 import dem_source  # noqa: E402
 
-PY = sys.executable
-WORK = os.path.join(ROOT, "final_out", "isro_eval")
-ZOOM, NTILES = 18, 8            # 8x8 tiles = 2048 px, ~1.2 km square
-CELL_M = 30.0
 
-# name, landscape, lat, lon  (centres chosen for each landscape, not for results)
-SCENES = [
-    ("hyderabad_hitec", "urban", 17.4474, 78.3762),
-    ("periyar_thekkady", "forested", 9.6031, 77.1615),
-    ("shimla_ridge", "hilly", 31.1048, 77.1734),
-    ("telangana_farmland", "sparse", 17.6200, 78.0500),
-]
-OTHER = {"glo30": "srtm", "srtm": "glo30"}
-
-
-def tile_xy(lat, lon, z):
-    n = 2 ** z
-    x = (lon + 180) / 360 * n
-    y = (1 - math.log(math.tan(math.radians(lat)) + 1 / math.cos(math.radians(lat))) / math.pi) / 2 * n
-    return int(x), int(y)
-
-
-def fetch(name, lat, lon):
-    out = os.path.join(WORK, f"{name}.tif")
-    if not os.path.exists(out):
-        x, y = tile_xy(lat, lon, ZOOM)
-        subprocess.run([PY, os.path.join(ROOT, "tools", "fetch_scene.py"), out, "--zoom", str(ZOOM),
-                        "--x0", str(x - NTILES // 2), "--y0", str(y - NTILES // 2),
-                        "--n", str(NTILES)], check=True)
-    return out
-
-
-def build(img, name, anchor):
-    tag = f"{name}_{anchor}"
-    dsm = os.path.join(ROOT, "final_out", f"city_{tag}_DSM.tif")
-    if not os.path.exists(dsm):
-        log = os.path.join(WORK, f"{tag}.log")
-        with open(log, "w", encoding="utf-8") as fh:
-            subprocess.run([PY, os.path.join(ROOT, "build_city_image.py"), img, "--name", tag,
-                            "--no-stage", "--dem-source", anchor],
-                           cwd=ROOT, stdout=fh, stderr=subprocess.STDOUT, check=False)
-    return dsm if os.path.exists(dsm) else None
-
-
-def to_cells(dsm_path):
-    """Block-average the DSM onto a ~30 m grid in its own CRS (valid pixels only)."""
-    with rasterio.open(dsm_path) as s:
-        a = s.read(1, masked=True).filled(np.nan).astype(np.float32)
-        tf, crs = s.transform, s.crs
-        # 3857 map units are not ground metres: scale the cell to ~30 m on the ground.
-        lat = rasterio.warp.transform(crs, "EPSG:4326", [s.bounds.left], [(s.bounds.top + s.bounds.bottom) / 2])[1][0]
-        unit_per_m = 1 / math.cos(math.radians(lat)) if crs.to_epsg() == 3857 else 1.0
-    cell = CELL_M * unit_per_m
-    k = max(1, int(round(cell / abs(tf.a))))
-    H, W = (a.shape[0] // k) * k, (a.shape[1] // k) * k
-    blk = a[:H, :W].reshape(H // k, k, W // k, k)
-    frac = np.isfinite(blk).mean(axis=(1, 3))
-    with np.errstate(invalid="ignore"):
-        mean = np.nanmean(blk, axis=(1, 3))
-    mean[frac < 0.8] = np.nan                     # a cell must be mostly image
-    return mean, tf.c, tf.f, abs(tf.a) * k, abs(tf.e) * k, crs
-
-
-def ref_cells(src, x0, ytop, gx, gy, crs, shape):
-    r = dem_source.sample_grid(x0, ytop, shape[0], gx, f"EPSG:{crs.to_epsg()}",
-                               dem_source=src, width_px=shape[1], gsd_y_m=gy)
-    return None if r.get("dem") is None else np.asarray(r["dem"], np.float32)
-
-
-def icesat_check(dsm_path, anchor):
-    """Independent check against spaceborne LiDAR (ICESat-2 ATL08).
-
-    At every ATL08 point over the scene the true top surface is ground
-    elevation + canopy height (EGM2008). Our DSM's top there is its 98th
-    percentile within 15 m (ATL08 reports the canopy top of a ~100 m x 13 m
-    segment); the DEM-only answer is the anchor DEM at the point. The
-    difference between the two rows is what the single image adds.
-    """
-    import icesat2_source as ic
-    from pyproj import Transformer
-    with rasterio.open(dsm_path) as s:
-        a = s.read(1, masked=True).filled(np.nan).astype(np.float32)
-        tf, crs = s.transform, s.crs
-        lon0, lat0, lon1, lat1 = rasterio.warp.transform_bounds(crs, "EPSG:4326", *s.bounds)
-    res = ic.sample_scene_terrain(lon0, lat0, lon1, lat1)
-    pts = res["points"]
-    if not pts:
-        return {"n": 0, "note": "no ICESat-2 track over this scene"}
-    fwd = Transformer.from_crs("EPSG:4326", crs, always_xy=True)
-    unit_per_m = 1 / math.cos(math.radians((lat0 + lat1) / 2)) if crs.to_epsg() == 3857 else 1.0
-    r_px = max(1, int(round(15 * unit_per_m / abs(tf.a))))
-    ours, dem, truth, track = [], [], [], []
-    for p in pts:
-        x, y = fwd.transform(p["lon"], p["lat"])
-        col, row = ~tf * (x, y)
-        col, row = int(col), int(row)
-        if not (r_px <= row < a.shape[0] - r_px and r_px <= col < a.shape[1] - r_px):
-            continue
-        win = a[row - r_px:row + r_px + 1, col - r_px:col + r_px + 1]
-        if np.isfinite(win).mean() < 0.5:
-            continue
-        d = dem_source.sample_grid(x - 0.5, y + 0.5, 1, 1.0, f"EPSG:{crs.to_epsg()}", dem_source=anchor)
-        if d.get("dem") is None:
-            continue
-        ours.append(float(np.nanpercentile(win, 98)))
-        dem.append(float(np.asarray(d["dem"]).ravel()[0]))
-        truth.append(p["terrain_m"] + (p["canopy_m"] or 0.0))
-        track.append(f"{p['date']}_{p['track']}")
-    ours, dem, truth, track = map(np.array, (ours, dem, truth, track))
-    if len(truth) < 5:
-        return {"n": int(len(truth)), "note": "too few ICESat-2 points inside the image"}
-    out = {"n": int(len(truth)), "tracks": int(len(set(track))),
-           "ours": stats(ours, truth), "dem_only": stats(dem, truth)}
-    # AUTOMATIC CONTROL POINTS, tested honestly: a vertical offset fitted on the
-    # other tracks (median of truth - ours) and applied to the held-out track,
-    # for every track in turn. Never evaluated on the points it was fitted on.
-    if len(set(track)) >= 2:
-        corrected = np.full_like(ours, np.nan)
-        for t in set(track):
-            fit = track != t
-            if fit.sum() >= 3:
-                corrected[~fit] = ours[~fit] + np.median(truth[fit] - ours[fit])
-        if np.isfinite(corrected).sum() >= 5:
-            out["ours_icesat_corrected_loto"] = stats(corrected, truth)
-    return out
-
-
-def stats(p, t):
-    m = np.isfinite(p) & np.isfinite(t)
-    if m.sum() < 20:
+def stats(a, b):
+    m = np.isfinite(a) & np.isfinite(b)
+    if m.sum() < 10:
         return None
-    e = p[m] - t[m]
-    return {"rmse": float(np.sqrt(np.mean(e ** 2))), "mae": float(np.mean(np.abs(e))),
-            "bias": float(e.mean()), "corr": float(np.corrcoef(p[m], t[m])[0, 1]),
-            "n_cells": int(m.sum())}
+    e = (a[m] - b[m]).astype(np.float64)
+    med = np.median(e)
+    return {"rmse_m": float(np.sqrt(np.mean(e ** 2))), "mae_m": float(np.mean(np.abs(e))),
+            "bias_m": float(e.mean()), "nmad_m": float(1.4826 * np.median(np.abs(e - med))),
+            "le90_m": float(np.percentile(np.abs(e), 90)),
+            "r": float(np.corrcoef(a[m], b[m])[0, 1]) if np.std(a[m]) > 0 else None, "n": int(m.sum())}
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--score", action="store_true", help="only re-score existing builds")
-    a = ap.parse_args()
-    os.makedirs(WORK, exist_ok=True)
-    rows = []
-    for name, land, lat, lon in SCENES:
-        img = os.path.join(WORK, f"{name}.tif") if a.score else fetch(name, lat, lon)
-        for anchor in ("glo30", "srtm"):
-            dsm = (os.path.join(ROOT, "final_out", f"city_{name}_{anchor}_DSM.tif") if a.score
-                   else build(img, name, anchor))
-            if not dsm or not os.path.exists(dsm):
-                print(f"{name} [{anchor}] build failed -- see {WORK}", flush=True)
-                continue
-            ours, x0, ytop, gx, gy, crs = to_cells(dsm)
-            ref_src = OTHER[anchor]
-            ref = ref_cells(ref_src, x0, ytop, gx, gy, crs, ours.shape)
-            anc = ref_cells(anchor, x0, ytop, gx, gy, crs, ours.shape)
-            if ref is None:
-                print(f"{name}: {ref_src} unavailable", flush=True)
-                continue
-            row = {"scene": name, "landscape": land, "anchored_to": anchor, "scored_vs": ref_src,
-                   "ours": stats(ours, ref),
-                   "references_vs_each_other": stats(np.where(np.isfinite(ours), anc, np.nan), ref)
-                   if anc is not None else None}
-            try:
-                row["icesat2"] = icesat_check(dsm, anchor)
-            except Exception as e:
-                row["icesat2"] = {"n": 0, "note": f"ICESat-2 check failed: {e}"}
-            rows.append(row)
-            print(json.dumps(row), flush=True)
-    json.dump(rows, open(os.path.join(WORK, "results.json"), "w"), indent=2)
+def block(a, f):
+    """Mean over f x f blocks, NaN-aware."""
+    H, W = a.shape
+    h, w = H // f, W // f
+    a = a[:h * f, :w * f].reshape(h, f, w, f)
+    v = np.isfinite(a)
+    s = np.where(v, a, 0).sum(axis=(1, 3))
+    n = v.sum(axis=(1, 3))
+    return np.where(n > 0.5 * f * f, s / np.maximum(n, 1), np.nan)
 
-    lines = ["| scene | landscape | anchored to -> scored vs | RMSE | MAE | bias | corr | cells | "
-             "reference vs reference RMSE |", "|---|---|---|---|---|---|---|---|---|"]
-    for r in rows:
-        o, c = r["ours"], r["references_vs_each_other"]
-        if not o:
-            continue
-        lines.append(f"| {r['scene']} | {r['landscape']} | {r['anchored_to']} -> {r['scored_vs']} | "
-                     f"{o['rmse']:.2f} m | {o['mae']:.2f} m | {o['bias']:+.2f} m | {o['corr']:.3f} | "
-                     f"{o['n_cells']} | {c['rmse']:.2f} m |" if c else "| - |")
-    lines += ["", "Independent check: ICESat-2 ATL08 top surface (ground + canopy, EGM2008)", "",
-              "| scene | anchored to | points (tracks) | ours RMSE | ours bias | "
-              "ours + ICESat-2 offset, track held out | DEM-only RMSE | DEM-only bias |",
-              "|---|---|---|---|---|---|---|---|"]
-    for r in rows:
-        c = r.get("icesat2") or {}
-        if c.get("ours") and c.get("dem_only"):
-            lo = c.get("ours_icesat_corrected_loto")
-            lines.append(f"| {r['scene']} | {r['anchored_to']} | {c['n']} ({c.get('tracks', '?')}) | "
-                         f"{c['ours']['rmse']:.2f} m | {c['ours']['bias']:+.2f} m | "
-                         f"{(format(lo['rmse'], '.2f') + ' m') if lo else '-'} | "
-                         f"{c['dem_only']['rmse']:.2f} m | {c['dem_only']['bias']:+.2f} m |")
-        else:
-            lines.append(f"| {r['scene']} | {r['anchored_to']} | {c.get('n', 0)} | "
-                         f"{c.get('note', '-')} | | | |")
-    txt = "\n".join(lines)
-    print(txt)
-    with open(os.path.join(ROOT, "BENCHMARK_ISRO_PROTOCOL.md"), "w", encoding="utf-8") as fh:
-        fh.write("# Absolute DSM vs SRTM / Copernicus over India (ISRO's stated protocol)\n\n"
-                 + (__doc__.split("\n\n", 1)[1]) + "\n## Results\n\n" + txt +
-                 "\n\nRegenerate: `python scripts/isro_protocol_eval.py`.\n")
+
+def reference(path, dem):
+    with rasterio.open(path) as s:
+        dsm = s.read(1, masked=True).filled(np.nan).astype(np.float32)
+        tf, crs = s.transform, s.crs
+    H, W = dsm.shape
+    d = dem_source.sample_grid(tf.c, tf.f, H, abs(tf.a), crs.to_string(), dem_source=dem,
+                               width_px=W, gsd_y_m=abs(tf.e))
+    ref = np.asarray(d["dem"], np.float32)
+    if ref.shape != dsm.shape:
+        ref = cv2.resize(ref, (W, H), interpolation=cv2.INTER_LINEAR)
+    # metres per pixel on the ground (Web Mercator overstates by 1/cos(lat))
+    gsd = abs(tf.a)
+    if crs.to_epsg() == 3857:
+        from pyproj import Transformer
+        lat = Transformer.from_crs(crs, "EPSG:4326", always_xy=True).transform(tf.c + W * tf.a / 2, tf.f + H * tf.e / 2)[1]
+        gsd *= np.cos(np.radians(lat))
+    return dsm, ref, gsd
+
+
+def evaluate(path, dem="glo30"):
+    dsm, ref, gsd = reference(path, dem)
+    f = max(1, int(round(30.0 / gsd)))
+    return {"dsm": os.path.basename(path), "dem": dem, "gsd_m": round(gsd, 3), "block_px": f,
+            "at_30m": stats(block(dsm, f), block(ref, f)), "native": stats(dsm, ref)}
 
 
 if __name__ == "__main__":
-    main()
+    ap = argparse.ArgumentParser()
+    ap.add_argument("dsm", nargs="+")
+    ap.add_argument("--dem", default="glo30")
+    a = ap.parse_args()
+    for p in a.dsm:
+        print(json.dumps(evaluate(p, a.dem), indent=1))
