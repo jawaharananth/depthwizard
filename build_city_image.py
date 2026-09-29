@@ -830,6 +830,61 @@ def check_nadir(image_np: np.ndarray) -> dict:
             "likely_nadir": not is_sky}
 
 
+def _north_up(image_path: str, name: str) -> str:
+    """A GeoTIFF on a rotated or sheared grid, resampled once to north-up.
+    Everything downstream (DEM sampling, real outlines, the DSM export) reads
+    the geotransform as north-up, so a rotated file would otherwise be placed
+    and scaled wrongly without any error. Returns the path to use."""
+    if os.path.splitext(image_path)[1].lower() not in (".tif", ".tiff"):
+        return image_path
+    try:
+        import rasterio
+        from rasterio.warp import Resampling, calculate_default_transform, reproject
+        with rasterio.open(image_path) as s:
+            t = s.transform
+            if s.crs is None or t.is_identity or (abs(t.b) < 1e-12 and abs(t.d) < 1e-12):
+                return image_path
+            px = float(np.hypot(t.a, t.d))             # the file's own pixel size, kept
+            dst_t, w, h = calculate_default_transform(s.crs, s.crs, s.width, s.height, *s.bounds,
+                                                      resolution=(px, px))
+            prof = s.profile.copy()
+            prof.update(transform=dst_t, width=w, height=h, nodata=s.nodata if s.nodata is not None else 0)
+            prof.pop("blockxsize", None); prof.pop("blockysize", None); prof["tiled"] = False
+            out = os.path.join(OUT_DIR, f"{name}_northup_input.tif")
+            with rasterio.open(out, "w", **prof) as d:
+                for i in range(1, s.count + 1):
+                    reproject(rasterio.band(s, i), rasterio.band(d, i), resampling=Resampling.bilinear,
+                              dst_nodata=prof["nodata"])
+                d.colorinterp = s.colorinterp
+            ang = float(np.degrees(np.arctan2(t.b, t.a)))
+            print(f"      rotated grid ({ang:+.1f} deg): resampled to north-up before processing")
+            return out
+    except Exception as e:
+        print(f"      (rotated-grid check skipped: {type(e).__name__}: {e})")
+        return image_path
+
+
+def _open_plain_image(path: str):
+    """PIL image of a PNG/JPEG as it is meant to be seen: EXIF orientation
+    applied (a phone or camera export stored sideways) and high bit depth
+    (16-bit / 32-bit greyscale PNG) stretched to 8 bits on its own 0.5-99.5
+    percentiles -- PIL's plain convert("RGB") clips those to 255, which turns
+    the whole image white."""
+    from PIL import ImageOps
+    im = Image.open(path)
+    try:
+        im = ImageOps.exif_transpose(im)
+    except Exception:
+        pass
+    if im.mode in ("I;16", "I;16B", "I;16L", "I", "F"):
+        a = np.asarray(im, dtype=np.float32)
+        lo, hi = np.percentile(a, [0.5, 99.5])
+        a = np.clip((a - lo) / max(hi - lo, 1e-6) * 255, 0, 255).astype(np.uint8)
+        print(f"      {im.mode} image stretched to 8 bits ({lo:.0f}..{hi:.0f})")
+        im = Image.fromarray(a)
+    return im
+
+
 def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
           anchor_height_m: float = None, max_px: int = 2560,
           stage: bool = True, use_dem: bool = True, dem_path: str = None,
@@ -876,6 +931,7 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
     path json.dumps(meta) for scene.json, which a numpy array cannot survive.
     """
     os.makedirs(OUT_DIR, exist_ok=True)
+    image_path = _north_up(image_path, name)
     stem = os.path.join(OUT_DIR, f"city_{name}")
     _ob_info = {}
     t0 = time.time()
@@ -1066,7 +1122,7 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
             pil = Image.open(image_path).convert("RGB")
             _valid_src = None
     else:
-        _pim = Image.open(image_path)
+        _pim = _open_plain_image(image_path)
         if _pim.mode in ("RGBA", "LA") or (_pim.mode == "P" and "transparency" in _pim.info):
             _pim = _pim.convert("RGBA")
             _alpha = np.asarray(_pim)[..., 3]

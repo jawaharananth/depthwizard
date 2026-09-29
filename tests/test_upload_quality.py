@@ -108,3 +108,37 @@ def test_footprint_merge_prefers_primary():
     b = [_square(12, 12, 10), _square(60, 60, 10)]      # first is inside a, second is new
     out = fs._merge(a, b, 100, 100)
     assert len(out) == 2
+
+
+def test_plain_image_exif_and_16bit(tmp_path):
+    import numpy as np
+    from PIL import Image
+    import build_city_image as b
+    a = (np.arange(64 * 48) % 251).reshape(48, 64).astype(np.uint8)
+    rgb = Image.fromarray(np.dstack([a, a, a]))
+    ex = Image.Exif(); ex[0x0112] = 6                      # stored rotated 90 degrees
+    p = tmp_path / "r.jpg"
+    rgb.transpose(Image.ROTATE_90).save(p, exif=ex)
+    assert b._open_plain_image(str(p)).size == (64, 48)
+    g = tmp_path / "g16.png"
+    Image.fromarray((a.astype(np.uint16) * 257)).save(g)
+    v = np.asarray(b._open_plain_image(str(g)).convert("RGB"))
+    assert (v > 250).mean() < 0.1 and v.std() > 30         # not blown out to white
+
+
+def test_rotated_geotiff_made_north_up(tmp_path, monkeypatch):
+    import numpy as np
+    import rasterio
+    from rasterio.transform import Affine
+    import build_city_image as b
+    monkeypatch.setattr(b, "OUT_DIR", str(tmp_path))
+    p = tmp_path / "rot.tif"
+    tf = Affine.translation(500000, 2000000) * Affine.rotation(20) * Affine.scale(0.6, -0.6)
+    with rasterio.open(p, "w", driver="GTiff", width=100, height=80, count=3, dtype="uint8",
+                       crs="EPSG:32644", transform=tf) as d:
+        d.write(np.full((3, 80, 100), 120, np.uint8))
+    q = b._north_up(str(p), "rot")
+    with rasterio.open(q) as s:
+        assert abs(s.transform.b) < 1e-9 and abs(s.transform.d) < 1e-9
+        assert abs(s.transform.a - 0.6) < 1e-6
+    assert b._north_up(q, "again") == q                     # north-up input untouched
