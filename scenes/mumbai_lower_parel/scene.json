@@ -1,0 +1,191 @@
+{
+  "source_image": "C:\\Users\\jawahar\\depthwizard\\work\\showcase\\mumbai_lower_parel\\mumbai_lower_parel.tif",
+  "resolution": [
+    4096,
+    4096
+  ],
+  "nodata_fraction": 0.0,
+  "anchoring": null,
+  "bands": {
+    "rgb": [
+      1,
+      2,
+      3
+    ],
+    "how": "tagged"
+  },
+  "tier": "A (DEM-anchored absolute elevation)",
+  "scale_source": "metric depth model: heights predicted in metres directly (GAMUS-tuned; licensed at MAE ? m against a baseline of ? m that was given the optimal scale)",
+  "gsd_m": 0.5971642834779395,
+  "sun_azimuth_deg": 30.0,
+  "sun_elevation_deg": null,
+  "capture_time_utc": null,
+  "capture_local_solar_hour": null,
+  "sun_note": "elevation not recoverable from a single image without a known height or capture time+location",
+  "crs": "EPSG:3857",
+  "crs_units_per_m": 1.0,
+  "affine_transform": [
+    0.5971642834779395,
+    0.0,
+    8105688.227473229,
+    0.0,
+    -0.5971642834779395,
+    2156288.5679248236
+  ],
+  "slope": {
+    "median_deg": 0.79,
+    "p95_deg": 2.85,
+    "max_deg": 8.66,
+    "frac_flat": 0.993,
+    "frac_moderate": 0.007,
+    "frac_steep": 0.0,
+    "breaks_deg": [
+      5.0,
+      15.0,
+      30.0
+    ]
+  },
+  "ground_truth": "NONE -- no LiDAR available for this image; no accuracy figure can be quoted for this scene",
+  "nadir_check": {
+    "sky_span": 0.017,
+    "sky_holes": 0,
+    "likely_nadir": true
+  },
+  "overlays_removed": 163,
+  "overlay_coverage": 0.00163,
+  "model": "prism city (flat roofs, vertical walls)",
+  "buildings_extruded": 1206,
+  "canopy_volumes": 0,
+  "water_bodies": 12,
+  "vehicles": 903,
+  "provenance": "MEASURED",
+  "height_is_metric": true,
+  "shadow_calibration": {
+    "attempted": false,
+    "refusal_reason": "no sun elevation source available -- need a GeoTIFF with capture time + CRS, or --anchor-height"
+  },
+  "dem_anchor": {
+    "attempted": true,
+    "accepted": true,
+    "source": "Copernicus GLO-30 (Copernicus_DSM_COG_10_N19_00_E072_00_DEM)",
+    "offset_m": 6.31,
+    "iqr_m": 6.88,
+    "n_px": 2892599,
+    "coverage": 1.0,
+    "prior_tier": "B (metric depth model -- heights predicted directly in metres)"
+  },
+  "conformal": {
+    "applied": true,
+    "variant": "constant",
+    "coverage_nominal": 0.9,
+    "half_width_m": 4.526630519866947,
+    "fitted_on": "JAX_165",
+    "held_out_coverage": 0.8968253968253969,
+    "omitted_reason": null
+  },
+  "discovery": {
+    "candidates_examined": 6577,
+    "retained": 2423,
+    "by_size": {
+      "tiny": 1152,
+      "small": 704,
+      "medium": 310,
+      "large": 257
+    },
+    "rejected": {
+      "no_evidence": 35,
+      "duplicate": 3671,
+      "below_min_area": 448,
+      "degenerate": 0
+    },
+    "min_area_m2": 6.0,
+    "scales": [
+      1,
+      2,
+      4
+    ]
+  },
+  "build_seconds": 6678.1,
+  "texture_display": {
+    "method": "native higher-resolution imagery (8192x8192, same bounds)",
+    "scale": 1,
+    "measurements_use": "working-resolution pixels"
+  },
+  "lean_m_per_m": null,
+  "height_calibration": null,
+  "texture_file": "terrain_texture_display.jpg",
+  "context": {
+    "x0": -3974.72547082603,
+    "x1": 6420.710375958122,
+    "z0": -6267.83631938789,
+    "z1": 4127.599527396262,
+    "source": "Esri World Imagery zoom 16 -- real surroundings, flat, not modelled in 3D"
+  },
+  "context_far": {
+    "x0": -14370.161317612976,
+    "x1": 17427.642449020408,
+    "z0": -16051.77593988832,
+    "z1": 15746.027826745063,
+    "source": "Esri World Imagery zoom 14 -- real, flat, horizon context"
+  },
+  "uncertainty": {
+    "file": "city_mumbai_lower_parel_sigma.tif",
+    "definition": "1-sigma height uncertainty, metres",
+    "method": "4-view rotation spread, calibrated sqrt((3.00*std)^2 + 0.00^2 + (0.80*height)^2) on 14 DFC2019 val views",
+    "heldout_ece": 0.025,
+    "heldout_rank_corr": 0.761,
+    "median_m": 3.15,
+    "raw_encoding": "sigma_m = value/255*20",
+    "ramp": "turbo, 0-8 m"
+  },
+  "dsm_file": "city_mumbai_lower_parel_DSM.tif",
+  "dsm_product": "DSM",
+  "hover": {
+    "width": 1024,
+    "height": 1024,
+    "agl": "hover_agl.u16",
+    "encoding": "uint16 little-endian, centimetres, 65535 = no data, rows from image top",
+    "sigma": "hover_sigma.u16",
+    "ground": "hover_ground.f32"
+  },
+  "facts": {
+    "ground_m": [
+      2446,
+      2446
+    ],
+    "pixel_m": 0.597,
+    "height_p99_m": 17.0,
+    "height_max_m": 35.7,
+    "above_2p5m_share": 0.74,
+    "sigma_median_m": 2.75,
+    "centre_lonlat": [
+      72.82562,
+      19.0011
+    ],
+    "crs": "EPSG:3857",
+    "elevation_reference": "DEM-anchored (Tier A)",
+    "model": "run03",
+    "buildings_drawn": 1206
+  },
+  "_saved_name": "mumbai_lower_parel",
+  "_saved_description": "Lower Parel, Mumbai, Maharashtra, India",
+  "_saved_at": "2026-09-27 21:41:02",
+  "_saved_files": [
+    "terrain.glb",
+    "terrain_texture.png",
+    "scene.json",
+    "buildings.geojson",
+    "terrain_heatmap.png",
+    "terrain_normal.png",
+    "terrain_ao.png",
+    "terrain_roughness.png",
+    "terrain_texture_display.jpg",
+    "terrain_confidence.png",
+    "terrain_confidence_raw.png",
+    "terrain_slope.png",
+    "hover_agl.u16",
+    "hover_sigma.u16",
+    "hover_ground.f32"
+  ],
+  "_saved_mb": 248.8
+}

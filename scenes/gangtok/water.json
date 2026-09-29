@@ -1,0 +1,57 @@
+{
+ "scene": "gangtok",
+ "texture_file": "terrain_texture.png",
+ "texture_capture": "2025-09-27 04:36",
+ "mask_file": "water_mask.png",
+ "mask_res": [
+  2048,
+  2048
+ ],
+ "mask_pixel_m": 1.1943,
+ "mask_encoding": {
+  "255": "OSM water + colour match",
+  "160": "OSM water, colour mismatch",
+  "80": "colour-matched shoreline within 12 m outside OSM polygon",
+  "0": "not water"
+ },
+ "world_frame": "x = (easting - affine[2]) / k, z = (northing - affine[5]) / k, k = 1.0 (scene.json crs_units_per_m or 1); x east, z north; mask pixel (col,row) -> x = (col+0.5)*1.1943, z = -(row+0.5)*1.1943",
+ "source": {
+  "geometry": "OpenStreetMap via Overpass API (natural=water, landuse=reservoir/basin, waterway=*), (c) OpenStreetMap contributors, ODbL",
+  "osm_timestamp": "2026-09-27T18:53:20Z",
+  "osm_cache": "cache/osm_water_gangtok.json",
+  "colour": "scene texture terrain_texture.png pixels"
+ },
+ "water_in_bounds": false,
+ "note": "No OSM water polygon inside the tile bounds; no water mask produced from colour alone (without an in-scene water sample there is no real colour model, and dark roofs/shadows would be false positives).",
+ "osm_features": [
+  {
+   "osm": "way/1084683258",
+   "name": null,
+   "tags": {
+    "waterway": "stream"
+   },
+   "length_in_tile_m": 142.6,
+   "line": true
+  },
+  {
+   "osm": "way/1084683262",
+   "name": null,
+   "tags": {
+    "waterway": "stream"
+   },
+   "length_in_tile_m": 14.6,
+   "line": true
+  },
+  {
+   "osm": "way/1084683263",
+   "name": null,
+   "tags": {
+    "waterway": "stream"
+   },
+   "length_in_tile_m": 39.2,
+   "line": true
+  }
+ ],
+ "polygons_world": [],
+ "mean_water_rgb": null
+}

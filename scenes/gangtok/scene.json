@@ -1,0 +1,192 @@
+{
+  "source_image": "C:\\Users\\jawahar\\depthwizard\\work\\showcase\\gangtok\\gangtok.tif",
+  "resolution": [
+    4096,
+    4096
+  ],
+  "nodata_fraction": 0.0,
+  "anchoring": null,
+  "bands": {
+    "rgb": [
+      1,
+      2,
+      3
+    ],
+    "how": "tagged"
+  },
+  "tier": "A (terrain: Copernicus GLO-30, canopy-corrected x0.6; canopy: real canopy-height map)",
+  "scale_source": "metric depth model: heights predicted in metres directly (GAMUS-tuned; licensed at MAE ? m against a baseline of ? m that was given the optimal scale)",
+  "gsd_m": 0.5971642834779395,
+  "sun_azimuth_deg": 143.04766487369534,
+  "sun_elevation_deg": 55.069331306473806,
+  "capture_time_utc": "2025-09-27 04:36",
+  "capture_local_solar_hour": 10.51,
+  "sun_note": "solar ephemeris at the capture date with an assumed pass time",
+  "crs": "EPSG:3857",
+  "crs_units_per_m": 1.0,
+  "affine_transform": [
+    0.5971642834779395,
+    0.0,
+    9863128.381806005,
+    0.0,
+    -0.5971642834779395,
+    3166174.585628569
+  ],
+  "slope": {
+    "median_deg": 21.94,
+    "p95_deg": 40.63,
+    "max_deg": 64.37,
+    "frac_flat": 0.012,
+    "frac_moderate": 0.186,
+    "frac_steep": 0.802,
+    "breaks_deg": [
+      5.0,
+      15.0,
+      30.0
+    ]
+  },
+  "ground_truth": "NONE -- no LiDAR available for this image; no accuracy figure can be quoted for this scene",
+  "nadir_check": {
+    "sky_span": 0.012,
+    "sky_holes": 0,
+    "likely_nadir": true
+  },
+  "overlays_removed": 33,
+  "overlay_coverage": 0.00022,
+  "model": "prism city (flat roofs, vertical walls)",
+  "buildings_extruded": 3423,
+  "canopy_volumes": 0,
+  "water_bodies": 0,
+  "vehicles": 0,
+  "provenance": "MEASURED",
+  "height_is_metric": true,
+  "shadow_calibration": {
+    "attempted": false,
+    "refusal_reason": "no sun elevation source available -- need a GeoTIFF with capture time + CRS, or --anchor-height"
+  },
+  "dem_anchor": {
+    "attempted": true,
+    "accepted": true,
+    "source": "Copernicus GLO-30 (Copernicus_DSM_COG_10_N27_00_E088_00_DEM)",
+    "mode": "terrain_from_dem",
+    "canopy_penetration_correction": 0.6,
+    "relief_m": 702.7
+  },
+  "conformal": {
+    "applied": true,
+    "variant": "constant",
+    "coverage_nominal": 0.9,
+    "half_width_m": 4.526630519866947,
+    "fitted_on": "JAX_165",
+    "held_out_coverage": 0.8968253968253969,
+    "omitted_reason": null
+  },
+  "discovery": {
+    "candidates_examined": 12330,
+    "retained": 5158,
+    "by_size": {
+      "tiny": 3319,
+      "small": 1360,
+      "medium": 362,
+      "large": 117
+    },
+    "rejected": {
+      "no_evidence": 942,
+      "duplicate": 4944,
+      "below_min_area": 1286,
+      "degenerate": 0
+    },
+    "min_area_m2": 6.0,
+    "scales": [
+      1,
+      2,
+      4
+    ]
+  },
+  "build_seconds": 1697.0,
+  "texture_display": null,
+  "lean_m_per_m": null,
+  "height_calibration": null,
+  "context": {
+    "x0": -3974.725470829755,
+    "x1": 6420.710375953466,
+    "z0": -6573.584432524629,
+    "z1": 3821.851414259523,
+    "source": "Esri World Imagery zoom 16 -- real surroundings, flat, not modelled in 3D"
+  },
+  "context_far": {
+    "x0": -15593.153770178556,
+    "x1": 16204.649996453896,
+    "z0": -18192.012731871568,
+    "z1": 13605.791034761816,
+    "source": "Esri World Imagery zoom 14 -- real, flat, horizon context"
+  },
+  "uncertainty": {
+    "file": "city_gangtok_sigma.tif",
+    "definition": "1-sigma height uncertainty, metres",
+    "method": "4-view rotation spread, calibrated sqrt((3.00*std)^2 + 0.00^2 + (0.80*height)^2) on 14 DFC2019 val views",
+    "heldout_ece": 0.025,
+    "heldout_rank_corr": 0.761,
+    "median_m": 2.88,
+    "raw_encoding": "sigma_m = value/255*20",
+    "ramp": "turbo, 0-8 m"
+  },
+  "dsm_file": "city_gangtok_DSM.tif",
+  "dsm_product": "DSM",
+  "hover": {
+    "width": 1024,
+    "height": 1024,
+    "agl": "hover_agl.u16",
+    "encoding": "uint16 little-endian, centimetres, 65535 = no data, rows from image top",
+    "sigma": "hover_sigma.u16",
+    "ground": "hover_ground.f32"
+  },
+  "facts": {
+    "ground_m": [
+      2446,
+      2446
+    ],
+    "pixel_m": 0.597,
+    "height_p99_m": 25.1,
+    "height_max_m": 60.9,
+    "above_2p5m_share": 0.735,
+    "sigma_median_m": 2.93,
+    "centre_lonlat": [
+      88.61298,
+      27.33152
+    ],
+    "crs": "EPSG:3857",
+    "elevation_reference": "Copernicus GLO-30 (EGM2008 geoid), terrain_from_dem",
+    "model": "run03",
+    "buildings_drawn": 3423
+  },
+  "roof_lean_m_per_m": [
+    0.23375989230140268,
+    -0.04252547239613662
+  ],
+  "roof_offset_m": [
+    -4.969275679850599,
+    1.2266792368789468
+  ],
+  "roof_lean_note": "measured from 83 buildings >= 25 m: roof outline = footprint + offset + lean*height (lean 0.24 m/m toward 100 deg, median residual 10.3 m)",
+  "_saved_name": "gangtok",
+  "_saved_description": "Gangtok, Sikkim, India",
+  "_saved_at": "2026-09-28 00:23:14",
+  "_saved_files": [
+    "terrain.glb",
+    "terrain_texture.png",
+    "scene.json",
+    "buildings.geojson",
+    "terrain_heatmap.png",
+    "terrain_normal.png",
+    "terrain_ao.png",
+    "terrain_roughness.png",
+    "terrain_confidence.png",
+    "terrain_confidence_raw.png",
+    "terrain_slope.png",
+    "hover_agl.u16",
+    "hover_sigma.u16",
+    "hover_ground.f32"
+  ],
+  "_saved_mb": 231.0
+}

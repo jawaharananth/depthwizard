@@ -1,0 +1,185 @@
+{
+  "source_image": "C:\\Users\\jawahar\\depthwizard\\work\\showcase\\jaisalmer_village\\jaisalmer_village.tif",
+  "resolution": [
+    4096,
+    4096
+  ],
+  "nodata_fraction": 0.0,
+  "anchoring": null,
+  "bands": {
+    "rgb": [
+      1,
+      2,
+      3
+    ],
+    "how": "tagged"
+  },
+  "tier": "A (DEM-anchored absolute elevation)",
+  "scale_source": "metric depth model: heights predicted in metres directly (GAMUS-tuned; licensed at MAE ? m against a baseline of ? m that was given the optimal scale)",
+  "gsd_m": 0.5971642834779395,
+  "sun_azimuth_deg": 152.2399456805997,
+  "sun_elevation_deg": 47.81728870450976,
+  "capture_time_utc": "2025-10-23 05:47",
+  "capture_local_solar_hour": 10.5,
+  "sun_note": "solar ephemeris at the capture date with an assumed pass time",
+  "crs": "EPSG:3857",
+  "crs_units_per_m": 1.0,
+  "affine_transform": [
+    0.5971642834779395,
+    0.0,
+    7870109.306298319,
+    0.0,
+    -0.5971642834779395,
+    3076131.7663086317
+  ],
+  "slope": {
+    "median_deg": 0.01,
+    "p95_deg": 0.2,
+    "max_deg": 0.93,
+    "frac_flat": 1.0,
+    "frac_moderate": 0.0,
+    "frac_steep": 0.0,
+    "breaks_deg": [
+      5.0,
+      15.0,
+      30.0
+    ]
+  },
+  "ground_truth": "NONE -- no LiDAR available for this image; no accuracy figure can be quoted for this scene",
+  "nadir_check": {
+    "sky_span": 0.082,
+    "sky_holes": 10,
+    "likely_nadir": true
+  },
+  "overlays_removed": 1205,
+  "overlay_coverage": 0.01189,
+  "model": "prism city (flat roofs, vertical walls)",
+  "buildings_extruded": 14,
+  "canopy_volumes": 0,
+  "water_bodies": 0,
+  "vehicles": 3844,
+  "provenance": "MEASURED",
+  "height_is_metric": true,
+  "shadow_calibration": {
+    "attempted": false,
+    "refusal_reason": "no sun elevation source available -- need a GeoTIFF with capture time + CRS, or --anchor-height"
+  },
+  "dem_anchor": {
+    "attempted": true,
+    "accepted": true,
+    "source": "Copernicus GLO-30 (Copernicus_DSM_COG_10_N26_00_E070_00_DEM)",
+    "offset_m": 221.47,
+    "iqr_m": 9.51,
+    "n_px": 10114571,
+    "coverage": 1.0,
+    "prior_tier": "B (metric depth model -- heights predicted directly in metres)"
+  },
+  "conformal": {
+    "applied": true,
+    "variant": "constant",
+    "coverage_nominal": 0.9,
+    "half_width_m": 4.526630519866947,
+    "fitted_on": "JAX_165",
+    "held_out_coverage": 0.8968253968253969,
+    "omitted_reason": null
+  },
+  "discovery": {
+    "candidates_examined": 9799,
+    "retained": 3805,
+    "by_size": {
+      "tiny": 1451,
+      "small": 1532,
+      "medium": 655,
+      "large": 167
+    },
+    "rejected": {
+      "no_evidence": 11,
+      "duplicate": 5491,
+      "below_min_area": 492,
+      "degenerate": 0
+    },
+    "min_area_m2": 6.0,
+    "scales": [
+      1,
+      2,
+      4
+    ]
+  },
+  "build_seconds": 1076.0,
+  "texture_display": null,
+  "lean_m_per_m": null,
+  "height_calibration": null,
+  "context": {
+    "x0": -3821.851414259523,
+    "x1": 6573.584432524629,
+    "z0": -6420.710375954397,
+    "z1": 3974.725470829755,
+    "source": "Esri World Imagery zoom 16 -- real surroundings, flat, not modelled in 3D"
+  },
+  "context_far": {
+    "x0": -13605.791034761816,
+    "x1": 18192.012731871568,
+    "z0": -16204.649996454827,
+    "z1": 15593.153770178556,
+    "source": "Esri World Imagery zoom 14 -- real, flat, horizon context"
+  },
+  "uncertainty": {
+    "file": "city_jaisalmer_village_sigma.tif",
+    "definition": "1-sigma height uncertainty, metres",
+    "method": "4-view rotation spread, calibrated sqrt((3.00*std)^2 + 0.00^2 + (0.80*height)^2) on 14 DFC2019 val views",
+    "heldout_ece": 0.025,
+    "heldout_rank_corr": 0.761,
+    "median_m": 0.02,
+    "raw_encoding": "sigma_m = value/255*20",
+    "ramp": "turbo, 0-8 m"
+  },
+  "dsm_file": "city_jaisalmer_village_DSM.tif",
+  "dsm_product": "DSM",
+  "hover": {
+    "width": 1024,
+    "height": 1024,
+    "agl": "hover_agl.u16",
+    "encoding": "uint16 little-endian, centimetres, 65535 = no data, rows from image top",
+    "sigma": "hover_sigma.u16",
+    "ground": "hover_ground.f32"
+  },
+  "facts": {
+    "ground_m": [
+      2446,
+      2446
+    ],
+    "pixel_m": 0.597,
+    "height_p99_m": 1.9,
+    "height_max_m": 7.2,
+    "above_2p5m_share": 0.003,
+    "sigma_median_m": 1.11,
+    "centre_lonlat": [
+      70.70938,
+      26.61063
+    ],
+    "crs": "EPSG:3857",
+    "elevation_reference": "DEM-anchored (Tier A)",
+    "model": "run03",
+    "buildings_drawn": 14
+  },
+  "_saved_name": "jaisalmer_village",
+  "_saved_description": "Desert village, Jaisalmer, Rajasthan, India",
+  "_saved_at": "2026-09-28 01:07:46",
+  "_saved_files": [
+    "terrain.glb",
+    "terrain_texture.png",
+    "scene.json",
+    "buildings.geojson",
+    "terrain_heatmap.png",
+    "terrain_normal.png",
+    "terrain_ao.png",
+    "terrain_roughness.png",
+    "terrain_confidence.png",
+    "terrain_confidence_raw.png",
+    "terrain_slope.png",
+    "hover_agl.u16",
+    "hover_sigma.u16",
+    "hover_ground.f32"
+  ],
+  "_saved_mb": 192.4
+}

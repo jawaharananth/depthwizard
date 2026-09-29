@@ -1,0 +1,507 @@
+{
+ "scene": "mumbai_lower_parel",
+ "texture_file": "terrain_texture_display.jpg",
+ "texture_capture": null,
+ "mask_file": "water_mask.png",
+ "mask_res": [
+  2048,
+  2048
+ ],
+ "mask_pixel_m": 1.1943,
+ "mask_encoding": {
+  "255": "OSM water + colour match",
+  "160": "OSM water, colour mismatch",
+  "80": "colour-matched shoreline within 12 m outside OSM polygon",
+  "0": "not water"
+ },
+ "world_frame": "x = (easting - affine[2]) / k, z = (northing - affine[5]) / k, k = 1.0 (scene.json crs_units_per_m or 1); x east, z north; mask pixel (col,row) -> x = (col+0.5)*1.1943, z = -(row+0.5)*1.1943",
+ "source": {
+  "geometry": "OpenStreetMap via Overpass API (natural=water, landuse=reservoir/basin, waterway=*), (c) OpenStreetMap contributors, ODbL",
+  "osm_timestamp": "2026-09-27T18:15:38Z",
+  "osm_cache": "cache/osm_water_mumbai_lower_parel.json",
+  "colour": "scene texture terrain_texture_display.jpg pixels"
+ },
+ "water_in_bounds": true,
+ "colour_model": {
+  "space": "CIELAB (OpenCV 8-bit scaling)",
+  "mean": [
+   166.47,
+   110.26,
+   141.77
+  ],
+  "cov": [
+   [
+    41.47,
+    -0.27,
+    2.75
+   ],
+   [
+    -0.27,
+    2.18,
+    -0.53
+   ],
+   [
+    2.75,
+    -0.53,
+    1.85
+   ]
+  ],
+  "rule": "joint k-means (k=12, L* weight 0.6) over eroded-OSM-water pixels and a 20-80 m land ring; clusters with >=80 % lake members are water; pixels labelled by nearest centre",
+  "water_px_in_model": 1859,
+  "clusters": {
+   "k": 12,
+   "centres_lab": [
+    [
+     166.2,
+     110.2,
+     141.8
+    ],
+    [
+     56.7,
+     123.6,
+     123.7
+    ],
+    [
+     83.1,
+     123.8,
+     125.1
+    ],
+    [
+     131.2,
+     128.3,
+     129.5
+    ],
+    [
+     179.8,
+     127.5,
+     112.5
+    ],
+    [
+     157.2,
+     130.5,
+     131.6
+    ],
+    [
+     35.1,
+     118.9,
+     127.7
+    ],
+    [
+     75.2,
+     113.8,
+     135.9
+    ],
+    [
+     49.5,
+     114.6,
+     134.1
+    ],
+    [
+     104.4,
+     128.4,
+     130.6
+    ],
+    [
+     108.5,
+     111.2,
+     138.0
+    ],
+    [
+     223.5,
+     127.0,
+     119.7
+    ]
+   ],
+   "inside_share": [
+    0.989,
+    0.709,
+    0.648,
+    0.191,
+    0.597,
+    0.054,
+    0.747,
+    0.449,
+    0.469,
+    0.148,
+    0.275,
+    0.632
+   ],
+   "inside_px": [
+    1859,
+    2468,
+    2167,
+    439,
+    488,
+    136,
+    3416,
+    1293,
+    1134,
+    400,
+    538,
+    430
+   ],
+   "ring_px": [
+    21,
+    1014,
+    1178,
+    1859,
+    330,
+    2380,
+    1156,
+    1586,
+    1284,
+    2294,
+    1416,
+    250
+   ],
+   "water_clusters": [
+    0
+   ]
+  }
+ },
+ "mean_water_rgb": [
+  133.3,
+  166.0,
+  132.3
+ ],
+ "median_water_rgb": [
+  135.0,
+  168.0,
+  134.0
+ ],
+ "mean_water_hex": "#85a684",
+ "colour_note": "sRGB of the texture as delivered (display-graded imagery, not reflectance)",
+ "area_m2": {
+  "confirmed_255": 2874.2,
+  "osm_colour_mismatch_160": 25045.1,
+  "shoreline_or_stream_80": 11.4
+ },
+ "osm_features": [
+  {
+   "osm": "way/38991811",
+   "name": null,
+   "tags": {
+    "natural": "water",
+    "water": "canal"
+   },
+   "area_in_tile_m2": 6204.7,
+   "area_total_m2": 14870.2,
+   "colour_confirmed_fraction": 0.0
+  },
+  {
+   "osm": "way/99209095",
+   "name": null,
+   "tags": {
+    "natural": "water"
+   },
+   "area_in_tile_m2": 5423.9,
+   "area_total_m2": 5423.9,
+   "colour_confirmed_fraction": 0.515
+  },
+  {
+   "osm": "way/152203352",
+   "name": null,
+   "tags": {
+    "waterway": "drain"
+   },
+   "length_in_tile_m": 423.9,
+   "line": true
+  },
+  {
+   "osm": "way/204352210",
+   "name": null,
+   "tags": {
+    "waterway": "drain"
+   },
+   "length_in_tile_m": 747.2,
+   "line": true
+  },
+  {
+   "osm": "way/204352216",
+   "name": null,
+   "tags": {
+    "waterway": "drain"
+   },
+   "length_in_tile_m": 6.4,
+   "line": true
+  },
+  {
+   "osm": "way/434917789",
+   "name": null,
+   "tags": {
+    "waterway": "drain"
+   },
+   "length_in_tile_m": 216.1,
+   "line": true
+  },
+  {
+   "osm": "way/569663493",
+   "name": null,
+   "tags": {
+    "natural": "water"
+   },
+   "area_in_tile_m2": 2804.5,
+   "area_total_m2": 2804.5,
+   "colour_confirmed_fraction": 0.0
+  },
+  {
+   "osm": "way/988749923",
+   "name": null,
+   "tags": {
+    "waterway": "drain"
+   },
+   "length_in_tile_m": 296.5,
+   "line": true
+  },
+  {
+   "osm": "way/1289081183",
+   "name": null,
+   "tags": {
+    "natural": "water",
+    "water": "canal"
+   },
+   "area_in_tile_m2": 9831.8,
+   "area_total_m2": 11967.4,
+   "colour_confirmed_fraction": 0.0
+  },
+  {
+   "osm": "way/1289081184",
+   "name": null,
+   "tags": {
+    "waterway": "drain"
+   },
+   "length_in_tile_m": 171.1,
+   "line": true
+  },
+  {
+   "osm": "way/1472424302",
+   "name": null,
+   "tags": {
+    "natural": "water"
+   },
+   "area_in_tile_m2": 2305.5,
+   "area_total_m2": 2305.5,
+   "colour_confirmed_fraction": 0.0
+  }
+ ],
+ "polygons_world": [
+  {
+   "area_m2": 2712.3,
+   "exterior": [
+    [
+     2185.02,
+     -1622.5
+    ],
+    [
+     2179.05,
+     -1622.5
+    ],
+    [
+     2165.91,
+     -1617.72
+    ],
+    [
+     2159.94,
+     -1617.72
+    ],
+    [
+     2155.17,
+     -1620.11
+    ],
+    [
+     2151.58,
+     -1617.72
+    ],
+    [
+     2144.42,
+     -1616.52
+    ],
+    [
+     2140.83,
+     -1618.91
+    ],
+    [
+     2137.25,
+     -1623.69
+    ],
+    [
+     2136.06,
+     -1629.66
+    ],
+    [
+     2132.47,
+     -1633.24
+    ],
+    [
+     2125.31,
+     -1635.63
+    ],
+    [
+     2122.92,
+     -1640.41
+    ],
+    [
+     2122.92,
+     -1646.38
+    ],
+    [
+     2120.53,
+     -1648.77
+    ],
+    [
+     2118.14,
+     -1648.77
+    ],
+    [
+     2116.95,
+     -1653.55
+    ],
+    [
+     2109.78,
+     -1658.33
+    ],
+    [
+     2109.78,
+     -1664.3
+    ],
+    [
+     2107.39,
+     -1665.49
+    ],
+    [
+     2107.39,
+     -1669.07
+    ],
+    [
+     2101.42,
+     -1673.85
+    ],
+    [
+     2101.42,
+     -1676.24
+    ],
+    [
+     2097.84,
+     -1679.82
+    ],
+    [
+     2095.45,
+     -1694.16
+    ],
+    [
+     2096.64,
+     -1695.35
+    ],
+    [
+     2103.81,
+     -1695.35
+    ],
+    [
+     2112.17,
+     -1691.77
+    ],
+    [
+     2112.17,
+     -1681.02
+    ],
+    [
+     2109.78,
+     -1671.46
+    ],
+    [
+     2115.75,
+     -1663.1
+    ],
+    [
+     2119.34,
+     -1661.91
+    ],
+    [
+     2124.11,
+     -1666.69
+    ],
+    [
+     2125.31,
+     -1670.27
+    ],
+    [
+     2130.08,
+     -1670.27
+    ],
+    [
+     2130.08,
+     -1664.3
+    ],
+    [
+     2132.47,
+     -1661.91
+    ],
+    [
+     2137.25,
+     -1661.91
+    ],
+    [
+     2139.64,
+     -1659.52
+    ],
+    [
+     2146.81,
+     -1659.52
+    ],
+    [
+     2148.0,
+     -1660.71
+    ],
+    [
+     2155.17,
+     -1659.52
+    ],
+    [
+     2156.36,
+     -1660.71
+    ],
+    [
+     2163.53,
+     -1660.71
+    ],
+    [
+     2164.72,
+     -1663.1
+    ],
+    [
+     2171.89,
+     -1661.91
+    ],
+    [
+     2173.08,
+     -1659.52
+    ],
+    [
+     2177.86,
+     -1659.52
+    ],
+    [
+     2176.66,
+     -1643.99
+    ],
+    [
+     2181.44,
+     -1639.22
+    ],
+    [
+     2181.44,
+     -1633.24
+    ],
+    [
+     2180.25,
+     -1632.05
+    ],
+    [
+     2183.83,
+     -1628.47
+    ]
+   ],
+   "holes": []
+  }
+ ]
+}
