@@ -109,22 +109,71 @@ def build_one(image_path: str, scene_id: str, title: str, px: int) -> dict:
     return meta
 
 
+PLACES_JSON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "viewer", "places.json")
+
+
+def _thumb(d: str) -> str | None:
+    """thumb.jpg for a scene, made once from its texture (centre square)."""
+    t = os.path.join(d, "thumb.jpg")
+    if os.path.exists(t):
+        return "thumb.jpg"
+    for src in ("terrain_texture_display.jpg", "terrain_texture.png"):
+        sp = os.path.join(d, src)
+        if os.path.exists(sp):
+            try:
+                from PIL import Image
+                Image.MAX_IMAGE_PIXELS = None
+                with Image.open(sp) as im:
+                    im = im.convert("RGB")
+                    im.thumbnail((1600, 1600))
+                    w, h = im.size
+                    c = min(w, h) * 2 // 3
+                    # the least cloud-white of five squares (centre, corners)
+                    boxes = [((w - c) // 2, (h - c) // 2)] + [(x, y) for x in (0, w - c) for y in (0, h - c)]
+                    import numpy as np
+
+                    def white(b):
+                        a = np.asarray(im.crop((b[0], b[1], b[0] + c, b[1] + c)).convert("L"))
+                        return float((a > 225).mean())
+                    x, y = min(boxes, key=white)
+                    im.crop((x, y, x + c, y + c)).resize((480, 480), Image.LANCZOS).save(t, quality=85)
+                return "thumb.jpg"
+            except Exception:
+                return None
+    return None
+
+
 def list_scenes() -> list:
+    """The curated places (viewer/places.json, in its order) that are built
+    here -- the same set the viewer's Places list offers, not every scene
+    folder on disk (older builds and experiments stay out of the gallery)."""
     out = []
     if not os.path.isdir(SCENES_DIR):
         return out
-    for name in sorted(os.listdir(SCENES_DIR)):
-        gj = os.path.join(SCENES_DIR, name, "gallery.json")
-        glb = os.path.join(SCENES_DIR, name, "terrain.glb")
+    try:
+        with open(PLACES_JSON, encoding="utf-8") as f:
+            pl = json.load(f)
+        places = pl if isinstance(pl, list) else pl.get("places", [])
+    except Exception:
+        places = [{"id": n} for n in sorted(os.listdir(SCENES_DIR))]
+    for p in places:
+        name = p["id"]
+        d = os.path.join(SCENES_DIR, name)
+        glb = os.path.join(d, "terrain.glb")
         if not os.path.exists(glb):
             continue
-        meta = {"id": name, "title": name}
+        meta = {"id": name, "title": p.get("name", name)}
+        if p.get("landscape"):
+            meta["landscape"] = p["landscape"]
+        gj = os.path.join(d, "gallery.json")
         if os.path.exists(gj):
             try:
                 with open(gj, encoding="utf-8") as f:
-                    meta.update(json.load(f))
+                    g = json.load(f)
+                meta.update({k: v for k, v in g.items() if k not in ("id", "title")})
             except Exception:
                 pass
+        meta["thumb"] = _thumb(d)
         meta["size_mb"] = round(os.path.getsize(glb) / 1e6, 1)
         out.append(meta)
     return out
