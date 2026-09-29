@@ -68,7 +68,7 @@ RESULT_CACHE_DIR = os.path.join(ROOT, "cache", "uploads")
 # hashed too: swapping in a retrained model must invalidate cached results.
 CODE_FILES = ("build_city_image.py", "dem_source.py", "depth_model.py", "city_model.py",
               "hover_export.py", "anchoring.py", "input_bands.py", "terrain_maps.py",
-              "glb_compress.py", "canopy_source.py", "open_buildings_source.py",
+              "glb_compress.py", "canopy_source.py", "open_buildings_source.py", "footprint_sources.py",
               os.path.join("checkpoints", "height_best", "metric_ok.json"))
 
 
@@ -430,9 +430,18 @@ def upload_build_kwargs() -> dict:
     """What an uploaded image is built with. PBR material maps (normal, AO,
     roughness) as the showcase scenes have; the working grid follows the
     image up to DW_MAX_PX."""
+    # Built the way the showcase places are: continuous canopy surface, the
+    # 1400-vertex ground grid, real building outlines where Microsoft /
+    # OpenStreetMap have them, bridges and flyovers from OpenStreetMap.
     return dict(max_px=int(os.environ.get("DW_MAX_PX", "4096")),
                 pbr_maps=os.environ.get("DW_UPLOAD_PBR", "1") != "0",
-                fetch_canopy=os.environ.get("DW_UPLOAD_CANOPY", "1") != "0")
+                fetch_canopy=os.environ.get("DW_UPLOAD_CANOPY", "1") != "0",
+                continuous_vegetation=True, crown_radius_ratio=0.18,
+                ground_grid=int(os.environ.get("DW_GROUND_GRID", "1400")),
+                fetch_outlines=os.environ.get("DW_UPLOAD_OUTLINES", "1") != "0",
+                osm_structures=True,
+                # display texture sharpened x2 from the file's own pixels
+                sr_texture=os.environ.get("DW_UPLOAD_SHARPEN", "1") != "0")
 
 
 def run_job(job: Job) -> None:

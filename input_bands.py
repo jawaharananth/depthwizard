@@ -42,12 +42,62 @@ def rgb_band_plan(ds) -> tuple[list[int], str]:
     return [1, 2, 3], "assumed-rgb"
 
 
+def nir_band(ds, rgb: list[int], how: str) -> int | None:
+    """1-based index of a near-infrared band, or None.
+
+    Named in the band description ("nir", "near infrared", "b8"), else the
+    4th band of an untagged B,G,R,NIR stack, else the one remaining band of a
+    4-band file whose red, green and blue are tagged (NAIP, most orthophotos).
+    An alpha band is never taken for NIR.
+    """
+    from rasterio.enums import ColorInterp
+
+    n = ds.count
+    if n < 4 or how == "grey":
+        return None
+    ci = list(ds.colorinterp or [])
+    desc = [(d or "").lower() for d in (ds.descriptions or [None] * n)]
+    for i, d in enumerate(desc):
+        if "nir" in d or "near" in d or d in ("b8", "b08"):
+            return i + 1
+    if how == "assumed-bgr":
+        return 4
+    rest = [i + 1 for i in range(n) if i + 1 not in rgb
+            and (i >= len(ci) or ci[i] != ColorInterp.alpha or not _is_mask(ds, i + 1))]
+    if how == "tagged" and n == 4 and len(rest) == 1:
+        return rest[0]
+    return None
+
+
+def _is_mask(ds, band: int) -> bool:
+    """A real alpha band is (almost) only fully off / fully on. GDAL writes the
+    4th band of any tagged-RGB 4-band GeoTIFF as 'alpha' by default, so an RGB
+    + NIR file arrives with its NIR labelled alpha; its many in-between values
+    are what give it away."""
+    try:
+        f = max(1, max(ds.width, ds.height) // 512)
+        v = ds.read(band, out_shape=(max(1, ds.height // f), max(1, ds.width // f)))
+        lo, hi = v.min(), v.max()
+        return float(((v != lo) & (v != hi)).mean()) < 0.05
+    except Exception:
+        return True
+
+
 def dataset_valid(ds, bands: list[int]) -> np.ndarray:
     """True where the file itself says there is image: nodata value, alpha band
     and internal masks all honoured (rasterio folds them into read_masks)."""
+    from rasterio.enums import ColorInterp
     m = np.ones((ds.height, ds.width), bool)
+    ci = list(ds.colorinterp or [])
+    fake_alpha = any(c == ColorInterp.alpha and not _is_mask(ds, i + 1) for i, c in enumerate(ci))
     for b in sorted(set(bands)):
-        m &= ds.read_masks(b) > 0
+        if fake_alpha:
+            # the 'alpha' band is data (NIR, see _is_mask): dark water in the
+            # near-infrared must not become no-data, so only nodata values count
+            if ds.nodata is not None:
+                m &= ds.read(b) != ds.nodata
+        else:
+            m &= ds.read_masks(b) > 0
     return m
 
 

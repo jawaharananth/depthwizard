@@ -6,10 +6,14 @@ FROM python:3.13-slim
 # opencv-python-headless still needs glib at runtime. rasterio and pyproj
 # PyPI wheels bundle their own GDAL/PROJ, so no libgdal package is needed
 # (the old `libgdal32` does not exist on the trixie-based 3.13 image).
+# nodejs + gltfpack (WebAssembly): uploaded scenes are meshopt-compressed by
+# glb_compress.py, ~3x smaller to download; without it they ship raw.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1 \
     libglib2.0-0 \
-    && rm -rf /var/lib/apt/lists/*
+    nodejs npm \
+    && npm install -g gltfpack@0.24.0 \
+    && rm -rf /var/lib/apt/lists/* /root/.npm
 
 WORKDIR /app
 
@@ -32,6 +36,7 @@ COPY server.py prebuild.py progress.py build_city_image.py \
      roof_structure.py segmentation.py shadow_correction.py \
      sun_from_shadows.py terrain_classify.py terrain_maps.py vlm_audit.py \
      anchoring.py change_detection.py input_bands.py terrain_analysis.py \
+     build_worker.py canopy_source.py footprint_sources.py glb_compress.py hover_export.py \
      dashboard.html ./
 
 # calibration/ is a package (conformal.py reads conformal_quantile.json).

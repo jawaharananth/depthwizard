@@ -183,6 +183,12 @@ export function installDWX(ctx) {
     if (f.pixel_m) html += `<div class="dwx-row"><span>Image pixel</span><span class="dwx-num">${fmt(f.pixel_m, 2)} m${f.pixel_assumed ? " (assumed)" : ""}</span></div>`;
     if (f.height_p99_m !== undefined) html += `<div class="dwx-row"><span>Tall end (99th pct)</span><span class="dwx-num">${fmt(f.height_p99_m)} m</span></div>`;
     if (f.above_2p5m_share !== undefined) html += `<div class="dwx-row"><span>Standing above 2.5 m</span><span class="dwx-num">${Math.round(f.above_2p5m_share * 100)} %</span></div>`;
+    const td = meta && meta.texture_display;
+    if (td && td.default) {
+      const orig = new URLSearchParams(location.search).get("tex") === "orig";
+      const q = new URLSearchParams(location.search); q.set("tex", orig ? "hires" : "orig");
+      html += `<div class="dwx-foot">Texture: ${orig ? "the image as uploaded" : "sharpened ×2 from your image (display only; every height reads the original pixels)"} · <a href="?${q}" style="color:inherit">${orig ? "show sharpened" : "show original"}</a></div>`;
+    }
     html += "</div>";
     html += '<div class="dwx-group"><h4>Uncertainty</h4>';
     html += `<div class="dwx-row"><span>Typical ± on objects (1σ)</span><span class="dwx-num">${fmt(f.sigma_median_m, 2)} m</span></div>`;

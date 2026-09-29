@@ -73,6 +73,12 @@ import mesh_generation as mg
 OUT_DIR = "final_out"
 VIEWER_DIR = "viewer/output"
 GROUND_GRID = 700
+# Median NDVI at or above which a traced candidate is vegetation (tuned on the
+# DFC2019 training areas with real 0.6 m NAIP near-infrared; see
+# scripts/tune_ndvi.py)
+NDVI_TREE = 0.25
+# Traced candidates whose height std / median reaches this are crowns, not roofs
+TRACED_MAX_ROUGHNESS = 0.40
 # Relief (1st-99th percentile of the 30 m-smoothed terrain map) from which a
 # scene's 3D ground follows the terrain instead of a flat plane.
 RELIEF_MODE_M = 20.0
@@ -135,6 +141,112 @@ def _mask_shift(a: np.ndarray, b: np.ndarray, max_shift: int, fa=None):
     win = xc[cy - max_shift:cy + max_shift + 1, cx - max_shift:cx + max_shift + 1]
     iy, ix = np.unravel_index(np.argmax(win), win.shape)
     return ix - max_shift, iy - max_shift, float(win.max() / (np.abs(xc).mean() + 1e-9))
+
+
+def ndvi_on_grid(image_path: str, red_band: int, nir_band: int,
+                 dst_transform, dst_crs, H: int, W: int):
+    """NDVI of the input file warped onto the build's working grid, or None.
+
+    Warped from the file directly (not from the 8-bit display copy) so the
+    ratio uses the sensor's own digital numbers, and so a lat/lon file that
+    the build reprojected lands on the same grid as everything else.
+    """
+    try:
+        import rasterio
+        from rasterio.warp import reproject, Resampling
+        with rasterio.open(image_path) as s:
+            out = np.zeros((2, H, W), np.float32)
+            for k, b in enumerate((red_band, nir_band)):
+                reproject(rasterio.band(s, b), out[k], dst_transform=dst_transform, dst_crs=dst_crs,
+                          resampling=Resampling.bilinear, src_nodata=s.nodata, dst_nodata=0)
+        red, nir = out
+        ok = (red + nir) > 0
+        nd = np.where(ok, (nir - red) / np.maximum(nir + red, 1e-6), np.nan).astype(np.float32)
+        return nd
+    except Exception as e:
+        print(f"      NDVI unavailable ({type(e).__name__}: {e})")
+        return None
+
+
+def merge_real_outlines(traced: list, real: list, real_shape: tuple,
+                        ndsm: np.ndarray, gsd: float, valid: np.ndarray = None) -> list:
+    """Real building outlines where they exist, image-traced ones elsewhere.
+
+    Microsoft / OpenStreetMap outlines separate buildings that touch (row
+    houses the image traces as one blob) and have true corners, but their
+    coverage is patchy -- 0 Microsoft outlines over Lower Parel, ~300 of
+    ~3,800 buildings over a 1 km HITEC crop -- so they cannot replace the
+    traced set, only improve it where present.
+
+    They were traced on other imagery, so first they are shifted onto this
+    image: cross-correlated against the traced roofs (the image's own
+    evidence), and the shift is kept only if it raises their overlap. If
+    they barely overlap this image's buildings at all, they are not used.
+    """
+    H, W = ndsm.shape
+    sy, sx = H / real_shape[0], W / real_shape[1]
+    real = [np.asarray(p, np.float32) * [sx, sy] for p in real if len(p) >= 4]
+    if valid is not None:
+        # outlines over the file's no-data border have no image to stand on
+        v = valid if valid.shape == (H, W) else cv2.resize(valid.astype(np.uint8), (W, H),
+                                                            interpolation=cv2.INTER_NEAREST)
+        def _inside(p):
+            c = np.clip(np.round(p.mean(0)).astype(int), 0, [W - 1, H - 1])
+            return bool(v[c[1], c[0]])
+        real = [p for p in real if _inside(p)]
+    if not real or not traced:
+        return traced
+    tmask = np.zeros((H, W), np.uint8)
+    for p in traced:
+        cv2.fillPoly(tmask, [np.round(np.asarray(p)).astype(np.int32)], 1)
+    rmask = np.zeros((H, W), np.uint8)
+    for p in real:
+        cv2.fillPoly(rmask, [np.round(p).astype(np.int32)], 1)
+
+    def iou(m):
+        i = np.logical_and(tmask, m).sum()
+        return i / max(1, np.logical_or(tmask & (rmask_any > 0), m).sum())
+    # overlap measured only where real outlines exist (they cover part of the scene)
+    rmask_any = cv2.dilate(rmask, np.ones((31, 31), np.uint8))
+    iou0 = iou(rmask)
+    max_shift = int(min(60, 15.0 / max(gsd, 1e-6)))
+    dx, dy, _ = _mask_shift(tmask.astype(np.float32), rmask.astype(np.float32), max_shift)
+    M = np.float32([[1, 0, dx], [0, 1, dy]])
+    shifted = cv2.warpAffine(rmask, M, (W, H), flags=cv2.INTER_NEAREST)
+    iou1 = iou(shifted)
+    if iou1 > iou0 * 1.03 and abs(dx) < max_shift and abs(dy) < max_shift:
+        real = [p + [dx, dy] for p in real]
+        rmask = shifted
+        best = iou1
+        note = f"shifted ({dx:+d}, {dy:+d}) px = ({dx * gsd:+.1f}, {dy * gsd:+.1f}) m onto the image"
+    else:
+        best = iou0
+        note = "no shift needed"
+    if best < 0.25:
+        print(f"      real outlines not used: overlap with this image's buildings only {best:.2f}")
+        return traced
+    rr = region_footprints.extract_from_polygons(real, ndsm, gsd)
+    real_polys = rr["polygons"]
+    cover = np.zeros((H, W), np.uint8)
+    for p in real_polys:
+        cv2.fillPoly(cover, [np.round(p).astype(np.int32)], 1)
+    kept = []
+    for p in traced:
+        a = np.round(np.asarray(p)).astype(np.int32)
+        x0, y0 = np.maximum(a.min(0), 0)
+        x1, y1 = np.minimum(a.max(0) + 1, [W, H])
+        if x1 <= x0 or y1 <= y0:
+            continue
+        sub = np.zeros((y1 - y0, x1 - x0), np.uint8)
+        cv2.fillPoly(sub, [a - [x0, y0]], 1)
+        area = sub.sum()
+        if area and (sub & cover[y0:y1, x0:x1]).sum() / area > 0.3:
+            continue                     # a real outline covers this building
+        kept.append(p)
+    print(f"      real outlines: {len(real_polys)} (Microsoft/OpenStreetMap, {note}, "
+          f"overlap {best:.2f}) + {len(kept)} traced from the image where none exists")
+    merge_real_outlines.cover = cover            # where real outlines stand (evidence export)
+    return real_polys + kept
 
 
 def estimate_ob_alignment(ob_grid: np.ndarray, footprints: list, gsd_m: float):
@@ -747,6 +859,7 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
           canopy_blur_m: float = None,
           fix_projection_scale: bool = None,
           gsd_assumed: bool = False,
+          fetch_outlines: bool = False,
           fetch_canopy: bool = False) -> dict:
     """
     return_arrays: additive, off by default -- every existing caller (server.py,
@@ -792,6 +905,7 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
                       or depth_image_path is not None or display_texture_path is not None
                       or canopy_height_map is not None)
     _valid_src = None          # False where the input carries no image (nodata, border, alpha)
+    _nir_idx = None            # 1-based near-infrared band of the input, when it has one
     if image_path.lower().endswith((".tif", ".tiff")):
         try:
             import rasterio
@@ -801,6 +915,9 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
                 if _band_how == "grey":
                     _band_idx = [1]
                 _raw = _s.read(_band_idx)
+                _nir_idx = _ib.nir_band(_s, _band_idx, _band_how)
+                if _nir_idx:
+                    print(f"      near-infrared: band {_nir_idx} -- vegetation from NDVI")
                 _valid_src = _ib.dataset_valid(_s, _band_idx) & ~_ib.border_collar(_raw)
                 if _band_how != "assumed-rgb" or _s.count >= 4:
                     print(f"      bands: R,G,B = {_band_idx} of {_s.count} ({_band_how})")
@@ -982,6 +1099,12 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
     # (upsample then downsample is a lossy round trip, not a gain), or when
     # the caller turns it off.
     _input_gsd_m = gsd_m   # what the file itself has -- the panel reports this, not the working grid
+    # the file's own pixels, kept for the display texture (sharpened from these,
+    # not from the upsampled working copy)
+    _src_rgb = np.array(pil.convert("RGB")) if sr_texture else None
+    # the obliqueness screen reads the file's own pixels: the x2 upsampled
+    # copy blurs away the streets and shadows its roof-vs-sky test counts
+    _nadir_src = _src_rgb if _src_rgb is not None else np.array(pil.convert("RGB"))
     _would_undo = gsd_m is not None and max(pil.size) * min(3.0, gsd_m / NATIVE_TRAIN_GSD_M) > max_px * 1.05
     if auto_zoom and not _would_undo and gsd_m is not None and gsd_m > NATIVE_TRAIN_GSD_M * 1.15:
         _zoom = min(3.0, gsd_m / NATIVE_TRAIN_GSD_M)
@@ -1020,9 +1143,10 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
     # (12-20 s of network each, previously after it). Each is collected where
     # it was always used; any failure there falls back to fetching in line.
     _prefetch = {}
+    merge_real_outlines.cover = None     # never carry one upload's outlines into the next
     if src_transform is not None and src_crs is not None and not os.environ.get("DW_NO_PREFETCH"):
         from concurrent.futures import ThreadPoolExecutor as _TPE
-        _pfx = _TPE(max_workers=2, thread_name_prefix="dw-prefetch")
+        _pfx = _TPE(max_workers=4, thread_name_prefix="dw-prefetch")
         if (use_dem or dem_path) and src_is_projected_m:
             _dem_args = (src_transform.c, src_transform.f, H, abs(src_transform.a), f"EPSG:{src_epsg_code}")
             _dem_kw = dict(dem_path=dem_path, dem_source=dem_source, width_px=W,
@@ -1033,6 +1157,10 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
             # real tree heights (Meta/WRI CHMv2, 1 m) for the trees in 3D
             import canopy_source as _cs
             _prefetch["chm"] = _pfx.submit(_cs.fetch, src_transform, src_crs, W, H)
+        if fetch_outlines and gt_building_polygons is None and gt_building_mask is None:
+            # real building outlines (Microsoft + OpenStreetMap) on this grid
+            import footprint_sources as _fps
+            _prefetch["fp"] = _pfx.submit(_fps.fetch, src_transform, src_crs, W, H)
         _pfx.shutdown(wait=False)
     if min(W, H) < MIN_SIDE_PX:
         raise SystemExit(
@@ -1040,7 +1168,11 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
             f"{MIN_SIDE_PX} x {MIN_SIDE_PX} is needed (about 150 m at 0.6 m). "
             "Upload a larger crop of the scene.")
 
-    nad = check_nadir(image_np)
+    # A georeferenced raster is map-projected -- orthorectified, top-down by
+    # construction -- so only unreferenced images (PNG/JPG) are screened. The
+    # screen refused a real 0.6 m orthophoto (DFC JAX_018) as "92 % sky".
+    _georef_input = src_transform is not None and src_crs is not None
+    nad = {"likely_nadir": True, "sky_span": 0.0} if _georef_input else check_nadir(_nadir_src)
     if not nad["likely_nadir"]:
         raise SystemExit(
             f"this does not look like a nadir (top-down) view -- a sky region "
@@ -1798,6 +1930,62 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
         if _thr is not None:
             print(f"      flat-region gate: kept {len(footprints)} "
                   f"(cut below height {_thr:.1f})")
+        _ndvi = None
+        if _nir_idx and src_transform is not None and src_crs is not None:
+            _ndvi = ndvi_on_grid(image_path, _band_idx[0], _nir_idx, src_transform, src_crs, H, W)
+        if _ndvi is not None:
+            # Chlorophyll reflects near-infrared, roofs do not: a traced
+            # candidate that is vegetation by NDVI is a tree crown, not a
+            # building, however roof-like its colour or height looks.
+            _nd = _ndvi if _ndvi.shape == ndsm.shape else cv2.resize(_ndvi, (ndsm.shape[1], ndsm.shape[0]))
+            _kept = []
+            for _p in footprints:
+                _a = np.round(np.asarray(_p)).astype(np.int32)
+                _x0, _y0 = np.maximum(_a.min(0), 0)
+                _x1, _y1 = np.minimum(_a.max(0) + 1, [_nd.shape[1], _nd.shape[0]])
+                if _x1 <= _x0 or _y1 <= _y0:
+                    continue
+                _m = np.zeros((_y1 - _y0, _x1 - _x0), np.uint8)
+                cv2.fillPoly(_m, [_a - [_x0, _y0]], 1)
+                _v = _nd[_y0:_y1, _x0:_x1][_m > 0]
+                _v = _v[np.isfinite(_v)]
+                if _v.size and float(np.median(_v)) >= NDVI_TREE:
+                    continue
+                _kept.append(_p)
+            print(f"      NDVI: {len(footprints) - len(_kept)} traced candidates are vegetation "
+                  f"(median NDVI >= {NDVI_TREE}) -- dropped, {len(_kept)} kept")
+            footprints = _kept
+        # Tree crowns pass as buildings in the height map; what gives them
+        # away is a rough top. Traced candidates only (a real outline is never
+        # dropped): per-building benchmark on the held-out LiDAR tiles
+        # (scripts/benchmark_buildings.py + study_building_filter.py), false
+        # block area 0.71 -> 0.57 for per-building RMSE 2.75 -> 2.82 m. A
+        # dropped crown still stands in the continuous canopy surface.
+        _kept = []
+        for _p in footprints:
+            _a = np.round(np.asarray(_p)).astype(np.int32)
+            _x0, _y0 = np.maximum(_a.min(0), 0)
+            _x1, _y1 = np.minimum(_a.max(0) + 1, [ndsm.shape[1], ndsm.shape[0]])
+            if _x1 <= _x0 or _y1 <= _y0:
+                continue
+            _m = np.zeros((_y1 - _y0, _x1 - _x0), np.uint8)
+            cv2.fillPoly(_m, [_a - [_x0, _y0]], 1)
+            _hh = ndsm[_y0:_y1, _x0:_x1][_m > 0]
+            if _hh.size and float(np.std(_hh)) / max(float(np.median(_hh)), 0.5) >= TRACED_MAX_ROUGHNESS:
+                continue
+            _kept.append(_p)
+        if len(_kept) != len(footprints):
+            print(f"      rough-topped candidates (tree crowns): {len(footprints) - len(_kept)} dropped, "
+                  f"{len(_kept)} kept")
+        footprints = _kept
+        if _prefetch.get("fp") is not None:
+            try:
+                _real = _prefetch["fp"].result(timeout=90)
+            except Exception as _e:
+                print(f"      real outlines unavailable ({type(_e).__name__})")
+                _real = []
+            if _real:
+                footprints = merge_real_outlines(footprints, _real, (H, W), ndsm, gsd, valid=_valid)
         print(f"      footprints from image regions: {rres['report']['retained']} "
               f"of {rres['report']['regions_examined']} regions")
         _rej = "  ".join(f"{k} {v}" for k, v in rres["report"]["rejected"].items() if v)
@@ -1936,6 +2124,14 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
                   f"p90 {np.percentile(canopy_height_map[canopy_height_map > 1], 90) if (canopy_height_map > 1).any() else 0:.1f} m")
         else:
             print("      canopy map unavailable -- trees from the image alone")
+    if canopy_height_map is None and continuous_vegetation and _bb.is_metric:
+        # No canopy map (a plain PNG, or outside CHMv2): the metric model's own
+        # height over vegetation pixels drives the same continuous canopy
+        # surface, instead of separate blob crowns.
+        _vm = seg_labels == seg.CLASS_IDX["vegetation"]
+        if _vm.any():
+            canopy_height_map = np.where(_vm, np.clip(dsm - ground, 0.0, 45.0), 0.0).astype(np.float32)
+            print("      tree heights from the height model (no canopy map for this image)")
     if canopy_height_map is not None:
         # Real per-pixel vegetation height (Meta HighResCanopyHeight / CHMv2,
         # DINOv2 backbone, US-LiDAR-trained) replaces the scene's own noisy
@@ -2247,10 +2443,25 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
         _sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "tools"))
         import sr_texture as _sr
         _t_sr = time.time()
-        Image.fromarray(_sr.upscale(graded)).save(stem + "_texture_display.jpg", quality=92)
-        _tex_display = {"method": "Real-ESRGAN x2plus (display only)", "scale": 2,
-                        "measurements_use": "original pixels"}
-        print(f"      display texture super-resolved x2 (Real-ESRGAN) in "
+        _no_gpu = _sr._ov_model() is None and not os.environ.get("DW_SR_CPU")
+    if sr_texture and not display_texture_path and _no_gpu:
+        # no Intel iGPU (a cloud VM): on CPU this is ~3 min per km^2, so the
+        # original texture is kept rather than make the judge wait
+        print("      display sharpening skipped: no GPU for it here (DW_SR_CPU=1 forces CPU)")
+    elif sr_texture and not display_texture_path:
+        # Sharpen the file's own pixels (x2), not the working copy that
+        # auto-zoom already upsampled: detail from Real-ESRGAN, every colour
+        # from the photograph (sr_texture.enhance).
+        _base = _src_rgb if (_src_rgb is not None and _src_rgb.shape[1] < graded.shape[1]) else graded
+        if _base is not graded:
+            _base = image_grade.grade(_base)
+        _enh = _sr.enhance(_base)
+        Image.fromarray(_enh).save(stem + "_texture_display.jpg", quality=93)
+        _tex_display = {"method": "sharpened x2 from this image (Real-ESRGAN detail, original colours) -- display only",
+                        "scale": round(_enh.shape[1] / max(1, (_src_rgb.shape[1] if _src_rgb is not None else graded.shape[1])), 2),
+                        "measurements_use": "the original pixels", "default": True}
+        print(f"      display texture sharpened x2 from the file's own pixels "
+              f"({_base.shape[1]}x{_base.shape[0]} -> {_enh.shape[1]}x{_enh.shape[0]}) in "
               f"{time.time() - _t_sr:.0f}s -- display only")
     import io
     tex = io.BytesIO(); Image.fromarray(graded).save(tex, format="PNG")
@@ -2552,6 +2763,47 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
     import json as _json
     import csv as _csv
     _feats = []
+    # Per-building evidence for the export (and for anyone filtering it):
+    # whether the outline is a real one, how much of it the image calls
+    # vegetation, how rough its surface is, what the canopy map says there.
+    _ev_cover = getattr(merge_real_outlines, "cover", None)
+    _ev_chm = locals().get("_chm")
+    _ev_img = image_np.astype(np.float32)
+    _ev_seg_veg = seg_labels == seg.CLASS_IDX["vegetation"]
+    locals_nd = locals().get("_ndvi")
+    if locals_nd is not None and locals_nd.shape != ndsm.shape:
+        locals_nd = cv2.resize(locals_nd, (ndsm.shape[1], ndsm.shape[0]))
+    def _evidence(poly):
+        a = np.round(np.asarray(poly)).astype(np.int32)
+        Hh, Ww = ndsm.shape
+        x0, y0 = np.maximum(a.min(0), 0); x1, y1 = np.minimum(a.max(0) + 1, [Ww, Hh])
+        if x1 <= x0 or y1 <= y0:
+            return {}
+        m = np.zeros((y1 - y0, x1 - x0), np.uint8)
+        cv2.fillPoly(m, [a - [x0, y0]], 1)
+        m = m.astype(bool)
+        if not m.any():
+            return {}
+        px = _ev_img[y0:y1, x0:x1][m]
+        s_ = px.sum(1) + 1e-3
+        hh = ndsm[y0:y1, x0:x1][m]
+        med = float(np.median(hh))
+        out = {"outline_real": (round(float(_ev_cover[y0:y1, x0:x1][m].mean()), 2)
+                                if _ev_cover is not None and _ev_cover.shape == ndsm.shape else 0.0),
+               "veg_seg": round(float(_ev_seg_veg[y0:y1, x0:x1][m].mean()), 2),
+               "gr_chroma": round(float(np.mean((px[:, 1] - px[:, 0]) / s_)), 3),
+               "exg_frac": round(float(np.mean(2 * px[:, 1] - px[:, 0] - px[:, 2] > 12)), 2),
+               "roughness": round(float(np.std(hh) / max(med, 0.5)), 2),
+               "model_median_m": round(med, 2)}
+        _nd = locals_nd
+        if _nd is not None:
+            _v = _nd[y0:y1, x0:x1][m]
+            _v = _v[np.isfinite(_v)]
+            if _v.size:
+                out["ndvi_median"] = round(float(np.median(_v)), 3)
+        if _ev_chm is not None and _ev_chm.shape == ndsm.shape:
+            out["chm_median_m"] = round(float(np.median(_ev_chm[y0:y1, x0:x1][m])), 2)
+        return out
     # Geometry comes from the footprint that was actually EXTRUDED, not from
     # the discovery contour. Those are different extractors: exporting the
     # discovery outline described buildings that are not the ones in the model,
@@ -2587,6 +2839,7 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
                 "provenance": rec.get("provenance"),
                 "evidence": rec.get("evidence"),
                 "height_is_metric": _metric_tier,
+                **_evidence(_cnt),
             },
         })
     with open(stem + "_buildings.geojson", "w") as f:

@@ -1746,7 +1746,11 @@ function restoreGridOrder(geo) {
 // The problem statement asks for the ORIGINAL optical image on the mesh, so
 // that is the default; a sharper same-bounds display texture (when the scene
 // has one) is opt-in via &tex=hires and labelled in the HUD.
-const USE_HIRES_TEX = new URLSearchParams(location.search).get("tex") === "hires";
+// An upload's texture sharpened from ITS OWN pixels (colours unchanged) is
+// shown by default and labelled; &tex=orig shows the file exactly as sent.
+const _TEXQ = new URLSearchParams(location.search).get("tex");
+const USE_HIRES_TEX = _TEXQ === "hires" || (_TEXQ !== "orig" &&
+  !!(SCENE_META && SCENE_META.texture_display && SCENE_META.texture_display.default));
 Promise.all([
   new Promise((res) => textureLoader.load(
     SCENE_META && SCENE_META.texture_file && USE_HIRES_TEX

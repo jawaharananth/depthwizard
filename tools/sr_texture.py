@@ -109,6 +109,76 @@ def upscale(img: np.ndarray, tile: int = 192, pad: int = 16) -> np.ndarray:
     return (np.clip(out[:2 * H0, :2 * W0], 0, 1) * 255 + 0.5).astype(np.uint8)
 
 
+ONNX = "checkpoints/realesrgan/rrdb_x2_288.onnx"
+_OV = {}
+
+
+def _ov_model():
+    """Real-ESRGAN compiled for the Intel iGPU (f16), 288 px tiles, or None."""
+    if "c" in _OV:
+        return _OV["c"]
+    _OV["c"] = None
+    try:
+        import os
+        import openvino as ov
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        path = os.path.join(root, ONNX)
+        if os.path.exists(path) and not os.environ.get("DW_NO_OV_GPU"):
+            core = ov.Core()
+            if "GPU" in core.available_devices:
+                core.set_property({"CACHE_DIR": os.path.join(root, "cache", "ov_gpu")})
+                _OV["c"] = core.compile_model(core.read_model(path), "GPU",
+                                              {"INFERENCE_PRECISION_HINT": "f16",
+                                               "PERFORMANCE_HINT": "THROUGHPUT"})
+    except Exception as e:
+        print(f"  super-resolution on the iGPU unavailable ({type(e).__name__}); CPU", flush=True)
+    return _OV["c"]
+
+
+def _upscale_ov(img: np.ndarray, c, tile: int = 256, pad: int = 16) -> np.ndarray:
+    T = tile + 2 * pad
+    H0, W0 = img.shape[:2]
+    x = np.pad(img.astype(np.float32) / 255.0, ((pad, pad + T), (pad, pad + T), (0, 0)), mode="reflect")
+    out = np.zeros((2 * H0, 2 * W0, 3), np.float32)
+    jobs = [(y, x0) for y in range(0, H0, tile) for x0 in range(0, W0, tile)]
+    reqs = [c.create_infer_request() for _ in range(4)]
+    pend = [None] * len(reqs)
+
+    def collect(k):
+        (y, x0) = pend[k]
+        o = reqs[k].get_output_tensor(0).data[0].transpose(1, 2, 0)
+        h, w = min(tile, H0 - y), min(tile, W0 - x0)
+        out[2 * y:2 * (y + h), 2 * x0:2 * (x0 + w)] = o[2 * pad:2 * (pad + h), 2 * pad:2 * (pad + w)]
+
+    for n, (y, x0) in enumerate(jobs):
+        k = n % len(reqs)
+        if pend[k] is not None:
+            reqs[k].wait(); collect(k)
+        blk = x[y:y + T, x0:x0 + T].transpose(2, 0, 1)[None].copy()
+        reqs[k].start_async({0: blk}); pend[k] = (y, x0)
+    for k in range(len(reqs)):
+        if pend[k] is not None:
+            reqs[k].wait(); collect(k)
+    return (np.clip(out, 0, 1) * 255 + 0.5).astype(np.uint8)
+
+
+def enhance(img: np.ndarray) -> np.ndarray:
+    """x2 display texture: Real-ESRGAN's fine detail on the ORIGINAL colours.
+
+    The network darkens and re-tones what it sharpens; only its high
+    frequencies are kept (SR minus its own blur) and laid over the bicubic
+    x2 of the original, so every colour and brightness at the scale of a roof
+    is the photograph's own and only edges get crisper.
+    """
+    import cv2
+    c = _ov_model()
+    sr = _upscale_ov(img, c) if c is not None else upscale(img)
+    base = cv2.resize(img, (sr.shape[1], sr.shape[0]), interpolation=cv2.INTER_CUBIC).astype(np.float32)
+    s = sr.astype(np.float32)
+    detail = s - cv2.GaussianBlur(s, (0, 0), 2.0)
+    return np.clip(cv2.GaussianBlur(base, (0, 0), 2.0) + detail, 0, 255).astype(np.uint8)
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("inp"); ap.add_argument("out")
