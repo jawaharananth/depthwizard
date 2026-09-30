@@ -16,7 +16,7 @@ figures (2.82 m whole-tile, 2.19 m per-building) are run 02 on other protocols.
 Two different, non-comparable numbers — see `EVALUATION_PROTOCOL.md` before
 citing either one; that file exists because this project once conflated them.
 
-![HITEC City, Hyderabad, built from one image](docs/deck/s5v5_hitec_2x2.png)
+![HITEC City, Hyderabad, built from one image](docs/images/hitec_city_3d.png)
 
 **ISRO's GeoTIFF protocol** (exported DSM vs a public 30 m DEM, block-averaged
 to 30 m; `scripts/isro_protocol_eval.py`), four uploads in three CRSs
