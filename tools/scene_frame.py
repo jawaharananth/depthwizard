@@ -68,7 +68,10 @@ class SceneFrame:
         dsm = [f for f in os.listdir(self.dir) if f.endswith("_DSM.tif")]
         self.dsm_path = os.path.join(self.dir, dsm[0]) if dsm else None
         self.texture_path = os.path.join(self.dir, self.meta.get("texture_file") or "terrain_texture.png")
-        self.terrain_glb = os.path.join(self.dir, "terrain.glb")
+        # The staged terrain.glb is meshopt-compressed for the viewer, which
+        # this reader cannot decode; DW_TERRAIN_GLB points at the build's
+        # uncompressed copy (final_out/city_<name>.glb) when one is at hand.
+        self.terrain_glb = os.environ.get("DW_TERRAIN_GLB") or os.path.join(self.dir, "terrain.glb")
         self._datum = None
         self._ground_grid = None
 

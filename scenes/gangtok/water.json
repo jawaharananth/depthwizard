@@ -1,6 +1,6 @@
 {
  "scene": "gangtok",
- "texture_file": "terrain_texture.png",
+ "texture_file": "terrain_texture_display.jpg",
  "texture_capture": "2025-09-27 04:36",
  "mask_file": "water_mask.png",
  "mask_res": [
@@ -19,7 +19,7 @@
   "geometry": "OpenStreetMap via Overpass API (natural=water, landuse=reservoir/basin, waterway=*), (c) OpenStreetMap contributors, ODbL",
   "osm_timestamp": "2026-09-27T18:53:20Z",
   "osm_cache": "cache/osm_water_gangtok.json",
-  "colour": "scene texture terrain_texture.png pixels"
+  "colour": "scene texture terrain_texture_display.jpg pixels"
  },
  "water_in_bounds": false,
  "note": "No OSM water polygon inside the tile bounds; no water mask produced from colour alone (without an in-scene water sample there is no real colour model, and dark roofs/shadows would be false positives).",

@@ -42,9 +42,9 @@
     "lidar": false
   },
   {
-    "id": "darjeeling",
-    "name": "Darjeeling",
-    "region": "West Bengal, India",
+    "id": "shimla",
+    "name": "Shimla",
+    "region": "Himachal Pradesh, India",
     "landscape": "hilly",
     "lidar": false
   }

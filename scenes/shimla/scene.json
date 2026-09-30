@@ -1,0 +1,202 @@
+{
+  "source_image": "C:\\Users\\jawahar\\depthwizard\\work\\showcase\\shimla\\shimla.tif",
+  "resolution": [
+    4096,
+    4096
+  ],
+  "nodata_fraction": 0.0,
+  "anchoring": null,
+  "bands": {
+    "rgb": [
+      1,
+      2,
+      3
+    ],
+    "how": "tagged"
+  },
+  "tier": "A (terrain: Copernicus GLO-30, canopy-corrected x0.6; canopy: real canopy-height map)",
+  "scale_source": "metric depth model: heights predicted in metres directly (GAMUS-tuned; licensed at MAE ? m against a baseline of ? m that was given the optimal scale)",
+  "gsd_m": 0.5971642834779395,
+  "sun_azimuth_deg": 161.25398489579516,
+  "sun_elevation_deg": 33.126448218142365,
+  "capture_time_utc": "2024-12-17 05:39",
+  "capture_local_solar_hour": 10.79,
+  "sun_note": "fitted to the shadows of 279 buildings with known heights (solar ephemeris, capture 2024-12-17 05:39 UTC)",
+  "crs": "EPSG:3857",
+  "crs_units_per_m": 1.0,
+  "affine_transform": [
+    0.5971642834779395,
+    0.0,
+    8589534.616518397,
+    0.0,
+    -0.5971642834779395,
+    3647727.8638251815
+  ],
+  "slope": {
+    "median_deg": 25.0,
+    "p95_deg": 38.25,
+    "max_deg": 58.95,
+    "frac_flat": 0.007,
+    "frac_moderate": 0.094,
+    "frac_steep": 0.899,
+    "breaks_deg": [
+      5.0,
+      15.0,
+      30.0
+    ]
+  },
+  "ground_truth": "NONE -- no LiDAR available for this image; no accuracy figure can be quoted for this scene",
+  "nadir_check": {
+    "likely_nadir": true,
+    "sky_span": 0.0
+  },
+  "overlays_removed": 0,
+  "overlay_coverage": 0.0,
+  "model": "prism city (flat roofs, vertical walls)",
+  "buildings_extruded": 2601,
+  "canopy_volumes": 0,
+  "water_bodies": 0,
+  "vehicles": 0,
+  "provenance": "MEASURED",
+  "height_is_metric": true,
+  "shadow_calibration": {
+    "attempted": false,
+    "refusal_reason": "no sun elevation source available -- need a GeoTIFF with capture time + CRS, or --anchor-height"
+  },
+  "dem_anchor": {
+    "attempted": true,
+    "accepted": true,
+    "source": "Copernicus GLO-30 (Copernicus_DSM_COG_10_N31_00_E077_00_DEM)",
+    "mode": "terrain_from_dem",
+    "canopy_penetration_correction": 0.6,
+    "relief_m": 615.5
+  },
+  "conformal": {
+    "applied": true,
+    "variant": "constant",
+    "coverage_nominal": 0.9,
+    "half_width_m": 3.0174803493449787,
+    "fitted_on": "18 held-out DFC2019 tiles (leave-one-tile-out)",
+    "held_out_coverage": 0.9017467248908297,
+    "omitted_reason": null
+  },
+  "discovery": {
+    "candidates_examined": 11976,
+    "retained": 4672,
+    "by_size": {
+      "tiny": 2714,
+      "small": 1490,
+      "medium": 376,
+      "large": 92
+    },
+    "rejected": {
+      "no_evidence": 1481,
+      "duplicate": 4783,
+      "below_min_area": 1040,
+      "degenerate": 0
+    },
+    "min_area_m2": 6.0,
+    "scales": [
+      1,
+      2,
+      4
+    ]
+  },
+  "build_seconds": 1257.1,
+  "texture_display": {
+    "method": "sharpened x2 from this image (Real-ESRGAN detail, original colours) -- display only",
+    "scale": 2.0,
+    "measurements_use": "the original pixels",
+    "default": true
+  },
+  "lean_m_per_m": [
+    -0.1769254860712292,
+    -0.05460595911484632
+  ],
+  "height_calibration": null,
+  "texture_file": "terrain_texture_display.jpg",
+  "context": {
+    "x0": -4127.599527399987,
+    "x1": 6267.836319383234,
+    "z0": -6267.836319384165,
+    "z1": 4127.599527399987,
+    "source": "Esri World Imagery zoom 16 -- real surroundings, flat, not modelled in 3D"
+  },
+  "context_far": {
+    "x0": -13911.53914790228,
+    "x1": 17886.264618730173,
+    "z0": -17886.264618731104,
+    "z1": 13911.53914790228,
+    "source": "Esri World Imagery zoom 14 -- real, flat, horizon context"
+  },
+  "uncertainty": {
+    "file": "city_shimla_sigma.tif",
+    "definition": "1-sigma height uncertainty, metres",
+    "method": "4-view rotation spread, calibrated sqrt((3.00*std)^2 + 0.00^2 + (0.80*height)^2) on 14 DFC2019 val views",
+    "heldout_ece": 0.025,
+    "heldout_rank_corr": 0.761,
+    "median_m": 3.23,
+    "raw_encoding": "sigma_m = value/255*20",
+    "ramp": "turbo, 0-8 m"
+  },
+  "dsm_file": "city_shimla_DSM.tif",
+  "dsm_product": "DSM",
+  "hover": {
+    "width": 1024,
+    "height": 1024,
+    "agl": "hover_agl.u16",
+    "encoding": "uint16 little-endian, centimetres, 65535 = no data, rows from image top",
+    "sigma": "hover_sigma.u16",
+    "ground": "hover_ground.f32"
+  },
+  "facts": {
+    "ground_m": [
+      2446,
+      2446
+    ],
+    "pixel_m": 0.597,
+    "height_p99_m": 19.4,
+    "height_max_m": 48.0,
+    "above_2p5m_share": 0.7,
+    "sigma_median_m": 3.66,
+    "centre_lonlat": [
+      77.17209,
+      31.10586
+    ],
+    "crs": "EPSG:3857",
+    "elevation_reference": "Copernicus GLO-30 (EGM2008 geoid), terrain_from_dem",
+    "pixel_assumed": null,
+    "model": "run03",
+    "buildings_drawn": 2601
+  },
+  "roof_lean_m_per_m": [
+    -0.044126397820129115,
+    -0.11247496808579668
+  ],
+  "roof_offset_m": [
+    4.840390562871284,
+    3.87588949381737
+  ],
+  "roof_lean_note": "measured from 17 buildings >= 25 m: roof outline = footprint + offset + lean*height (lean 0.12 m/m toward 201 deg, median residual 4.1 m)",
+  "_saved_name": "shimla",
+  "_saved_description": "Shimla, Himachal Pradesh, India",
+  "_saved_at": "2026-09-30 19:27:46",
+  "_saved_files": [
+    "terrain.glb",
+    "terrain_texture.png",
+    "scene.json",
+    "buildings.geojson",
+    "terrain_heatmap.png",
+    "terrain_normal.png",
+    "terrain_ao.png",
+    "terrain_roughness.png",
+    "terrain_texture_display.jpg",
+    "terrain_confidence.png",
+    "terrain_confidence_raw.png",
+    "terrain_slope.png",
+    "hover_agl.u16",
+    "hover_sigma.u16",
+    "hover_ground.f32"
+  ],
+  "_saved_mb": 137.3
+}

@@ -33,12 +33,12 @@
     3166174.585628569
   ],
   "slope": {
-    "median_deg": 21.94,
-    "p95_deg": 40.63,
-    "max_deg": 64.37,
+    "median_deg": 21.91,
+    "p95_deg": 40.65,
+    "max_deg": 64.39,
     "frac_flat": 0.012,
-    "frac_moderate": 0.186,
-    "frac_steep": 0.802,
+    "frac_moderate": 0.189,
+    "frac_steep": 0.8,
     "breaks_deg": [
       5.0,
       15.0,
@@ -47,14 +47,13 @@
   },
   "ground_truth": "NONE -- no LiDAR available for this image; no accuracy figure can be quoted for this scene",
   "nadir_check": {
-    "sky_span": 0.012,
-    "sky_holes": 0,
-    "likely_nadir": true
+    "likely_nadir": true,
+    "sky_span": 0.0
   },
   "overlays_removed": 33,
   "overlay_coverage": 0.00022,
   "model": "prism city (flat roofs, vertical walls)",
-  "buildings_extruded": 3423,
+  "buildings_extruded": 3424,
   "canopy_volumes": 0,
   "water_bodies": 0,
   "vehicles": 0,
@@ -70,30 +69,30 @@
     "source": "Copernicus GLO-30 (Copernicus_DSM_COG_10_N27_00_E088_00_DEM)",
     "mode": "terrain_from_dem",
     "canopy_penetration_correction": 0.6,
-    "relief_m": 702.7
+    "relief_m": 702.2
   },
   "conformal": {
     "applied": true,
     "variant": "constant",
     "coverage_nominal": 0.9,
-    "half_width_m": 4.526630519866947,
-    "fitted_on": "JAX_165",
-    "held_out_coverage": 0.8968253968253969,
+    "half_width_m": 3.0174803493449787,
+    "fitted_on": "18 held-out DFC2019 tiles (leave-one-tile-out)",
+    "held_out_coverage": 0.9017467248908297,
     "omitted_reason": null
   },
   "discovery": {
-    "candidates_examined": 12330,
-    "retained": 5158,
+    "candidates_examined": 10608,
+    "retained": 4497,
     "by_size": {
-      "tiny": 3319,
-      "small": 1360,
-      "medium": 362,
-      "large": 117
+      "tiny": 2760,
+      "small": 1240,
+      "medium": 391,
+      "large": 106
     },
     "rejected": {
-      "no_evidence": 942,
-      "duplicate": 4944,
-      "below_min_area": 1286,
+      "no_evidence": 444,
+      "duplicate": 4694,
+      "below_min_area": 973,
       "degenerate": 0
     },
     "min_area_m2": 6.0,
@@ -103,10 +102,16 @@
       4
     ]
   },
-  "build_seconds": 1697.0,
-  "texture_display": null,
+  "build_seconds": 584.0,
+  "texture_display": {
+    "method": "sharpened x2 from this image (Real-ESRGAN detail, original colours) -- display only",
+    "scale": 2.0,
+    "measurements_use": "the original pixels",
+    "default": true
+  },
   "lean_m_per_m": null,
   "height_calibration": null,
+  "texture_file": "terrain_texture_display.jpg",
   "context": {
     "x0": -3974.725470829755,
     "x1": 6420.710375953466,
@@ -120,6 +125,27 @@
     "z0": -18192.012731871568,
     "z1": 13605.791034761816,
     "source": "Esri World Imagery zoom 14 -- real, flat, horizon context"
+  },
+  "structures": {
+    "structures": 13,
+    "length_m": 415.0,
+    "height_shadow": 2,
+    "height_group": 9,
+    "height_surface": 0,
+    "height_default": 2,
+    "segments_shadow_measured": 2,
+    "segments_total": 13,
+    "piers": 16,
+    "by_class": {
+      "foot": 11,
+      "road": 2
+    },
+    "group_heights_m": {
+      "foot": 7.5
+    },
+    "height_measured": 0,
+    "file": "structures.glb",
+    "source": "OpenStreetMap bridge/viaduct ways (geometry, lanes); deck heights measured from each deck's own shadow under the fitted sun where constrained, else class-typical; piers inferred at class-typical spans"
   },
   "uncertainty": {
     "file": "city_gangtok_sigma.tif",
@@ -148,30 +174,23 @@
     ],
     "pixel_m": 0.597,
     "height_p99_m": 25.1,
-    "height_max_m": 60.9,
+    "height_max_m": 60.8,
     "above_2p5m_share": 0.735,
-    "sigma_median_m": 2.93,
+    "sigma_median_m": 2.92,
     "centre_lonlat": [
       88.61298,
       27.33152
     ],
     "crs": "EPSG:3857",
     "elevation_reference": "Copernicus GLO-30 (EGM2008 geoid), terrain_from_dem",
+    "pixel_assumed": null,
     "model": "run03",
-    "buildings_drawn": 3423
+    "buildings_drawn": 3424
   },
-  "roof_lean_m_per_m": [
-    0.23375989230140268,
-    -0.04252547239613662
-  ],
-  "roof_offset_m": [
-    -4.969275679850599,
-    1.2266792368789468
-  ],
-  "roof_lean_note": "measured from 83 buildings >= 25 m: roof outline = footprint + offset + lean*height (lean 0.24 m/m toward 100 deg, median residual 10.3 m)",
+  "roof_lean_note": "not used: fit too loose (median residual 9.7 m, offset 3.4 m, lean 0.19 m/m); walls take each building's measured colour",
   "_saved_name": "gangtok",
   "_saved_description": "Gangtok, Sikkim, India",
-  "_saved_at": "2026-09-28 00:23:14",
+  "_saved_at": "2026-09-30 18:49:48",
   "_saved_files": [
     "terrain.glb",
     "terrain_texture.png",
@@ -181,12 +200,14 @@
     "terrain_normal.png",
     "terrain_ao.png",
     "terrain_roughness.png",
+    "terrain_texture_display.jpg",
     "terrain_confidence.png",
     "terrain_confidence_raw.png",
     "terrain_slope.png",
+    "structures.glb",
     "hover_agl.u16",
     "hover_sigma.u16",
     "hover_ground.f32"
   ],
-  "_saved_mb": 231.0
+  "_saved_mb": 149.0
 }

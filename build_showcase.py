@@ -308,6 +308,43 @@ def main():
         # Hills and forest stand on the real terrain: the model's height above
         # ground carries no terrain, so the ground mesh is Copernicus GLO-30.
         kw.update(terrain_from_dem=True, canopy_mask_from_chm=chm is not None, canopy_blur_m=1.2)
+    if a.kind == "hilly":
+        # Hill towns: Microsoft's footprints are thin here. Use the upload
+        # path's outlines instead -- Overture (OpenStreetMap + Microsoft +
+        # Google Open Buildings), shifted onto this image by cross-correlation,
+        # weak outlines kept as low relief rather than boxes, tree tops
+        # filtered out -- and a display texture sharpened from the file's own
+        # pixels when no real zoom-19 capture exists.
+        import rasterio
+        import footprint_sources
+        with rasterio.open(tif) as _ds:
+            ov = footprint_sources.fetch(_ds.transform, _ds.crs, _ds.width, _ds.height)
+        if len(ov) > len(polys):
+            log(f"{a.id}: {len(ov)} Overture outlines replace {len(polys)} Microsoft/OSM ones")
+            polys = [p for p in ov if len(p) >= 4]
+            mask = np.zeros((4096, 4096), np.uint8)
+            for p in polys:
+                cv2.fillPoly(mask, [np.array(p, np.int32)], 1)
+            kw.update(gt_building_mask=mask.astype(bool), gt_building_polygons=polys)
+        kw.update(sr_texture=hires is None)
+    if a.kind == "hilly" and chm is not None:
+        # The global canopy map calls a dense hill town's roofs and lanes
+        # "trees" (Darjeeling: 8-39 m cones between houses). Keep canopy only
+        # where the image itself looks like vegetation, and never on or right
+        # beside a building.
+        import rasterio
+        with rasterio.open(tif) as _ds:
+            rgb = _ds.read([1, 2, 3]).astype(np.float32)
+        s = rgb.sum(0) + 1e-3
+        exg = (2 * rgb[1] - rgb[0] - rgb[2]) / s
+        veg = cv2.morphologyEx(((exg > 0.04) & (rgb[1] / s > 0.35)).astype(np.uint8),
+                               cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+        near_bldg = cv2.dilate(mask, np.ones((9, 9), np.uint8)) > 0
+        keep = (veg > 0) & ~near_bldg
+        before = float((chm > 2).mean())
+        chm = np.where(keep, chm, 0.0).astype(np.float32)
+        log(f"{a.id}: canopy kept on vegetation only: {before:.1%} -> {float((chm > 2).mean()):.1%} of pixels")
+        kw.update(canopy_height_map=chm)
     log(f"building {a.id} ({a.kind}) with {len(polys)} footprints, canopy {'yes' if chm is not None else 'no'}")
     bci.build(tif, a.id, **kw)
 
@@ -317,14 +354,18 @@ def main():
     import shutil
     for f in glob.glob(os.path.join(ROOT, "final_out", f"city_{a.id}_*DSM.tif")) +             glob.glob(os.path.join(ROOT, "final_out", f"city_{a.id}_sigma.tif")):
         shutil.copy2(f, os.path.join(ROOT, "scenes", a.id, os.path.basename(f)))
-    if polys:
+    if polys or a.kind == "hilly":
         subprocess.run([PY, "tools/roof_details.py", a.id], cwd=ROOT)
     subprocess.run([PY, "tools/water_mask.py", "--scene", os.path.join("scenes", a.id)], cwd=ROOT)
 
     pj = os.path.join(ROOT, "viewer", "places.json")
     places = json.load(open(pj))
-    places = [p for p in places if p["id"] != a.id]
-    places.append({"id": a.id, "name": a.name, "region": a.region, "landscape": a.kind, "lidar": False})
+    entry = {"id": a.id, "name": a.name, "region": a.region, "landscape": a.kind, "lidar": False}
+    idx = next((i for i, p in enumerate(places) if p["id"] == a.id), None)
+    if idx is None:
+        places.append(entry)
+    else:
+        places[idx] = {**places[idx], **entry}       # a rebuild keeps its place in the list
     json.dump(places, open(pj, "w"), indent=2)
     log(f"done: scenes/{a.id}, listed in viewer/places.json")
 

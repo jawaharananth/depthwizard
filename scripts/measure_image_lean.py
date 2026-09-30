@@ -30,6 +30,9 @@ import rasterio
 MIN_H = 25.0
 SEARCH_PX = 32
 MAX_TOWERS = 300
+MAX_RESIDUAL_M = 5.0     # HITEC City fits at 3.5 m; hill towns came out at 10 m
+MAX_OFFSET_M = 12.0
+MAX_LEAN = 0.6
 
 
 def outline_points(px):
@@ -118,6 +121,18 @@ def main(scene_dir, tif):
 
     meta_p = os.path.join(scene_dir, "scene.json")
     meta = json.load(open(meta_p))
+    # A fit this loose samples walls from the wrong pixels (smeared facades on
+    # steep hill towns, where footprints sit on slopes and edges are clutter):
+    # better no photographed facade than a wrong one.
+    res_m = float(np.median(res) * gsd_x)
+    if res_m > MAX_RESIDUAL_M or float(np.hypot(*off_w)) > MAX_OFFSET_M or mag_mm > MAX_LEAN:
+        for k in ("roof_lean_m_per_m", "roof_offset_m"):
+            meta.pop(k, None)
+        meta["roof_lean_note"] = (f"not used: fit too loose (median residual {res_m:.1f} m, "
+                                  f"offset {np.hypot(*off_w):.1f} m, lean {mag_mm:.2f} m/m); "
+                                  f"walls take each building's measured colour")
+        json.dump(meta, open(meta_p, "w"), indent=1)
+        sys.exit(meta["roof_lean_note"])
     meta["roof_lean_m_per_m"] = lean_w
     meta["roof_offset_m"] = off_w
     meta["roof_lean_note"] = (

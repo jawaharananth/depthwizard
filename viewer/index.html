@@ -1441,7 +1441,34 @@ function measuredColourWallMaterial(rough) {
   const opts = { color: 0xffffff, vertexColors: true, roughness: rough, metalness: 0.0, envMapIntensity: 1.0 };
   if (!TSL || !THREE.MeshStandardNodeMaterial) return new THREE.MeshStandardMaterial(opts);
   const m = new THREE.MeshStandardNodeMaterial({ roughness: rough, metalness: 0.0, envMapIntensity: 1.0 });
-  m.colorNode = delitAlbedo(TSL.attribute("color", "vec3"), TSL.vec3(0, 1, 0));
+  // The measured colour is the ROOF's (these walls were never photographed).
+  // Dark roofs -- corrugated sheet, tar, wet slate in hill towns -- made
+  // near-black walls. Keep the building's own hue, lift its brightness to a
+  // painted-render floor and soften the saturation: an inferred wall, drawn
+  // as the plaster such walls usually are rather than as a copy of the roof.
+  const { dot, max, min, mix, vec3, float } = TSL;
+  const a = delitAlbedo(TSL.attribute("color", "vec3"), vec3(0, 1, 0));
+  const lum = dot(a, vec3(0.2126, 0.7152, 0.0722));
+  const lifted = min(a.mul(max(lum, float(0.42)).div(max(lum, float(0.02)))), vec3(1.0));
+  const wall = mix(lifted, vec3(max(lum, float(0.42))), float(0.35));
+  // Storeys: a 3.0 m floor rhythm with a slab line and a window row per floor,
+  // windows every 2.4 m along the wall -- the usual LOD2 rendering of a wall
+  // with no photographed facade. Drawn faintly; it is inferred, not measured.
+  const { positionWorld, fract, smoothstep, abs } = TSL;
+  const fy = fract(positionWorld.y.div(3.0));
+  const along = positionWorld.x.add(positionWorld.z);
+  const fx = fract(along.div(2.4));
+  const slab = smoothstep(0.0, 0.05, fy).mul(smoothstep(1.0, 0.95, fy));          // 0 on the slab line
+  const winY = smoothstep(0.30, 0.34, fy).mul(smoothstep(0.80, 0.76, fy));
+  const winX = smoothstep(0.22, 0.27, fx).mul(smoothstep(0.78, 0.73, fx));
+  const win = winY.mul(winX);
+  const glass = vec3(0.16, 0.19, 0.22);
+  const shaded = wall.mul(mix(float(0.78), float(1.0), slab));
+  m.colorNode = mix(shaded, glass, win.mul(0.55));
+  m.roughnessNode = mix(float(rough), float(0.25), win);
+  // Light bounced off the street and the neighbours: in a dense town a wall
+  // facing away from a low sun is still lit warm-grey, not sky-blue-black.
+  m.emissiveNode = shaded.mul(vec3(0.20, 0.18, 0.15)).mul(float(1).sub(win.mul(0.6)));
   return m;
 }
 
