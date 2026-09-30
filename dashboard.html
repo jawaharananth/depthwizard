@@ -42,6 +42,7 @@
   .toprow { display: flex; align-items: baseline; justify-content: space-between;
             gap: 16px; margin-bottom: 14px; }
   #eta { font-size: 30px; font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
+  #etacap { font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: .08em; }
   #eta.unknown { font-size: 17px; color: var(--dim); letter-spacing: 0; }
   #stagelabel { color: var(--dim); font-size: 13px; text-transform: uppercase;
                 letter-spacing: .07em; }
@@ -50,6 +51,24 @@
   #fill { height: 100%; width: 0; background: var(--accent);
           transition: width .5s ease; }
 
+  #clock { margin: -6px 0 12px; color: var(--dim); font-size: 13px;
+           font-variant-numeric: tabular-nums; }
+  #clock b { color: var(--ink); font-weight: 600; }
+  #logwrap { margin-top: 16px; }
+  #logwrap h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
+                color: var(--dim); margin: 0 0 6px; font-weight: 600;
+                display: flex; align-items: center; gap: 8px; }
+  #logwrap h3 .live { width: 7px; height: 7px; border-radius: 50%; background: var(--accent);
+                      animation: pulse 1.2s ease-in-out infinite; }
+  #logwrap.idle h3 .live { animation: none; background: #4f7f5f; }
+  @keyframes pulse { 50% { opacity: .25; } }
+  @media (prefers-reduced-motion: reduce) { #logwrap h3 .live { animation: none; } }
+  #log { background: #0b0f12; border: 1px solid var(--line); border-radius: 8px;
+         height: 220px; overflow-y: auto; padding: 8px 10px;
+         font: 12px/1.5 ui-monospace, "Cascadia Mono", Consolas, monospace; color: #9fb0bd; }
+  #log div { white-space: pre-wrap; word-break: break-word; }
+  #log .ts { color: #52606b; margin-right: 8px; }
+  #log .hd { color: var(--ink); }
   #flavor { margin-top: 14px; min-height: 22px; color: var(--ink); font-size: 14px; }
   #note { margin-top: 6px; min-height: 18px; color: var(--warn); font-size: 13px; }
 
@@ -71,6 +90,10 @@
   #retry { display: none; margin-top: 16px; }
 
   #result { display: none; margin-top: 18px; }
+  label.btn { display: inline-block; padding: 9px 18px; border: 1px solid var(--line);
+              border-radius: 6px; font-size: 14px; }
+  label.btn:hover { border-color: var(--accent); color: var(--accent); }
+  #result { gap: 8px; }
   a.btn { display: inline-block; background: var(--accent); color: #08131a;
           text-decoration: none; font-weight: 600; padding: 9px 18px;
           border-radius: 6px; font-size: 14px; }
@@ -120,13 +143,15 @@
 
   <section id="panel">
     <div class="toprow">
-      <div id="eta" class="unknown">estimating&hellip;</div>
+      <div><div id="eta" class="unknown">estimating&hellip;</div><div id="etacap">remaining</div></div>
       <div id="stagelabel"></div>
     </div>
+    <div id="clock">Elapsed <b id="elapsed">0:00</b><span id="total"></span></div>
     <div id="bar"><div id="fill"></div></div>
     <div id="flavor"></div>
     <div id="note"></div>
     <ol id="stages"></ol>
+    <div id="logwrap"><h3><span class="live"></span>Live pipeline log</h3><div id="log" role="log" aria-live="off"></div></div>
     <div id="conn" style="display:none;margin:8px 0;padding:8px 10px;border-radius:6px;background:rgba(230,160,40,.15);color:#c98a1a;font-size:13px;" role="status"></div>
     <div id="result">
       <a class="btn" id="openviewer" href="/viewer/index.html" target="_blank">Open 3D viewer</a>
@@ -181,6 +206,36 @@ let lastStage = null;
 let failedStage = null;
 let stopped = false;
 
+let t0 = null;          // when this upload started (local clock)
+let tEnd = null;        // when it finished or stopped
+function elapsedS() { return t0 === null ? 0 : ((tEnd || Date.now()) - t0) / 1000; }
+function paintClock() {
+  if (tEnd && !stopped) {
+    $("clock").innerHTML = fromCache
+      ? "Same image processed before &middot; result reused instantly"
+      : "3D model built in <b>" + fmt(elapsedS()) + "</b> from upload to viewer";
+    return;
+  }
+  if (!$("elapsed")) $("clock").innerHTML = 'Elapsed <b id="elapsed">0:00</b><span id="total"></span>';
+  $("elapsed").textContent = fmt(elapsedS());
+  const tot = $("total");
+  if (false) {}
+  else if (!tEnd && etaKnown && etaRemaining !== null && etaRemaining > 0 && !overrunning)
+    tot.textContent = " \u00b7 estimated total " + fmt(elapsedS() + etaRemaining);
+  else tot.textContent = "";
+}
+function appendLog(line, cls) {
+  const box = $("log");
+  const atEnd = box.scrollHeight - box.scrollTop - box.clientHeight < 30;
+  const row = document.createElement("div");
+  if (cls) row.className = cls;
+  const ts = document.createElement("span");
+  ts.className = "ts"; ts.textContent = fmt(elapsedS());
+  row.appendChild(ts); row.appendChild(document.createTextNode(String(line).trim()));
+  box.appendChild(row);
+  if (atEnd) box.scrollTop = box.scrollHeight;
+}
+
 function fmt(s) {
   s = Math.max(0, Math.round(s));
   const m = Math.floor(s / 60);
@@ -221,6 +276,13 @@ function renderStages(activeKey) {
 // which is the single thing that makes a progress UI read as fake.
 function paint() {
   const el = $("eta");
+  if (finished && !stopped) {
+    el.className = "";
+    el.textContent = fmt(elapsedS());
+    $("etacap").textContent = "total time";
+    return;
+  }
+  $("etacap").textContent = stopped ? "" : "remaining";
   if (stopped) {
     // Once the run has ended there is nothing left to estimate. paint() runs on
     // a timer AND after every event, so without this branch it would overwrite
@@ -253,9 +315,13 @@ function paint() {
 setInterval(() => {
   if (etaKnown && etaRemaining !== null && etaRemaining > 0) etaRemaining -= 1;
   paint();
+  paintClock();
 }, 1000);
 
 function start(file) {
+  t0 = Date.now(); tEnd = null; fromCache = false; finished = false;
+  $("log").innerHTML = ""; $("logwrap").className = "";
+  appendLog("upload started: " + file.name + " (" + (file.size / 1e6).toFixed(1) + " MB)", "hd");
   stopped = false;
   failedStage = null;
   lastStage = null;
@@ -278,6 +344,8 @@ function start(file) {
 
 function fail(msg) {
   stopped = true;
+  if (!tEnd) tEnd = Date.now();
+  $("logwrap").className = "idle";
   failedStage = lastStage;
   etaKnown = false;
   etaRemaining = null;
@@ -304,6 +372,8 @@ function reset() {
   overrunning = false;
   currentMessage = "";
   doneStages = {};
+  t0 = null; tEnd = null; lastLogged = null; fromCache = false;
+  $("log").innerHTML = "";
   currentJob = null;
   sseTries = 0;
   connNote("");
@@ -360,6 +430,8 @@ function pollStatus(jobId) {
 function handleEvent(d, src, jobId) {
     connNote("");
     sseTries = 0;
+    if (d.phase === "log") { appendLog(d.log); return; }
+    if (d.stage_label && d.stage !== lastLogged) { lastLogged = d.stage; appendLog("\u25b8 " + d.stage_label, "hd"); }
 
     etaRemaining = (typeof d.eta === "number") ? d.eta : null;
     etaKnown = !!d.eta_known;
@@ -379,6 +451,11 @@ function handleEvent(d, src, jobId) {
     }
 
     if (d.phase === "done") {
+      if (!tEnd) tEnd = Date.now();
+      fromCache = d.elapsed_total === 0 && !Object.keys(d.stage_timings || {}).length;
+      $("logwrap").className = "idle";
+      appendLog("\u2713 3D model ready in " + fmt(elapsedS()), "hd");
+      $("note").textContent = "";
       doneStages = d.stage_timings || {};
       renderStages(null);
       $("fill").style.width = "100%";
@@ -401,6 +478,8 @@ function handleEvent(d, src, jobId) {
 }
 
 let finished = false;
+let lastLogged = null;
+let fromCache = false;
 
 function listen(jobId) {
   currentJob = jobId;

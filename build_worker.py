@@ -29,7 +29,51 @@ class Stalled(RuntimeError):
     pass
 
 
+LOG_MAX_LINES = 600
+_ROOT = os.path.dirname(os.path.abspath(__file__))
+
+
+class _LogTee:
+    """Passes the build's own printed lines through to the console and, one
+    complete line at a time, to the job's event stream (phase "log"), so the
+    upload page can show what the pipeline is actually doing. Local paths are
+    trimmed to names; tqdm's carriage-return progress bars are skipped."""
+
+    def __init__(self, real, emit):
+        self.real, self.emit, self.buf, self.sent = real, emit, "", 0
+
+    def write(self, s):
+        try:
+            self.real.write(s)
+        except Exception:
+            pass
+        self.buf += s
+        while "\n" in self.buf:
+            line, self.buf = self.buf.split("\n", 1)
+            self._line(line)
+        return len(s)
+
+    def _line(self, line):
+        if "\r" in line:
+            return
+        line = line.rstrip()
+        if not line.strip() or self.sent >= LOG_MAX_LINES:
+            return
+        line = line.replace(_ROOT + os.sep, "").replace(_ROOT, "")
+        if len(line) > 220:
+            line = line[:217] + "..."
+        self.sent += 1
+        self.emit(line)
+
+    def flush(self):
+        try:
+            self.real.flush()
+        except Exception:
+            pass
+
+
 def _worker_main(tasks, events):
+    import sys
     import depth_model
     import progress as prog
     t0 = time.time()
@@ -57,6 +101,9 @@ def _worker_main(tasks, events):
             tr.enter("load")
             import ctypes
             ctypes.PyDLL("kernel32").Sleep(3600 * 1000)
+        real_out = sys.stdout
+        sys.stdout = _LogTee(real_out, lambda line, _j=jid: events.put(
+            {"t": "ev", "job": _j, "ev": {"job": _j, "phase": "log", "log": line, "t": round(time.time(), 2)}}))
         try:
             bci.build(task["path"], task["name"], tracker=tr, stage=True, **task.get("kw", {}))
             res["ok"] = True
@@ -65,6 +112,8 @@ def _worker_main(tasks, events):
         except Exception as e:
             traceback.print_exc()
             res.update(ok=False, detail=f"{type(e).__name__}: {e}")
+        finally:
+            sys.stdout = real_out
         res["final"] = tr.finish(ok=res["ok"], detail=res.get("detail", ""))
         events.put(res)
 

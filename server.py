@@ -675,7 +675,8 @@ class Handler(BaseHTTPRequestHandler):
                 return
             job: Job = rec["job"]
             with job.lock:
-                last = job.history[-1] if job.history else None
+                # the pipeline's own log lines (phase "log") are not progress
+                last = next((e for e in reversed(job.history) if e.get("phase") != "log"), None)
             phase = last.get("phase") if last else None
             if phase == "done":
                 state = "done"
