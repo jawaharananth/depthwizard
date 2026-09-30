@@ -1149,10 +1149,8 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
     # when the source is coarser than it. GAMUS/DFC2019, the real datasets
     # this project's checkpoint is tuned on, are 0.3 m/px; ISRO's own imagery
     # is typically 0.5-1.0 m/px, and a token at that scale already averages a
-    # building with its surroundings before the head ever sees it -- a real,
-    # measured effect elsewhere (a real competitor's own probe: per-building
-    # RMSE 1.35->2.26 m and bias -0.16->-1.67 m at 0.6 m vs 0.3 m, recovered
-    # to 1.40 m by upsampling back to the trained scale first). Capped at 3x:
+    # building with its surroundings before the head ever sees it; upsampling
+    # back to the trained scale first recovers most of that loss. Capped at 3x:
     # beyond that a pixel is being invented, not recovered, and the model was
     # never shown ground that coarse to begin with.
     NATIVE_TRAIN_GSD_M = 0.3
@@ -1288,7 +1286,7 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
     # onto the working grid. Running the model on the working grid instead
     # (a 4096 px 0.57 m scene shrunk to 2560 px = 0.91 m) under-called HITEC
     # to p99 2.3 m against ~9 m at the trained scale; 0.6 m input costs
-    # +2.9 % per building upsampled vs +7.3 % not (BENCHMARK_RESOLUTION.md).
+    # +2.9 % per building upsampled vs +7.3 % not (docs/BENCHMARK_RESOLUTION.md).
     _agl_full, _full_zoom = None, 1.0
     FULLRES_MAX_MPX = float(os.environ.get("DW_FULLRES_MAX_MPX", "80"))
     _trained_scale_pass = bool(
@@ -2690,7 +2688,7 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
     #
     # The model is run at the scale it was trained at: a 0.6 m source is
     # upsampled 2x first. Measured on the 18 held-out DFC2019 tiles
-    # (BENCHMARK_RESOLUTION.md), 0.6 m costs +2.9 % per-building RMSE this way
+    # (docs/BENCHMARK_RESOLUTION.md), 0.6 m costs +2.9 % per-building RMSE this way
     # and +7.3 % fed at its own pixel count. Bounded by FULLRES_MAX_MPX so a
     # huge scene still finishes on a CPU; the zoom shrinks to fit.
     _full = None

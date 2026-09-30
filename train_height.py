@@ -500,11 +500,8 @@ def main() -> None:
     # separately can't tell a real structural fix from a checkpoint that
     # merely rescaled its errors: MAE can improve by a hair while the model's
     # actual agreement with the ground truth (correlation) stays flat or
-    # drops, which is exactly the failure mode a competitor's A/B methodology
-    # (reviewed in COMPETITOR_LANDSCAPE.md) is built to catch -- they measure
-    # correlation, not just RMSE, specifically because RMSE alone can hide
-    # whether a fix is real. Both bars below are adopted from that same
-    # reasoning, via our own numbers, not their code:
+    # drops. Correlation is measured alongside RMSE because RMSE alone can
+    # hide whether a fix is real. Both bars below:
     #
     #   1. MAE must beat baseline by a real margin, not an infinitesimal one.
     #   2. Correlation must not have quietly regressed while MAE improved.

@@ -50,7 +50,7 @@ RULES ENFORCED, NOT JUST STATED
     not repeat -- would change those bytes. A mismatch raises, not warns.
   - Tier C tiles are NEVER rescaled against truth. They contribute a shape
     correlation only and are excluded from the RMSE/MAE aggregate, loudly
-    (printed and recorded in BENCHMARK_BLIND.md), the same way an
+    (printed and recorded in docs/BENCHMARK_BLIND.md), the same way an
     unregistered tile already is.
   - Every tile is scored. A tile whose prediction correlates with its truth
     below MIN_CORRELATION (0.25) is FLAGGED, never dropped: rejecting tiles by
@@ -417,7 +417,7 @@ def main(max_tiles: int = 20, out_px: int = 1024,
 
 
 def write_report(results: list, out_px: int, path: str = None):
-    path = path or os.path.join(ROOT, "BENCHMARK_BLIND.md")
+    path = path or os.path.join(ROOT, "docs", "BENCHMARK_BLIND.md")
     scored = [r for r in results if r["status"] == "SCORED"]
     shape_only = [r for r in results if r["status"] == "SHAPE_ONLY"]
     rejected = [r for r in results if r["status"] not in ("SCORED", "SHAPE_ONLY")]

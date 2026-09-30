@@ -4,8 +4,7 @@ Reference: Chen et al., "Vision Transformers for Monocular Height Estimation
 via Content-Adaptive Bins and Class Balancing" (submitted to IEEE TGRS,
 arXiv:2309.16486, sections III-B/C/D). Equation numbers in the docstrings
 below refer to that paper; this module reimplements them independently
-against our own DPT backbone (train_height.py's AutoModelForDepthEstimation),
-not against any other team's code.
+against our own DPT backbone (train_height.py's AutoModelForDepthEstimation).
 
 WHY THIS EXISTS
 

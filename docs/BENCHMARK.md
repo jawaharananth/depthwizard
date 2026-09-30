@@ -32,7 +32,7 @@ an upper bound, not a deployable result.
 
 ---
 
-## Upper bound (scale fitted to LiDAR per tile) — 18 tiles (current: `dashboard/validation_results.json`)
+## Upper bound (scale fitted to LiDAR per tile) — 18 tiles (regenerate: `python rescore_baseline.py` -> `results/validation_results.json`)
 
 **Scope: Jacksonville, FL only (DFC2019 Track 3).** No other city has LiDAR truth
 scored this way; the India demo scenes are not benchmarked.
@@ -44,8 +44,7 @@ scored this way; the India demo scenes are not benchmarked.
 | per-tile correlation with LiDAR nDSM | median 0.675 (range 0.493–0.787, mean 0.658) |
 | tiles scored | 18 (all passed the 0.25 correlation registration floor) |
 
-The earlier 3.87 m / 2.01 m run (2026-09-04, kept in
-`dashboard/validation_results_2026-09-04.json`) scored the same 18 tiles with
+The earlier 3.87 m / 2.01 m run (2026-09-04) scored the same 18 tiles with
 mean correlation 0.591 and rejected JAX_149 (0.229) and JAX_156 (0.208). The file
 records correlation per tile only, not per landscape class.
 

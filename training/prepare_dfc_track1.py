@@ -5,9 +5,8 @@
 Track 1 is 108 areas (Jacksonville, Omaha), each photographed 19-42 times by
 WorldView-3, 1024 px at 0.3 m, with airborne-LiDAR height above ground per view.
 Held out, never written:
-  * the competing entry's validation and test areas, reproduced exactly from
-    their split (scripts/head_to_head.py: seed 1337, 15 % test, 15 % val), so
-    the 80-tile head-to-head stays a clean comparison after run 05;
+  * a fixed 30 % of areas (region split, seed 1337, 15 % test, 15 % val),
+    kept as an external test set that no run has trained on;
   * our own 18 benchmark areas (dfc2019_height.benchmark_tiles()) and every
     area in our Track 3 validation split (the run's model selection).
 Of each remaining area, up to --views dates, evenly spread through the list.
@@ -44,11 +43,11 @@ def held_out_regions():
     np.random.default_rng(SEED).shuffle(order)
     n = len(order)
     n_test, n_val = max(1, round(0.15 * n)), max(1, round(0.15 * n))
-    theirs = set(order[:n_test + n_val])
+    external = set(order[:n_test + n_val])
     ours = set(DH.benchmark_tiles())
     vdir = os.path.join(ROOT, "training", "dfc_tiles", "val")
     ours |= {"_".join(f.split("_")[1:3]) for f in os.listdir(vdir) if f.startswith("DFC_")} if os.path.isdir(vdir) else set()
-    return rgb, paired, regions, theirs, ours
+    return rgb, paired, regions, external, ours
 
 
 def main():
@@ -56,8 +55,8 @@ def main():
     ap.add_argument("--out", default=os.path.join(ROOT, "training", "dfc_track1"))
     ap.add_argument("--views", type=int, default=6)
     a = ap.parse_args()
-    rgb, paired, regions, theirs, ours = held_out_regions()
-    train_regions = [r for r in regions if r not in theirs and r not in ours]
+    rgb, paired, regions, external, ours = held_out_regions()
+    train_regions = [r for r in regions if r not in external and r not in ours]
     out = os.path.join(a.out, "train")
     os.makedirs(out, exist_ok=True)
     written = []
@@ -86,11 +85,11 @@ def main():
                 f.create_dataset("image", data=h.astype(np.float16), compression="gzip", compression_opts=4)
             written.append(name)
         print(f"  {reg}: {len(views)} views", flush=True)
-    rep = {"areas_total": len(regions), "held_out_theirs": sorted(theirs), "held_out_ours": sorted(ours & set(regions)),
+    rep = {"areas_total": len(regions), "held_out_theirs": sorted(external), "held_out_ours": sorted(ours & set(regions)),
            "train_areas": train_regions, "tiles": len(written), "views_per_area": a.views}
     json.dump(rep, open(os.path.join(a.out, "split.json"), "w"), indent=1)
     print(f"{len(written)} tiles from {len(train_regions)} areas "
-          f"({len(theirs)} competitor val/test and {len(ours & set(regions))} of ours held out)")
+          f"({len(external)} external test and {len(ours & set(regions))} of ours held out)")
 
 
 if __name__ == "__main__":

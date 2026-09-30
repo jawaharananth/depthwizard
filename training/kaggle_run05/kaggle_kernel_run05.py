@@ -1,8 +1,8 @@
 """Kaggle GPU run 05: run 03 recipe + DFC2019 Track 1 (Omaha + Jacksonville, tall
 buildings), initialised from run 03 (the production checkpoint).
 
-Track 1 areas held out: the competing entry's validation and test areas (so the
-80-tile head-to-head stays clean) and our own benchmark / validation areas --
+Track 1 areas held out: a fixed external test split (region split, seed 1337)
+and our own benchmark / validation areas --
 see training/prepare_dfc_track1.py. Model selection uses the same Track 3
 validation split as run 03, so the two runs are compared like for like.
 

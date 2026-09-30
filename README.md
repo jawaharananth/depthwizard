@@ -13,7 +13,7 @@ single-view satellite or aerial image, with a visualisation layer.
 Held-out DFC2019 LiDAR, images degraded to ISRO's 0.6 m, production model
 (run 03), `scripts/compare_ckpt.py` -> `final_out/tta_eval.json`. Older
 figures (2.82 m whole-tile, 2.19 m per-building) are run 02 on other protocols.
-Two different, non-comparable numbers — see `EVALUATION_PROTOCOL.md` before
+Two different, non-comparable numbers — see `docs/EVALUATION_PROTOCOL.md` before
 citing either one; that file exists because this project once conflated them.
 
 ![HITEC City, Hyderabad, built from one image](docs/images/hitec_city_3d.png)
@@ -56,7 +56,7 @@ container uses `--host 0.0.0.0 --port 8080`). It is a stdlib
 | `scenes/periyar_forest` | Periyar Tiger Reserve, Kerala, forest + lake | Meta/WRI canopy-height map; terrain from Copernicus GLO-30 DEM, canopy-penetration corrected (x0.6, an assumed literature fraction); absolute DSM 855–1056 m |
 
 Neither scene is scored against LiDAR; the only benchmark is Jacksonville
-(DFC2019), see `BENCHMARK.md`.
+(DFC2019), see `docs/BENCHMARK.md`.
 
 **DSM export:** every build writes a GeoTIFF. For georeferenced input that
 reaches a metric tier with an external datum it is `<name>_DSM.tif`
@@ -74,7 +74,7 @@ twice: once for comparing misregistered rasters (withdrawn), and again when a
 silent normalisation bug in `depth_model.py` discarded the licensed model's
 real metre output for every downstream consumer. Both are fixed now; the
 numbers below were re-measured after both fixes, not carried over from before
-them. Full history in `EVALUATION_PROTOCOL.md`.
+them. Full history in `docs/EVALUATION_PROTOCOL.md`.
 
 **Accuracy, measured blind** (no scale fitted to the LiDAR at any point;
 DFC2019 Jacksonville, airborne LiDAR nDSM as truth):
@@ -102,9 +102,9 @@ GeoTIFFs scored as an **absolute DSM**):
 
 | Test | Result | Where |
 |---|---|---|
-| 0.6 m input, 18 held-out DFC tiles, per building (run 03) | 1.87 m vs 1.88 m native: **-0.6 %**, flat from 0.25 m to 1.0 m (fed without upsampling: +5.4 %). Run 02 was +2.9 %; the sensor-gap training closed it | `BENCHMARK_RESOLUTION.md` |
-| Four landscapes vs airborne LiDAR at 0.6 m (swisstopo; height above ground) | urban 8.45 m, hilly 8.54 m, forest 25.15 m, sparse 3.08 m (zero-prediction floor 12.31 / 12.73 / 31.48 / 4.13 m) | `BENCHMARK_LANDSCAPES.md` |
-| Absolute DSM vs the same LiDAR elevations | urban 6.9 m, hilly 9.5 m, forest 8.8 m, sparse 2.9 m (Copernicus GLO-30 alone: 8.4 / 11.1 / 9.6 / 3.6 m) | `BENCHMARK_LANDSCAPES.md` |
+| 0.6 m input, 18 held-out DFC tiles, per building (run 03) | 1.87 m vs 1.88 m native: **-0.6 %**, flat from 0.25 m to 1.0 m (fed without upsampling: +5.4 %). Run 02 was +2.9 %; the sensor-gap training closed it | `docs/BENCHMARK_RESOLUTION.md` |
+| Four landscapes vs airborne LiDAR at 0.6 m (swisstopo; height above ground) | urban 8.45 m, hilly 8.54 m, forest 25.15 m, sparse 3.08 m (zero-prediction floor 12.31 / 12.73 / 31.48 / 4.13 m) | `docs/BENCHMARK_LANDSCAPES.md` |
+| Absolute DSM vs the same LiDAR elevations | urban 6.9 m, hilly 9.5 m, forest 8.8 m, sparse 2.9 m (Copernicus GLO-30 alone: 8.4 / 11.1 / 9.6 / 3.6 m) | `docs/BENCHMARK_LANDSCAPES.md` |
 
 Measured weaknesses, stated plainly: tall forest (30-40 m trees) and dense tall
 blocks are under-called (bias -23 m in Sihlwald, -4.6 m in Zurich's old town);
@@ -203,7 +203,7 @@ dfc2019_data/metadata/Track3-Metadata/
 viewer (`Dockerfile`/`requirements-serve.txt` deploy CPU-only). Depth
 inference is the bottleneck (~6 min per 2500 px tile on CPU), and is cached,
 so rebuilds take ~30 s. **Training** the metric checkpoint (`train_height.py`)
-does need a GPU — done on Kaggle/Colab, not locally; see `DEPLOY.md` for
+does need a GPU — done on Kaggle/Colab, not locally; see `docs/DEPLOY.md` for
 hosting the built app publicly for free.
 
 ---

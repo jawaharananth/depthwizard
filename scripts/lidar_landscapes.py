@@ -199,7 +199,7 @@ def main():
                          + " | ".join(f(res[f'k={k}']) for k in KS) + " |")
     txt = "\n".join(lines)
     print(txt)
-    with open(os.path.join(ROOT, "BENCHMARK_LANDSCAPES.md"), "w", encoding="utf-8") as fh:
+    with open(os.path.join(ROOT, "docs", "BENCHMARK_LANDSCAPES.md"), "w", encoding="utf-8") as fh:
         fh.write("# Four landscapes vs airborne LiDAR at 0.6 m (Switzerland, swisstopo)\n\n"
                  + __doc__.split("\n\n", 1)[1].rsplit("\n\nData", 1)[0]
                  + "\n\n## Results (height above ground, 1 m cells)\n\n" + txt

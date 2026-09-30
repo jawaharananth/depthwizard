@@ -15,7 +15,7 @@ and then either
 Heights are scored against the LiDAR nDSM exactly as in the blind benchmark,
 with no fitting to truth: per pixel (RMSE, MAE, pooled correlation) and per
 building (LiDAR building instances, median height on both sides -- the metric
-the literature and the competing entry report).
+the literature reports).
 
 Only dfc2019_height.benchmark_tiles() are scored: the tiles the checkpoint
 never saw. Simulated coarsening measures the resolution gap, not the sensor
@@ -113,7 +113,7 @@ def main():
     txt = "\n".join(lines)
     print(txt)
     json.dump(out, open(os.path.join(ROOT, "final_out", "resolution_test.json"), "w"), indent=2)
-    with open(os.path.join(ROOT, "BENCHMARK_RESOLUTION.md"), "w", encoding="utf-8") as fh:
+    with open(os.path.join(ROOT, "docs", "BENCHMARK_RESOLUTION.md"), "w", encoding="utf-8") as fh:
         fh.write("# Accuracy vs input resolution (blind, DFC2019, "
                  f"{len(tiles)} held-out tiles, {out[CONDITIONS[0][0]]['n_buildings']} buildings)\n\n"
                  "ISRO evaluates on Cartosat-2S at 0.6 m. Each held-out tile's 0.25 m ortho is "

@@ -8,10 +8,8 @@ roads, bare ground, hillside, everything. That number can look good largely
 because most of a scene is flat ground a model gets right almost by
 default (measured: the "hilly" terrain class alone is 1.82m RMSE, dragging
 the whole-tile average down). It is a different, generally easier number
-than "how far off is this building's height," which is the number a
-competing team in this problem statement (zaidnansari2011/sih2026-depthwizard)
-reports: 3.464m per-building RMSE against airborne LiDAR, on 3,090 buildings,
-region-disjoint.
+than "how far off is this building's height," the per-building figure
+commonly reported against airborne LiDAR.
 
 This script computes the closest honest equivalent from what this project
 already has: reuses rescore_baseline.py's exact orthorectification,
@@ -137,10 +135,10 @@ def main(max_tiles: int = 18) -> None:
         "overall": {"rmse_m": overall_rmse, "mae_m": overall_mae, "bias_m": bias},
         "per_tile": per_tile,
     }
-    os.makedirs("dashboard", exist_ok=True)
-    with open("dashboard/per_building_results.json", "w") as f:
+    os.makedirs("results", exist_ok=True)
+    with open("results/per_building_results.json", "w") as f:
         json.dump(payload, f, indent=2)
-    print("wrote dashboard/per_building_results.json")
+    print("wrote results/per_building_results.json")
 
 
 if __name__ == "__main__":

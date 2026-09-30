@@ -155,7 +155,7 @@ dist/
 # Fine-tuned model weights. Hundreds of MB per checkpoint, and GitHub rejects
 # any file over 100 MB outright. The training report JSON is the part worth
 # keeping, and it is small -- but it lives alongside the weights, so the whole
-# directory goes and the report is quoted in BENCHMARK.md instead.
+# directory goes and the report is quoted in docs/BENCHMARK.md instead.
 checkpoints/
 
 # Images people upload through the dashboard. Not ours to redistribute.
@@ -167,7 +167,7 @@ uploads/
 
 # One-off experiment scripts, same convention as the diag_/tune_/chk_ rules
 # above. Each answered one question and is superseded by the measurement it
-# produced, which is recorded in BENCHMARK.md.
+# produced, which is recorded in docs/BENCHMARK.md.
 ab_metrics.py
 ceiling_test.py
 compare_fp.py
@@ -199,7 +199,7 @@ nyc_fidi/*.png
 *_polygons_px*.json
 *.log
 
-# Internal notes (competitor research, predictions) -- never shipped
+# Internal notes -- never shipped
 archive/private_notes/
 
 # Training data and checkpoints (rebuild: training/prepare_dfc.py; Kaggle outputs)

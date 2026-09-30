@@ -15,7 +15,7 @@ file provides.
 > Code: https://github.com/EarthNets/RSI-MMSegmentation
 
 What is here is a small subset of a 80 GB dataset — the tiles used to measure
-the domain gap recorded in `BENCHMARK.md`, plus a training slice. The full set,
+the domain gap recorded in `docs/BENCHMARK.md`, plus a training slice. The full set,
 or any other subset, is reproducible:
 
 ```bash

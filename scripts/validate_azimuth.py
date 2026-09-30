@@ -160,7 +160,7 @@ def main(max_tiles: int = None):
 
 
 def write_report(results: list, tiles: list, path: str = None):
-    path = path or os.path.join(ROOT, "AZIMUTH_VALIDATION.md")
+    path = path or os.path.join(ROOT, "docs", "AZIMUTH_VALIDATION.md")
     ok = [r for r in results if r["status"] == "OK"]
     lines = []
     lines.append("# estimate_sun_azimuth() validation against real IMD sun angles")

@@ -48,7 +48,8 @@ def main():
     runs = {}
     for label, kwargs in CONFIGS:
         print(f"\n{'=' * 70}\nCONFIG: {label}  ({kwargs})\n{'=' * 70}")
-        report_path = os.path.join(ROOT, f"_ablation_{label}.md")
+        os.makedirs(os.path.join(ROOT, "results"), exist_ok=True)
+        report_path = os.path.join(ROOT, "results", f"ablation_{label}.md")
         results = bb.main(max_tiles=n, report_path=report_path, **kwargs)
         runs[label] = {"results": results, "agg": _agg(results)}
 
@@ -105,7 +106,7 @@ def main():
     lines.append("```")
     lines.append("")
 
-    out_path = os.path.join(ROOT, "BENCHMARK_ABLATION.md")
+    out_path = os.path.join(ROOT, "docs", "BENCHMARK_ABLATION.md")
     with open(out_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
     print(f"\nwrote {out_path}")

@@ -23,7 +23,7 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
-# Measured on four swisstopo LiDAR tiles (scripts/lidar_landscapes.py, BENCHMARK_LANDSCAPES.md),
+# Measured on four swisstopo LiDAR tiles (scripts/lidar_landscapes.py, docs/BENCHMARK_LANDSCAPES.md),
 # mean absolute-surface RMSE over urban / hilly / forest / sparse:
 #   GLO-30: k=0 7.19, 0.25 7.03, 0.5 7.04, 0.75 7.23 m -> 0.4 (between the two tied best)
 #   SRTM:   k=0 7.76, 0.25 7.84, 0.5 8.07 m          -> 0.0

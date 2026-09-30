@@ -214,9 +214,10 @@ def main(max_tiles=5, tiled=True):
         "per_tile": per_tile,
         "rejected": rejected,
     }
-    with open("dashboard/validation_results.json", "w") as f:
+    os.makedirs("results", exist_ok=True)
+    with open("results/validation_results.json", "w") as f:
         json.dump(payload, f, indent=2)
-    print("wrote dashboard/validation_results.json")
+    print("wrote results/validation_results.json")
 
 
 if __name__ == "__main__":

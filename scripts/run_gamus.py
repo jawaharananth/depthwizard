@@ -68,7 +68,7 @@ def run(cmd, label):
 
 def read_blind():
     """Current headline from the blind benchmark, for the before/after."""
-    path = os.path.join(ROOT, "BENCHMARK_BLIND.md")
+    path = os.path.join(ROOT, "docs", "BENCHMARK_BLIND.md")
     if not os.path.exists(path):
         return None
     with open(path, encoding="utf-8") as f:

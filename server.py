@@ -157,7 +157,7 @@ _queue_depth_lock = threading.Lock()
 # _shutting_down lets a redeploy/restart during a live demo drain cleanly
 # instead of severing an in-flight SSE stream with no explanation -- see
 # main()'s signal handler. MAX_RSS_MB is a self-imposed ceiling well under a
-# typical free-tier container's real limit (4Gi in DEPLOY.md), so uploads get
+# typical free-tier container's real limit (4Gi in docs/DEPLOY.md), so uploads get
 # refused with a clear message before the OS OOM-kills the whole process,
 # which would otherwise look identical to "the app is broken" from a judge's
 # side of the screen.
@@ -171,7 +171,7 @@ def _rss_mb() -> float | None:
     if resource is None:
         return None
     # ru_maxrss is KB on Linux, bytes on macOS -- this server only ever
-    # deploys to Linux containers (DEPLOY.md), so KB is the correct unit here.
+    # deploys to Linux containers (docs/DEPLOY.md), so KB is the correct unit here.
     return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0
 
 

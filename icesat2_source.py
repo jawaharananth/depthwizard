@@ -1,7 +1,6 @@
 """
-ICESat-2 ATL08 as an independent, free, globally-available height check --
-research finding recorded in COMPETITOR_LANDSCAPE.md's research-frontier
-review (arXiv 2505.06905, "sparse LiDAR-guided correction"): post-hoc
+ICESat-2 ATL08 as an independent, free, globally-available height check
+(arXiv 2505.06905, "sparse LiDAR-guided correction"): post-hoc
 correction of monocular height predictions against real spaceborne LiDAR,
 no retraining required. Real India coverage exists (ICESat-2 is global),
 which is the actual gap this targets -- our only measured ground truth

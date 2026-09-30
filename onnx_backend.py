@@ -9,9 +9,7 @@ installed wherever it runs next -- it is not something you email a judge and
 they double-click. An ONNX export with int8 dynamic quantization is: it is a
 single ~35-45 MB file, ONNX Runtime is a much smaller and more commonly
 pre-installed dependency than a full PyTorch+transformers stack, and it runs
-identically on any CPU, not just this one. Competitor repos in this
-problem-statement's field (zaidnansari2011/sih2026-depthwizard, for one)
-ship exactly this for that reason.
+identically on any CPU, not just this one.
 
 Follows ov_backend.py's own rules deliberately, not by coincidence: convert
 once and cache the result, verify the exported model reproduces PyTorch
@@ -24,14 +22,13 @@ MEASURED, depth-anything/Depth-Anything-V2-Small-hf, 518x518:
     fp32 ONNX (99.1 MB)     0.000% max deviation from PyTorch -- verified
     int8 dynamic (27.2 MB)  21.65% max deviation -- REJECTED, default is fp32
 
-int8 dynamic quantization is the smaller, more attractive artifact -- it is
-what a 36.8 MB competitor build in this problem statement's field ships --
-but it fails this project's own 1% verification floor by more than 20x on
+int8 dynamic quantization is the smaller, more attractive artifact, but it
+fails this project's own 1% verification floor by more than 20x on
 this exact model. The export path itself is exact (fp32's 0.000% proves the
 tracing and the ONNX graph are correct); the quantization step specifically
-is where the error comes from. Shipping the smaller file anyway because a
-competitor's is smaller would be exactly the kind of unverified claim this
-project's Tier system exists to refuse. `quantize=True` is left in as an
+is where the error comes from. Shipping the smaller file anyway would be
+exactly the kind of unverified claim this project's Tier system exists to
+refuse. `quantize=True` is left in as an
 option, not the default, in case a future onnxruntime version or a
 different backbone quantizes this model more cleanly -- verify() still
 gates it either way.

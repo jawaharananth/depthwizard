@@ -54,11 +54,10 @@ SUSPECT_RESIDUAL_FRAC = 0.25
 
 # Below this many points, or this narrow a height span, a power law and a flat
 # ratio cannot be told apart -- fitting one anyway would report a confident
-# exponent that is really just noise in log-space. A real competitor's own
-# measured result (power law beating affine by -24.9% RMSE vs -15.1% on tall
-# structures, because their error was a height-dependent ratio, not a fixed
-# offset) is the reason this is worth reporting at all -- but only where the
-# data can actually distinguish the two forms.
+# exponent that is really just noise in log-space. A power law is worth
+# reporting because monocular height error is often a height-dependent ratio
+# rather than a fixed offset (tall structures in particular) -- but only where
+# the data can actually distinguish the two forms.
 MIN_POWER_LAW_POINTS = 4
 MIN_POWER_LAW_SPAN = 3.0   # max(measured)/min(measured) ratio required
 

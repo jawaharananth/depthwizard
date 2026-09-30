@@ -1,6 +1,6 @@
-"""Correctness tests for validation.compute_metrics -- the function every
+﻿"""Correctness tests for validation.compute_metrics -- the function every
 accuracy number this project has ever quoted (rescore_baseline.py, the
-per-terrain table in dashboard/validation_results.json, model_audit.py) goes
+per-terrain table in results/validation_results.json, model_audit.py) goes
 through. If RMSE/MAE/bias were computed wrong here, every downstream claim
 would be wrong the same way, silently.
 """

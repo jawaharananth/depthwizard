@@ -1,5 +1,5 @@
 """Real, live checks against the actual public ICESat-2 endpoints -- not
-mocks. This project's own standing rule (EVALUATION_PROTOCOL.md) is that a
+mocks. This project's own standing rule (docs/EVALUATION_PROTOCOL.md) is that a
 number isn't trusted until it's actually been run, and the same applies to
 "this API works": a mocked response would only prove the parsing code
 handles whatever shape we assumed it returns, not that the real service

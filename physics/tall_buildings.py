@@ -4,7 +4,7 @@ Tall-building height from single-image physics, fused with a monocular model.
 WHY
 
 Every monocular height model under-calls tall buildings: ours compresses the
-top end ~1.7x, and a competitor reports -15.6 m bias above 20 m. A global
+top end ~1.7x. A global
 rescale cannot fix it (the least-squares optimal global scale on validation is
 0.98 -- the error is a compression of the TAIL, not a wrong unit). The same
 single image carries two independent, geometric height measurements that do
