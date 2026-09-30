@@ -56,6 +56,9 @@ def main(d):
             rec["ok"] = True
             dsm = glob.glob(os.path.join(b.OUT_DIR, f"city_{name}_DSM.tif"))
             rdsm = glob.glob(os.path.join(b.OUT_DIR, f"city_{name}_rDSM.tif"))
+            # only files this build wrote, not ones left by an earlier run
+            dsm = [p for p in dsm if os.path.getmtime(p) >= t]
+            rdsm = [p for p in rdsm if os.path.getmtime(p) >= t]
             rec["product"] = "DSM" if dsm else ("rDSM" if rdsm else None)
             if dsm or rdsm:
                 rec["raster"] = check_dsm((dsm or rdsm)[0])
@@ -64,8 +67,12 @@ def main(d):
                 _s.path.insert(0, os.path.join(ROOT, "scripts"))
                 from isro_protocol_eval import evaluate
                 e = evaluate(dsm[0], "glo30")["at_30m"]
-                rec["vs_glo30_30m"] = {k: round(v, 3) for k, v in e.items() if isinstance(v, float)}
-                rec["plausible"] = bool(e and abs(e["bias_m"]) < 300)
+                if e is None:   # the GLO-30 reference could not be read (network)
+                    rec["vs_glo30_30m"] = None
+                    rec["eval_note"] = "GLO-30 reference not available; rerun this case"
+                else:
+                    rec["vs_glo30_30m"] = {k: round(v, 3) for k, v in e.items() if isinstance(v, float)}
+                    rec["plausible"] = bool(abs(e["bias_m"]) < 300)
         except Exception as e:
             rec["ok"] = False
             rec["error"] = f"{type(e).__name__}: {e}"
@@ -74,7 +81,7 @@ def main(d):
         res[f] = rec
         json.dump(res, open(out_p, "w"), indent=1)
         print("CASE", f, "ok" if rec.get("ok") else "FAIL", rec.get("product"), rec.get("seconds"), "s",
-              rec.get("vs_glo30_30m", {}).get("rmse_m", ""), rec.get("error", ""), flush=True)
+              (rec.get("vs_glo30_30m") or {}).get("rmse_m", ""), rec.get("error", ""), flush=True)
 
 
 if __name__ == "__main__":

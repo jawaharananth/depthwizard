@@ -1,0 +1,299 @@
+{
+ "c1_bgrn_11bit_tagged.tif": {
+  "expect": "DSM",
+  "ok": true,
+  "product": "DSM",
+  "raster": {
+   "crs": "EPSG:3857",
+   "datum": "GLO30 terrain (EGM2008/EGM96 as published) at 30 m, minus 1.00 x model height (DEM surface fraction); + model height",
+   "min": 562.837890625,
+   "median": 594.5786743164062,
+   "max": 621.5128173828125,
+   "valid_frac": 1.0,
+   "shape": [
+    1600,
+    1800
+   ]
+  },
+  "vs_glo30_30m": {
+   "rmse_m": 0.809,
+   "mae_m": 0.592,
+   "bias_m": -0.001,
+   "nmad_m": 0.631,
+   "le90_m": 1.282,
+   "r": 0.998
+  },
+  "plausible": true,
+  "seconds": 83
+ },
+ "c2_rgb_12bit.tif": {
+  "expect": "DSM",
+  "ok": true,
+  "product": "DSM",
+  "raster": {
+   "crs": "EPSG:3857",
+   "datum": "GLO30 terrain (EGM2008/EGM96 as published) at 30 m, minus 1.00 x model height (DEM surface fraction); + model height",
+   "min": 562.8323974609375,
+   "median": 594.57861328125,
+   "max": 621.5184326171875,
+   "valid_frac": 1.0,
+   "shape": [
+    1600,
+    1800
+   ]
+  },
+  "vs_glo30_30m": {
+   "rmse_m": 0.809,
+   "mae_m": 0.593,
+   "bias_m": -0.001,
+   "nmad_m": 0.636,
+   "le90_m": 1.283,
+   "r": 0.998
+  },
+  "plausible": true,
+  "seconds": 74
+ },
+ "c3_bgr_tagged.tif": {
+  "expect": "DSM",
+  "ok": true,
+  "product": "DSM",
+  "raster": {
+   "crs": "EPSG:3857",
+   "datum": "GLO30 terrain (EGM2008/EGM96 as published) at 30 m, minus 1.00 x model height (DEM surface fraction); + model height",
+   "min": 562.4513549804688,
+   "median": 594.5389404296875,
+   "max": 621.8123168945312,
+   "valid_frac": 1.0,
+   "shape": [
+    1600,
+    1800
+   ]
+  },
+  "vs_glo30_30m": {
+   "rmse_m": 0.831,
+   "mae_m": 0.607,
+   "bias_m": -0.001,
+   "nmad_m": 0.66,
+   "le90_m": 1.312,
+   "r": 0.998
+  },
+  "plausible": true,
+  "seconds": 97
+ },
+ "c5_epsg7755_india_lcc.tif": {
+  "expect": "DSM",
+  "ok": true,
+  "product": "DSM",
+  "raster": {
+   "crs": "EPSG:7755",
+   "datum": "GLO30 terrain (EGM2008/EGM96 as published) at 30 m, minus 1.00 x model height (DEM surface fraction); + model height",
+   "min": 561.6182250976562,
+   "median": 594.5494384765625,
+   "max": 621.85400390625,
+   "valid_frac": 0.9775041650462188,
+   "shape": [
+    1615,
+    1823
+   ]
+  },
+  "vs_glo30_30m": {
+   "rmse_m": 0.828,
+   "mae_m": 0.611,
+   "bias_m": 0.016,
+   "nmad_m": 0.671,
+   "le90_m": 1.294,
+   "r": 0.998
+  },
+  "plausible": true,
+  "seconds": 68
+ },
+ "c6_rotated_15deg.tif": {
+  "expect": "DSM or clear refusal",
+  "ok": true,
+  "product": "DSM",
+  "raster": {
+   "crs": "EPSG:3857",
+   "datum": "GLO30 terrain (EGM2008/EGM96 as published) at 30 m, minus 1.00 x model height (DEM surface fraction); + model height",
+   "min": 565.4180908203125,
+   "median": 600.4132080078125,
+   "max": 620.9478759765625,
+   "valid_frac": 0.6648453450222954,
+   "shape": [
+    2012,
+    2153
+   ]
+  },
+  "vs_glo30_30m": {
+   "rmse_m": 0.87,
+   "mae_m": 0.647,
+   "bias_m": 0.017,
+   "nmad_m": 0.737,
+   "le90_m": 1.4,
+   "r": 0.997
+  },
+  "plausible": true,
+  "seconds": 88
+ },
+ "c7_crs_no_transform.tif": {
+  "expect": "rDSM or clear refusal",
+  "ok": true,
+  "product": "rDSM",
+  "raster": {
+   "crs": null,
+   "datum": "relative",
+   "min": -1.271554946899414,
+   "median": 7.568185329437256,
+   "max": 20.552967071533203,
+   "valid_frac": 1.0,
+   "shape": [
+    1600,
+    1800
+   ]
+  },
+  "seconds": 88
+ },
+ "c9_exif_rotated.jpg": {
+  "expect": "rDSM, upright",
+  "ok": true,
+  "product": "rDSM",
+  "raster": {
+   "crs": null,
+   "datum": "relative",
+   "min": -1.3335610628128052,
+   "median": 7.647769451141357,
+   "max": 21.07242202758789,
+   "valid_frac": 1.0,
+   "shape": [
+    1600,
+    1800
+   ]
+  },
+  "seconds": 53
+ },
+ "c10_cmyk.jpg": {
+  "expect": "rDSM",
+  "ok": true,
+  "product": "rDSM",
+  "raster": {
+   "crs": null,
+   "datum": "relative",
+   "min": -1.2630717754364014,
+   "median": 7.552676677703857,
+   "max": 21.32802963256836,
+   "valid_frac": 1.0,
+   "shape": [
+    1600,
+    1800
+   ]
+  },
+  "seconds": 50
+ },
+ "c11_gray.jpg": {
+  "expect": "rDSM",
+  "ok": true,
+  "product": "rDSM",
+  "raster": {
+   "crs": null,
+   "datum": "relative",
+   "min": -0.4676738977432251,
+   "median": 7.987765312194824,
+   "max": 22.215497970581055,
+   "valid_frac": 1.0,
+   "shape": [
+    1600,
+    1800
+   ]
+  },
+  "seconds": 54
+ },
+ "c12_gray16.png": {
+  "expect": "rDSM",
+  "ok": true,
+  "product": "rDSM",
+  "raster": {
+   "crs": null,
+   "datum": "relative",
+   "min": -0.013622164726257324,
+   "median": 8.33015251159668,
+   "max": 24.386445999145508,
+   "valid_frac": 1.0,
+   "shape": [
+    1600,
+    1800
+   ]
+  },
+  "seconds": 39
+ },
+ "c13_webp_named.jpg": {
+  "expect": "rDSM or clear refusal",
+  "ok": true,
+  "product": "rDSM",
+  "raster": {
+   "crs": null,
+   "datum": "relative",
+   "min": -1.2298941612243652,
+   "median": 7.532208442687988,
+   "max": 19.723312377929688,
+   "valid_frac": 1.0,
+   "shape": [
+    1600,
+    1800
+   ]
+  },
+  "seconds": 41
+ },
+ "c4_nodata255_collar.tif": {
+  "expect": "DSM",
+  "ok": true,
+  "product": "DSM",
+  "raster": {
+   "crs": "EPSG:3857",
+   "datum": "GLO30 terrain (EGM2008/EGM96 as published) at 30 m, minus 1.00 x model height (DEM surface fraction); + model height",
+   "min": 562.4513549804688,
+   "median": 592.787841796875,
+   "max": 621.7622680664062,
+   "valid_frac": 0.880815625,
+   "shape": [
+    1600,
+    1800
+   ]
+  },
+  "vs_glo30_30m": {
+   "rmse_m": 0.869,
+   "mae_m": 0.631,
+   "bias_m": 0.0,
+   "nmad_m": 0.675,
+   "le90_m": 1.339,
+   "r": 0.998
+  },
+  "plausible": true,
+  "seconds": 78
+ },
+ "c8_8k_bigtiff_jpeg.tif": {
+  "expect": "DSM or size refusal",
+  "ok": true,
+  "product": "DSM",
+  "raster": {
+   "crs": "EPSG:3857",
+   "datum": "GLO30 terrain (EGM2008/EGM96 as published) at 30 m, minus 1.00 x model height (DEM surface fraction); + model height",
+   "min": 540.1831665039062,
+   "median": 578.3472900390625,
+   "max": 637.9195556640625,
+   "valid_frac": 1.0,
+   "shape": [
+    8192,
+    8192
+   ]
+  },
+  "vs_glo30_30m": {
+   "rmse_m": 0.562,
+   "mae_m": 0.409,
+   "bias_m": -0.001,
+   "nmad_m": 0.44,
+   "le90_m": 0.919,
+   "r": 0.999
+  },
+  "plausible": true,
+  "seconds": 144
+ }
+}

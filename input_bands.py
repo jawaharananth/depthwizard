@@ -85,19 +85,24 @@ def _is_mask(ds, band: int) -> bool:
 
 def dataset_valid(ds, bands: list[int]) -> np.ndarray:
     """True where the file itself says there is image: nodata value, alpha band
-    and internal masks all honoured (rasterio folds them into read_masks)."""
+    and internal masks all honoured (rasterio folds them into read_masks).
+
+    A pixel is no-data only when EVERY colour band says so (GDAL's own
+    dataset-mask rule): with nodata=255, a bright roof saturated in one band
+    is still image, not a hole."""
     from rasterio.enums import ColorInterp
-    m = np.ones((ds.height, ds.width), bool)
     ci = list(ds.colorinterp or [])
     fake_alpha = any(c == ColorInterp.alpha and not _is_mask(ds, i + 1) for i, c in enumerate(ci))
+    if fake_alpha and ds.nodata is None:
+        return np.ones((ds.height, ds.width), bool)
+    m = np.zeros((ds.height, ds.width), bool)
     for b in sorted(set(bands)):
         if fake_alpha:
             # the 'alpha' band is data (NIR, see _is_mask): dark water in the
             # near-infrared must not become no-data, so only nodata values count
-            if ds.nodata is not None:
-                m &= ds.read(b) != ds.nodata
+            m |= ds.read(b) != ds.nodata
         else:
-            m &= ds.read_masks(b) > 0
+            m |= ds.read_masks(b) > 0
     return m
 
 

@@ -152,3 +152,19 @@ def test_conformal_artifact_has_fields_the_build_reads():
         assert k in c, k
     assert c["held_out_coverage"] >= 0.89
     assert "tile" in c.get("fitted_on", {})
+
+
+def test_nodata_needs_every_band(tmp_path):
+    """nodata=255: the white collar is masked, but a bright roof saturated in
+    one band only is still image (robustness matrix case c4)."""
+    p = str(tmp_path / "nd255.tif")
+    a = np.full((3, 40, 40), 120, np.uint8)
+    a[:, :, :8] = 255                          # collar: every band = nodata
+    a[0, 20:24, 20:24] = 255                   # red channel saturated on a roof
+    with rasterio.open(p, "w", driver="GTiff", width=40, height=40, count=3, dtype="uint8",
+                       crs="EPSG:32644", transform=from_origin(0, 40, 1, 1), nodata=255) as d:
+        d.write(a)
+    with rasterio.open(p) as s:
+        v = ib.dataset_valid(s, [1, 2, 3])
+    assert not v[:, :8].any()
+    assert v[:, 8:].all()

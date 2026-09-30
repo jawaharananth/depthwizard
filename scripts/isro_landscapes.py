@@ -45,6 +45,10 @@ def main(names):
             try:
                 b.build(src, f"isro_{name}_{anchor}", **kw)
                 dsm = f"final_out/city_isro_{name}_{anchor}_DSM.tif"
+                # a DSM left by an earlier run must not be scored when this
+                # build fell back to an rDSM (e.g. the DEM tile failed to load)
+                if not os.path.exists(dsm) or os.path.getmtime(dsm) < t:
+                    raise RuntimeError("no DSM written by this build (anchor DEM not usable?)")
                 rec = {"place": name, "landscape": land, "anchor_dem": anchor,
                        "build_s": round(time.time() - t),
                        "vs": {d: evaluate(dsm, d) for d in ("glo30", "srtm")}}
@@ -53,7 +57,8 @@ def main(names):
             res[key] = rec
             json.dump(res, open(out_p, "w"), indent=1)
             v = rec.get("vs", {})
-            print("RES", key, land, {d: round(v[d]["at_30m"]["rmse_m"], 2) for d in v} or rec.get("error"), flush=True)
+            print("RES", key, land, {d: round(v[d]["at_30m"]["rmse_m"], 2) if v[d]["at_30m"] else None
+                                     for d in v} or rec.get("error"), flush=True)
 
 
 if __name__ == "__main__":
