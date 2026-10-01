@@ -2007,6 +2007,14 @@ Promise.all([
           .then((t) => { window.__dwTrees = t; })
           .catch((e) => console.warn("trees skipped:", e));
       }
+      // One-click Demo mode (viewer/demo.js): D or the Demo button.
+      import("./demo.js")
+        .then((m) => {
+          window.__dwDemo = m.installDemo({
+            camera, controls, scene, groundMesh, renderer,
+            sceneName: ((SCENE_META && SCENE_META._saved_description) || "").split(",")[0] });
+        })
+        .catch((e) => console.warn("demo mode skipped:", e));
 
       const box = new THREE.Box3().setFromObject(obj);
       const center = box.getCenter(new THREE.Vector3());

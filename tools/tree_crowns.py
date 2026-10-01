@@ -52,6 +52,9 @@ SCENES = {
                        "cache": "cache/chmv2_periyar_forest_native.npy",
                        "v1_blur_native": 1.0},
 }
+# Showcase places built by build_showcase.py keep the canopy map they used.
+for _id in ("gangtok", "shimla", "mumbai_lower_parel", "kanha", "jaisalmer_village"):
+    SCENES[_id] = {"chm_v1": f"work/showcase/{_id}/chm.npy", "cache": f"cache/chmv2_{_id}_native.npy"}
 FIELDS = [
     ("x", "crown centroid, world x (m, east)"),
     ("z", "crown centroid, world z (m, north; = -row*gsd)"),
@@ -356,6 +359,8 @@ def run(scene, tile=1024, halo=128, binary=None, overlay_dir=None):
             remap[1:][own] = np.arange(1, own.sum() + 1)
             lab = remap[lab]
             n = int(own.sum())
+            if n == 0 or not (lab > 0).any():
+                continue                    # a tile with no crowns at all (desert, water)
             st = crown_stats(lab, n, hs[y0:y1, x0:x1], hd_full[y0:y1, x0:x1],
                              tex[y0:y1, x0:x1], gsd)
             # a crown whose mean colour is bright soil/concrete is not a tree
