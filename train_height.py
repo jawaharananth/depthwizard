@@ -59,6 +59,7 @@ rescore_baseline.py also uses.
 from __future__ import annotations
 
 import argparse
+import os
 import json
 import os
 import time
@@ -109,6 +110,13 @@ def height_loss(pred: torch.Tensor, target: torch.Tensor,
     w = torch.where(target > STRUCTURE_M,
                     torch.as_tensor(STRUCTURE_WEIGHT, device=pred.device),
                     torch.as_tensor(1.0, device=pred.device)) * valid
+    # Run 07 onwards (DW_TALL_WEIGHT=<metres>): the weight also grows with
+    # height, +1 per that many metres up to 60 m. Towers are a few percent of
+    # pixels but most of the squared error, and every model here under-calls
+    # them; this spends more of the loss where the error actually is.
+    tall_m = float(os.environ.get("DW_TALL_WEIGHT", "0") or 0)
+    if tall_m > 0:
+        w = w * (1.0 + target.clamp(0.0, 60.0) / tall_m)
     denom = w.sum().clamp_min(1.0)
     l1 = ((pred - target).abs() * w).sum() / denom
 
