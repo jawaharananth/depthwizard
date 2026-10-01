@@ -93,8 +93,11 @@ export function installDemo({ camera, controls, scene, groundMesh, renderer, sce
     const w = waterSpot();
     if (w) list.push({ pos: new THREE.Vector3(w.x + 90, w.y + 45, w.z + 110), tgt: w.clone(), dur: 6,
                        say: "Water bodies from the image itself" });
-    list.push({ pos: new THREE.Vector3(c.x + R * 0.35, c.y + up + R * 0.5, c.z - R * 0.55), tgt: c.clone(), dur: 6, slope: true,
-                say: "Slope view: steep, landslide-prone ground stands out" });
+    const sb = document.getElementById("btn-slope");
+    if (sb && !sb.disabled) {
+      list.push({ pos: new THREE.Vector3(c.x + R * 0.35, c.y + up + R * 0.5, c.z - R * 0.55), tgt: c.clone(), dur: 6, slope: true,
+                  say: "Slope view: steep, landslide-prone ground stands out" });
+    }
     list.push({ pos: new THREE.Vector3(c.x, c.y + up + R * 0.85, c.z + R * 0.9), tgt: c.clone(), dur: 6, end: true,
                 say: "Download the DSM GeoTIFF: absolute heights, matched to the scoring DEM" });
     return list;

@@ -601,6 +601,16 @@ class Handler(BaseHTTPRequestHandler):
     def _json(self, code: int, obj) -> None:
         self._send(code, json.dumps(obj).encode("utf-8"))
 
+    def _file_or_listing(self, path: str) -> None:
+        """A scene folder's files.json, when it has none on disk, is its live
+        listing: the viewer checks it before asking for optional layers, so a
+        place without (say) a slope map costs no failed request."""
+        d = os.path.dirname(path)
+        if os.path.basename(path) == "files.json" and not os.path.isfile(path) and os.path.isdir(d):
+            self._json(200, sorted(f for f in os.listdir(d) if os.path.isfile(os.path.join(d, f))))
+            return
+        self._file(path)
+
     def _file(self, path: str) -> None:
         if not os.path.isfile(path):
             self._json(404, {"error": "not found"})
@@ -663,7 +673,7 @@ class Handler(BaseHTTPRequestHandler):
             if not safe.startswith(os.path.normpath(root)):
                 self._json(403, {"error": "forbidden"})
                 return
-            self._file(safe)
+            self._file_or_listing(safe)
             return
 
         if route.startswith("/api/status/"):
@@ -761,7 +771,7 @@ class Handler(BaseHTTPRequestHandler):
             if not safe.startswith(os.path.normpath(VIEWER_DIR)):
                 self._json(403, {"error": "forbidden"})
                 return
-            self._file(safe)
+            self._file_or_listing(safe)
             return
 
         self._json(404, {"error": "no such route"})

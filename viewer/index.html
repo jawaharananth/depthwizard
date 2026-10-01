@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M1 15h14L10 5 7 10 5 8z' fill='%23f2b544'/%3E%3C/svg%3E" />
 <title>DepthWizard 3D Terrain Viewer</title>
 <style>
   html, body { margin: 0; height: 100%; overflow: hidden; background: #000; font-family: system-ui, sans-serif; }
@@ -255,6 +256,24 @@ try {
     if (typeof SCENE_META.sun_azimuth_deg === "number") SUN_AZIMUTH_DEG = SCENE_META.sun_azimuth_deg;
   }
 } catch (e) { /* no metadata: keep the defaults above */ }
+
+// Which files this place has (server.py answers files.json with the folder's
+// live listing). Optional layers not in it are never requested, so a place
+// without, say, a slope map logs no failed request. Without a listing
+// (plain static hosting) every optional layer is tried as before.
+let SCENE_FILES = null;
+try {
+  const r = await fetch(`${BASE}/files.json`, { cache: "no-store" });
+  if (r.ok) { const j = await r.json(); if (Array.isArray(j)) SCENE_FILES = new Set(j); }
+} catch (e) { /* no listing: probe */ }
+function sceneHas(url) {
+  if (!SCENE_FILES) return true;
+  return SCENE_FILES.has(decodeURIComponent(String(url).split("?")[0].split("/").pop()));
+}
+// Texture that may legitimately be absent: resolves null without a request.
+function optionalTexture(loader, url) {
+  return new Promise((res) => (sceneHas(url) ? loader.load(url, res, undefined, () => res(null)) : res(null)));
+}
 
 // CRS units per true metre (e.g. ~1.048 for EPSG:3857 at Hyderabad's latitude).
 // The mesh is built in true metres, so world offsets must be multiplied by this
@@ -1905,20 +1924,33 @@ Promise.all([
     SCENE_META && SCENE_META.texture_file && USE_HIRES_TEX
       ? `${BASE}/${SCENE_META.texture_file}` : TEXTURE_RGB_URL,
     res, undefined, () => res(null))),
-  new Promise((res) => textureLoader.load(TEXTURE_HEATMAP_URL, res, undefined, () => res(null))),
-  new Promise((res) => textureLoader.load(TEXTURE_CONF_URL, res, undefined, () => res(null))),
-  new Promise((res) => textureLoader.load(TEXTURE_ERR_URL, res, undefined, () => res(null))),
-  new Promise((res) => textureLoader.load(TEXTURE_SLOPE_URL, res, undefined, () => res(null))),
-  new Promise((res) => textureLoader.load(TEXTURE_NORMAL_URL, res, undefined, () => res(null))),
-  new Promise((res) => textureLoader.load(TEXTURE_AO_URL, res, undefined, () => res(null))),
-  new Promise((res) => textureLoader.load(TEXTURE_ROUGHNESS_URL, res, undefined, () => res(null))),
-  new Promise((res) => textureLoader.load(TEXTURE_METALNESS_URL, res, undefined, () => res(null))),
+  optionalTexture(textureLoader, TEXTURE_HEATMAP_URL),
+  optionalTexture(textureLoader, TEXTURE_CONF_URL),
+  optionalTexture(textureLoader, TEXTURE_ERR_URL),
+  optionalTexture(textureLoader, TEXTURE_SLOPE_URL),
+  optionalTexture(textureLoader, TEXTURE_NORMAL_URL),
+  optionalTexture(textureLoader, TEXTURE_AO_URL),
+  optionalTexture(textureLoader, TEXTURE_ROUGHNESS_URL),
+  optionalTexture(textureLoader, TEXTURE_METALNESS_URL),
 ]).then(([rgbTex, heatTex, confTex, errTex, slopeTex, normalTex, aoTex, roughTex, metalTex]) => {
   rgbTexture = rgbTex;
   heatmapTexture = heatTex;
   confidenceTexture = confTex;
   errorTexture = errTex;
   slopeTexture = slopeTex;
+  {
+    // No slope layer for this place: say so on the button rather than show
+    // the photo with every building hidden.
+    for (const [id, tex, what] of [["btn-slope", slopeTex, "slope"], ["btn-heatmap", heatTex, "height colour"],
+                                   ["btn-conf", confTex, "confidence"]]) {
+      const b = document.getElementById(id);
+      if (b && !tex) {
+        b.disabled = true;
+        b.style.opacity = "0.45";
+        b.title = `No ${what} layer was built for this place`;
+      }
+    }
+  }
   normalTexture = normalTex;
   aoTexture = aoTex;
   roughnessTexture = roughTex;
@@ -2448,6 +2480,7 @@ let errRawCtx = null, errRawSize = [0, 0];
 
 function _loadRawSampler(url) {
   return new Promise((resolve) => {
+    if (!sceneHas(url)) { resolve(null); return; }
     const img = new Image();
     img.crossOrigin = "anonymous";
     img.onload = () => {
@@ -4828,6 +4861,7 @@ const TEXTURE_COMPARE_PRED_URL = `${BASE}/compare_pred.png`;
 
 function _imageLoads(url) {
   return new Promise((resolve) => {
+    if (!sceneHas(url)) { resolve(false); return; }
     const img = new Image();
     img.onload = () => resolve(true);
     img.onerror = () => resolve(false);
