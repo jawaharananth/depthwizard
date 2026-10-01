@@ -173,7 +173,7 @@
   <div class="readout" id="flood-readout">Water off</div>
   <div class="slider-row">
     <label for="sunhr">Sun</label>
-    <input type="range" id="sunhr" min="6" max="18" step="0.25" value="10.5">
+    <input type="range" id="sunhr" min="5" max="21" step="0.25" value="10.5">
   </div>
   <div class="readout" id="sun-readout">10:30   (matches capture)</div>
   <div class="slider-row">
@@ -660,6 +660,10 @@ const LIGHT = (() => {
 let skyMesh = null;
 const skySunU = TSL ? TSL.uniform(sunDir.clone()) : null;
 const skyScaleU = TSL ? TSL.uniform(LIGHT.skyScale) : null;
+// Day/night for the time-of-day slider: dayU 1 in daylight, down to a
+// moonlit floor after sunset; nightU switches the window lights on at dusk.
+const dayU = TSL ? TSL.uniform(1.0) : null;
+const nightU = TSL ? TSL.uniform(0.0) : null;
 // TSL twin of preethamJS: radiance arriving from direction `dir`.
 function preethamNode(dir) {
   const { float, vec3, exp, acos, cos, pow, max, clamp, dot, mix } = TSL;
@@ -699,8 +703,14 @@ try {
   skyMesh.userData.discU = TSL.uniform(new THREE.Color(...LIGHT.sunCol).multiplyScalar(
     Math.min(LIGHT.sunI / discOmega, 60000)));
   const disc = smoothstep(float(sunCos), float(sunCos + 0.00002), dot(dir, skySunU));
+  // After sunset: a deep-blue night sky, brighter toward the horizon (city
+  // glow). Baked into the image-based light too, so the night city reads in
+  // dim moonlit blue rather than black.
+  const nightSky = TSL.vec3(0.012, 0.020, 0.045).mul(TSL.float(1.6).sub(dir.y.clamp(0, 1)))
+    .add(TSL.vec3(0.030, 0.018, 0.010).mul(TSL.float(1).sub(dir.y.abs()).pow(8.0)));
   skyMesh.material.colorNode = vec4(
-    preethamNode(dir).mul(skyScaleU).add(skyMesh.userData.discU.mul(disc).mul(0.0005)), 1.0);
+    preethamNode(dir).mul(skyScaleU).add(skyMesh.userData.discU.mul(disc).mul(0.0005))
+      .add(nightSky.mul(nightU)), 1.0);
   scene.add(skyMesh);
   scene.background = null;
 } catch (e) { skyMesh = null; /* keep the gradient backdrop */ }
@@ -866,8 +876,13 @@ let rebuildPostChain = () => {};
 // MRT; ambient occlusion is applied to those only. A photographed pixel
 // already contains the real occlusion of the real place, and darkening it
 // again is exactly the "CG crease" look this avoids.
-const relitMRT = TSL && TSL.mrt ? TSL.mrt({ output: TSL.output, relit: TSL.float(1) }) : null;
-function markRelit(mesh) { if (relitMRT && mesh.material && mesh.material.isNodeMaterial) mesh.material.mrtNode = relitMRT; }
+// The flag is a per-material value the scene pass's own MRT reads
+// (materialReference). It used to be a per-material mrtNode, which three
+// applies on its own whenever no global MRT is set -- the shadow-map pass:
+// with no colour target the fragment shader had no outputs, WebGPU rejected
+// the pipeline and dropped that frame's whole shadow pass.
+THREE.Material.prototype.dwRelit = 0;
+function markRelit(mesh) { if (mesh.material) mesh.material.dwRelit = 1; }
 
 async function buildPostChain() {
   // Physical order: scene (MRT: colour, normal, velocity, relit mask) ->
@@ -891,7 +906,8 @@ async function buildPostChain() {
     const cine = QUALITY === "cinematic";
     const scenePass = tsl.pass(scene, camera);
     const mrtSpec = { output: tsl.output, normal: (tsl.normalView || tsl.transformedNormalView),
-                      relit: tsl.float(0) };
+                      relit: tsl.materialReference ? tsl.materialReference("dwRelit", "float")
+                                                   : tsl.float(0) };
     if (tsl.velocity) mrtSpec.velocity = tsl.velocity;
     if (cine && tsl.metalness) mrtSpec.metalness = tsl.metalness;
     if (cine && tsl.roughness) mrtSpec.roughness = tsl.roughness;
@@ -913,7 +929,7 @@ async function buildPostChain() {
       const { denoise } = await import("three/addons/tsl/display/DenoiseNode.js");
       if (denoise) { aoTex = denoise(aoTex, depthNode, normalNode, camera); postChain.push("denoise"); }
     } catch (e) { /* grain is acceptable; a broken chain is not */ }
-    // AO on relit surfaces only (see relitMRT).
+    // AO on relit surfaces only (see markRelit).
     const aoMix = tsl.mix(tsl.float(1.0), aoTex.r, relitNode.r.clamp(0, 1));
     let outNode = colorNode.mul(tsl.vec4(aoMix, aoMix, aoMix, 1.0));
     postChain.push("ao-relit-only");
@@ -1266,6 +1282,10 @@ function shadeBuildingPrisms(mesh, mat) {
     const fp = [], fn = [], fu = [], fc = [], fs = []; // real facade texture, seen by the sensor
     const rp = [], rn = [], ru = [], rc = [], rs = []; // this building's facade reused on an unseen wall
     const hp = [], hn = [], hc = [];     // no facade pixels at all: measured colour
+    // Per vertex: the building's seed (its own storey height, bay width and
+    // window proportions) and height above the building's base, so floors
+    // line up round each building rather than with world height.
+    const fB = [], rB = [], hB = [];
     const toLin = (c) => Math.pow(Math.min(Math.max(c, 0), 1), 2.2);
 
     // Buildings are the connected components of the indexed prism mesh
@@ -1288,6 +1308,12 @@ function shadeBuildingPrisms(mesh, mat) {
       if (!c) { c = [0, 0, 0]; compC.set(r0, c); }
       c[0] += pos.getX(i); c[1] += pos.getZ(i); c[2]++;
     }
+    const compH = new Map();             // building -> tallest wall
+    const seedOf = (comp) => {
+      const c = compC.get(comp);
+      const s = Math.sin(Math.round(c[0] / c[2]) * 12.9898 + Math.round(c[1] / c[2]) * 78.233) * 43758.5453;
+      return s - Math.floor(s);
+    };
     // Pass 1: per wall triangle -- its edge, its facing, how many texels of
     // real facade the image holds for it (height x lean, foreshortened by how
     // squarely it faces the sensor; below ~7 texels a stretched strip smears).
@@ -1325,6 +1351,7 @@ function shadeBuildingPrisms(mesh, mat) {
       const seen = facing > 0.35 && facadeImgM >= 4.0 && facadeImgM / (texelM || 1) >= 7;
       const rec = { ia, nn, ax, az, dx, dz, len, wallH, seen, comp: find(ia[0]) };
       tris.push(rec);
+      compH.set(rec.comp, Math.max(compH.get(rec.comp) || 0, wallH));
       if (seen) {
         if (!photographed.has(rec.comp)) photographed.set(rec.comp, []);
         photographed.get(rec.comp).push(rec);
@@ -1367,8 +1394,12 @@ function shadeBuildingPrisms(mesh, mat) {
           if (dd < best) { best = dd; src = sw; }
         }
       }
+      const bseed = seedOf(r.comp), bH = compH.get(r.comp) || r.wallH;
       for (let k = 0; k < 3; k++) {
         v.fromBufferAttribute(pos, r.ia[k]);
+        // height above the building's base, counted down from its roof line
+        const hab = Math.max(0, bH - ((topY.get(key(v.x, v.z)) ?? v.y) - v.y));
+        (src ? (r.seen ? fB : rB) : hB).push(bseed, hab);
         if (src) {
           const below = Math.min((topY.get(key(v.x, v.z)) ?? v.y) - v.y, src.wallH);
           let qx, qz;
@@ -1399,7 +1430,7 @@ function shadeBuildingPrisms(mesh, mat) {
       }
     }
     const wallRough = Math.max(0.5, m.roughness);
-    for (const [P, N, U, C, S, seen] of [[fp, fn, fu, fc, fs, true], [rp, rn, ru, rc, rs, false]]) {
+    for (const [P, N, U, C, S, B, seen] of [[fp, fn, fu, fc, fs, fB, true], [rp, rn, ru, rc, rs, rB, false]]) {
       if (!P.length) continue;
       const g = new THREE.BufferGeometry();
       g.setAttribute("position", new THREE.Float32BufferAttribute(P, 3));
@@ -1407,7 +1438,8 @@ function shadeBuildingPrisms(mesh, mat) {
       g.setAttribute("uv", new THREE.Float32BufferAttribute(U, 2));
       g.setAttribute("color", new THREE.Float32BufferAttribute(C, 3));
       g.setAttribute("srcNormal", new THREE.Float32BufferAttribute(S, 3));
-      const w = new THREE.Mesh(g, facadeMaterial(wallRough));
+      g.setAttribute("bld", new THREE.Float32BufferAttribute(B, 2));
+      const w = new THREE.Mesh(g, facadeMaterial(wallRough, true));
       w.castShadow = true;
       // A photographed wall already shows whatever shadow fell on it at capture.
       w.receiveShadow = !seen;
@@ -1419,7 +1451,8 @@ function shadeBuildingPrisms(mesh, mat) {
       g.setAttribute("position", new THREE.Float32BufferAttribute(hp, 3));
       g.setAttribute("normal", new THREE.Float32BufferAttribute(hn, 3));
       g.setAttribute("color", new THREE.Float32BufferAttribute(hc, 3));
-      const w = new THREE.Mesh(g, measuredColourWallMaterial(wallRough));
+      g.setAttribute("bld", new THREE.Float32BufferAttribute(hB, 2));
+      const w = new THREE.Mesh(g, measuredColourWallMaterial(wallRough, "building"));
       w.castShadow = w.receiveShadow = true;
       markRelit(w);
       walls.push(w);
@@ -1440,27 +1473,60 @@ function shadeBuildingPrisms(mesh, mat) {
 // row of punched windows, or -- where the wall reads as glass -- a continuous
 // curtain wall with mullions. Satellite pixels cannot resolve storeys, so this
 // is inferred detail, drawn over measured colour, never instead of it.
-function storeyed(base, rough, glassAmt) {
-  const { positionWorld, fract, smoothstep, mix, vec3, float, max } = TSL;
-  const fy = fract(positionWorld.y.div(3.2));
-  const fx = fract(positionWorld.x.add(positionWorld.z).div(2.6));
+//
+// perBuilding: the wall carries a "bld" attribute (seed, height above its
+// base). Each building then gets its own storey height (3.0-3.8 m), bay width
+// (2.2-3.8 m) and window proportions, floors counted from its own base, and
+// about half get a glazed ground floor (shopfronts). Without it, one rhythm
+// on world height. At night (time-of-day slider past sunset) a random half of
+// the windows light up, warm or cool: illustrative, like the storeys.
+function storeyed(base, rough, glassAmt, perBuilding = false) {
+  const { positionWorld, fract, floor, sin, step, smoothstep, mix, vec3, float, max, attribute } = TSL;
+  const bld = perBuilding ? attribute("bld", "vec2") : null;
+  const sd = bld ? bld.x : float(0.5);
+  const h = bld ? bld.y : positionWorld.y;
+  const sh = bld ? float(3.0).add(sd.mul(0.8)) : float(3.2);                       // storey height
+  const bw = bld ? float(2.2).add(fract(sd.mul(7.31)).mul(1.6)) : float(2.6);      // bay width
+  const mx = bld ? float(0.18).add(fract(sd.mul(13.7)).mul(0.12)) : float(0.22);   // window side margin
+  const sill = bld ? float(0.24).add(fract(sd.mul(5.17)).mul(0.12)) : float(0.30);
+  const along = positionWorld.x.add(positionWorld.z);
+  const fy = fract(h.div(sh));
+  const fx = fract(along.div(bw));
   const slab = smoothstep(0.0, 0.05, fy).mul(smoothstep(1.0, 0.95, fy));     // 0 on the slab line
-  const punched = smoothstep(0.30, 0.34, fy).mul(smoothstep(0.80, 0.76, fy))
-    .mul(smoothstep(0.22, 0.27, fx)).mul(smoothstep(0.78, 0.73, fx));
+  const punched = smoothstep(sill, sill.add(0.04), fy).mul(smoothstep(0.82, 0.78, fy))
+    .mul(smoothstep(mx, mx.add(0.05), fx)).mul(smoothstep(float(1).sub(mx), float(0.95).sub(mx), fx));
   const mullion = smoothstep(0.0, 0.04, fx).mul(smoothstep(1.0, 0.96, fx));  // 0 on a mullion
   const curtain = mullion.mul(slab);
-  const win = mix(punched, curtain, glassAmt);
+  let win = mix(punched, curtain, glassAmt);
+  if (bld) {
+    // Glazed ground floor on about half the buildings: one tall shop window
+    // per two bays, below a fascia.
+    const gf = float(1).sub(step(sh.mul(1.1), h));
+    const shop = step(0.45, fract(sd.mul(3.31)));
+    const fx2 = fract(along.div(bw.mul(2.0)));
+    const front = smoothstep(0.06, 0.10, h.div(sh)).mul(smoothstep(0.86, 0.80, h.div(sh)))
+      .mul(smoothstep(0.03, 0.06, fx2)).mul(smoothstep(0.97, 0.94, fx2));
+    win = mix(win, front, gf.mul(shop));
+  }
   const glass = mix(vec3(0.13, 0.16, 0.20), base.mul(0.55).add(vec3(0.04, 0.06, 0.08)), float(0.5));
   const wall = base.mul(mix(float(0.80), float(1.0), slab));
+  // Night: per-window random (floor x bay x building), about half lit.
+  const r = fract(sin(floor(h.div(sh)).mul(12.9898).add(floor(along.div(bw)).mul(78.233))
+    .add(sd.mul(437.585))).mul(43758.5453));
+  const lamp = mix(vec3(1.0, 0.70, 0.40), vec3(0.80, 0.88, 1.0), step(0.78, fract(r.mul(7.13))));
+  const glow = nightU
+    ? lamp.mul(step(0.5, r)).mul(win).mul(r.mul(0.8).add(0.6)).mul(nightU).mul(1.6)
+    : vec3(0.0);
   return {
     color: mix(wall, glass, win.mul(mix(float(0.55), float(0.35), glassAmt))),
     rough: mix(float(rough), float(0.12), win),
     win,
+    glow,
     lit: max(wall, vec3(0.0)),
   };
 }
 
-function facadeMaterial(rough) {
+function facadeMaterial(rough, perBuilding = false) {
   const opts = { roughness: rough, metalness: 0.0, envMapIntensity: 1.0 };
   if (!TSL || !THREE.MeshStandardNodeMaterial) {
     return new THREE.MeshStandardMaterial({ ...opts, map: rgbTexture });
@@ -1481,20 +1547,23 @@ function facadeMaterial(rough) {
   // relit facing its own way.
   const base = delitAlbedo(P, attribute("srcNormal", "vec3"));
   const g = glassiness(t).mul(float(1).sub(veg));
-  const s = storeyed(base, rough, g);
+  const s = storeyed(base, rough, g, perBuilding);
   m.colorNode = s.color;
   m.roughnessNode = mix(s.rough, float(0.07), g.mul(0.5));
   // Modest metalness on glazing only: screen-space reflections are masked by
   // metalness, so this is what lets a curtain wall mirror the tower beside
   // it -- tinted by the glass's own real colour, as real tinted glass is.
   m.metalnessNode = g.mul(0.12).add(s.win.mul(0.06));
+  m.emissiveNode = s.glow;
   return m;
 }
 
 // Measured-colour walls (no facade pixels anywhere on the building): the
 // colour is a photographed roof/facade median, i.e. radiance under the capture
 // sun from above, so it is de-lit as an upward-facing sample.
-function measuredColourWallMaterial(rough) {
+// kind: "building" (has the per-building attribute), "plain" (no storeys:
+// flyover and viaduct bodies), anything else = storeys on world height.
+function measuredColourWallMaterial(rough, kind = "") {
   const opts = { color: 0xffffff, vertexColors: true, roughness: rough, metalness: 0.0, envMapIntensity: 1.0 };
   if (!TSL || !THREE.MeshStandardNodeMaterial) return new THREE.MeshStandardMaterial(opts);
   const m = new THREE.MeshStandardNodeMaterial({ roughness: rough, metalness: 0.0, envMapIntensity: 1.0 });
@@ -1508,13 +1577,20 @@ function measuredColourWallMaterial(rough) {
   const lum = dot(a, vec3(0.2126, 0.7152, 0.0722));
   const lifted = min(a.mul(max(lum, float(0.42)).div(max(lum, float(0.02)))), vec3(1.0));
   const wall = mix(lifted, vec3(max(lum, float(0.42))), float(0.35));
-  // Storeys and windows (inferred LOD2 detail, see storeyed()).
-  const s = storeyed(wall, rough, float(0.0));
-  m.colorNode = s.color;
-  m.roughnessNode = s.rough;
   // Light bounced off the street and the neighbours: in a dense town a wall
   // facing away from a low sun is still lit warm-grey, not sky-blue-black.
-  m.emissiveNode = s.lit.mul(vec3(0.20, 0.18, 0.15)).mul(float(1).sub(s.win.mul(0.6)));
+  const bounce = vec3(0.20, 0.18, 0.15).mul(dayU || float(1));
+  if (kind === "plain") {
+    m.colorNode = wall;
+    m.roughnessNode = float(rough);
+    m.emissiveNode = wall.mul(bounce);
+    return m;
+  }
+  // Storeys and windows (inferred LOD2 detail, see storeyed()).
+  const s = storeyed(wall, rough, float(0.0), kind === "building");
+  m.colorNode = s.color;
+  m.roughnessNode = s.rough;
+  m.emissiveNode = s.lit.mul(bounce).mul(float(1).sub(s.win.mul(0.6))).add(s.glow);
   return m;
 }
 
@@ -2147,7 +2223,7 @@ Promise.all([
             c.castShadow = c.receiveShadow = true;
             c.material = c.name === "struct_deck"
               ? roofMaterial()
-              : measuredColourWallMaterial(0.8);
+              : measuredColourWallMaterial(0.8, "plain");   // a flyover has no storeys
             if (c.name === "struct_deck") { c.receiveShadow = false; photoSurfaces.add(c); }
             else markRelit(c);
           });
@@ -2294,14 +2370,14 @@ Promise.all([
         }
         if (SCENE_META.off_nadir_deg != null || SCENE_META.gsd_m != null) {
           const bits = [];
-          if (SCENE_META.off_nadir_deg != null) bits.push(`${SCENE_META.off_nadir_deg}° off-nadir`);
+          if (SCENE_META.off_nadir_deg != null) bits.push(`${SCENE_META.off_nadir_deg}Â° off-nadir`);
           if (SCENE_META.gsd_m != null) bits.push(`${SCENE_META.gsd_m} m/px`);
           lines.push(bits.join(", "));
         }
         if (SCENE_META.sun_elevation_deg != null || SCENE_META.sun_azimuth_deg != null) {
           const bits = [];
-          if (SCENE_META.sun_elevation_deg != null) bits.push(`${Number(SCENE_META.sun_elevation_deg).toFixed(1)}° el`);
-          if (SCENE_META.sun_azimuth_deg != null) bits.push(`${Number(SCENE_META.sun_azimuth_deg).toFixed(1)}° az`);
+          if (SCENE_META.sun_elevation_deg != null) bits.push(`${Number(SCENE_META.sun_elevation_deg).toFixed(1)}Â° el`);
+          if (SCENE_META.sun_azimuth_deg != null) bits.push(`${Number(SCENE_META.sun_azimuth_deg).toFixed(1)}Â° az`);
           lines.push(`sun ${bits.join(" / ")}` +
                      (SCENE_META.sun_note ? ` (${SCENE_META.sun_note})` : ""));
         }
@@ -2475,7 +2551,7 @@ renderer.domElement.addEventListener("pointermove", (e) => {
   }
   if (conf !== null) {
     lines.push(SCENE_META && SCENE_META.uncertainty
-      ? `uncertainty  ±${(conf * 20).toFixed(1)} m (1 sigma, calibrated)`
+      ? `uncertainty  Â±${(conf * 20).toFixed(1)} m (1 sigma, calibrated)`
       : `confidence  ${(conf * 100).toFixed(0)}%`);
   }
   if (err !== null) lines.push(`error       ${err >= 0 ? "+" : ""}${err.toFixed(2)} m`);
@@ -2648,7 +2724,7 @@ let API_SERVED = false;   // set once /api/gallery answers (processing server pr
 
   const home = document.createElement("a");
   home.href = "/";
-  home.textContent = "← Home";
+  home.textContent = "â† Home";
   home.style.cssText = "display:inline-block;font-size:11px;color:#8ab;margin-bottom:6px;text-decoration:none;";
   const ui = document.getElementById("ui");
   ui.insertBefore(home, ui.querySelector("h3"));
@@ -2676,7 +2752,7 @@ let API_SERVED = false;   // set once /api/gallery answers (processing server pr
     const f = file.files[0];
     if (!f) return;
     status.style.color = "#cde";
-    status.textContent = `Validating against ${f.name}…`;
+    status.textContent = `Validating against ${f.name}â€¦`;
     try {
       const r = await fetch(`/api/reference?${API_QS}`, { method: "POST", body: f });
       let d = null;
@@ -2777,7 +2853,7 @@ function makePinSprite(text) {
   ctx.fill();
   ctx.strokeStyle = "#e0a05a"; ctx.lineWidth = 3; ctx.stroke();
   ctx.fillStyle = "#fff"; ctx.font = "bold 20px sans-serif"; ctx.textBaseline = "middle";
-  const label = text.length > 22 ? text.slice(0, 21) + "…" : text;
+  const label = text.length > 22 ? text.slice(0, 21) + "â€¦" : text;
   ctx.fillText(label, 12, 32);
   const tex = new THREE.CanvasTexture(canvas);
   const mat = new THREE.SpriteMaterial({ map: tex, depthTest: false });
@@ -3328,13 +3404,13 @@ function gcpRender() {
            + `before applying.</div>`;
     }
     if (res.nSuspect) {
-      html += `<div class="gcp-warn">${res.nSuspect} point(s) marked suspect — `
+      html += `<div class="gcp-warn">${res.nSuspect} point(s) marked suspect â€” `
            + `a residual over ${Math.round(GCP_SUSPECT_FRAC * 100)}% is as likely `
            + `a mistyped height as a bad reconstruction.</div>`;
     }
     if (res.powerLaw && res.powerLaw.significant) {
       const pl = res.powerLaw;
-      html += `<div class="gcp-warn">Error here isn't a flat ratio — a height^`
+      html += `<div class="gcp-warn">Error here isn't a flat ratio â€” a height^`
            + `${pl.b.toFixed(2)} curve fits ${Math.round(pl.improvementFrac * 100)}% `
            + `better than one flat scale on these points. The Apply button still uses the flat `
            + `scale (uniform to every vertex); this is a diagnostic, not yet a correction.</div>`;
@@ -3342,8 +3418,8 @@ function gcpRender() {
         html += `<div class="gcp-hint">exponent 90% CI [${pl.bootstrapCI.lo.toFixed(2)}, `
              + `${pl.bootstrapCI.hi.toFixed(2)}] over ${pl.bootstrapCI.n} resamples`
              + (pl.bootstrapCI.lo <= 1.0 && pl.bootstrapCI.hi >= 1.0
-                ? " — includes 1.0, so \"it's just a flat ratio\" isn't ruled out yet"
-                : " — reliably excludes 1.0 (flat ratio), the curve is real")
+                ? " â€” includes 1.0, so \"it's just a flat ratio\" isn't ruled out yet"
+                : " â€” reliably excludes 1.0 (flat ratio), the curve is real")
              + `.</div>`;
       }
       if (pl.loocv) {
@@ -3352,7 +3428,7 @@ function gcpRender() {
              + `(fit-on-same-data MAE above is optimistic; this isn't).</div>`;
       }
       if (pl.illConditioned) {
-        html += `<div class="gcp-warn">Condition number ${pl.conditionNumber.toFixed(0)} — `
+        html += `<div class="gcp-warn">Condition number ${pl.conditionNumber.toFixed(0)} â€” `
              + `these points' heights are too similar/too few to trust the curve shape `
              + `(threshold 30, standard for this kind of regression). Add a point at a `
              + `different height before relying on this.</div>`;
@@ -3389,7 +3465,7 @@ function gcpRender() {
         document.getElementById("measure-panel").textContent =
           `Scene scaled from ${r.points.length} ground control points `
           + `(x${r.factor.toFixed(4)}, residual MAE ${r.mae.toFixed(2)} m).\n`
-          + `Tier A* — heights are now metric, on the operator's authority `
+          + `Tier A* â€” heights are now metric, on the operator's authority `
           + `rather than an instrument's.`;
         gcpRender();
       }
@@ -3972,7 +4048,7 @@ function floodUpdate(rise) {
     floodWet = null;
     if (el) el.textContent = floodSeed
       ? "Water off"
-      : "Water off — click the terrain in Flood mode to place the source.";
+      : "Water off â€” click the terrain in Flood mode to place the source.";
     return;
   }
   if (!floodSeed) {
@@ -3989,7 +4065,7 @@ function floodUpdate(rise) {
   if (res.dry) {
     if (floodMeshObj) { scene.remove(floodMeshObj); floodMeshObj = null; }
     if (el) el.textContent = `Source sits ${(res.seedY - datum).toFixed(1)} above `
-      + `the low point, higher than the ${rise.toFixed(1)} water level — `
+      + `the low point, higher than the ${rise.toFixed(1)} water level â€” `
       + `nothing floods. Lower the source or raise the level.`;
     return;
   }
@@ -4002,15 +4078,15 @@ function floodUpdate(rise) {
   if (!metric) {
     // Tier C: the cell counts are real, the metres are not.
     el.textContent = `${res.cells.toLocaleString()} terrain cells inundated, `
-      + `${nb} buildings affected — relative scale, so no area, depth or `
+      + `${nb} buildings affected â€” relative scale, so no area, depth or `
       + `volume in metres is reported.`;
   } else {
-    let t = `${Math.round(res.areaM2).toLocaleString()} m² inundated · `
-      + `${nb} buildings · ${Math.round(res.volumeM3).toLocaleString()} m³ · `
+    let t = `${Math.round(res.areaM2).toLocaleString()} mÂ² inundated Â· `
+      + `${nb} buildings Â· ${Math.round(res.volumeM3).toLocaleString()} mÂ³ Â· `
       + `mean depth ${res.meanDepth.toFixed(1)} m, max ${res.maxDepth.toFixed(1)} m`;
     if (res.unreachable > 0) {
       t += `\n${res.unreachable.toLocaleString()} cells sit below the water line `
-        + `but are not connected to the source — a flat water plane would have `
+        + `but are not connected to the source â€” a flat water plane would have `
         + `flooded them.`;
     }
     el.textContent = t;
@@ -4168,10 +4244,13 @@ function sunForHour(hour) {
   const noon = 12.0;
   const shape = function (h) { return Math.cos((h - noon) / 6.0 * (Math.PI / 2)); };
   const k = SUN_ELEVATION_DEG / Math.max(shape(CAPTURE_HOUR), 1e-3);
-  const el = Math.max(3, Math.min(88, k * shape(hour)));
+  const raw = k * shape(hour);                       // below 0 once the sun has set
+  const el = Math.max(3, Math.min(88, raw));
   const az = SUN_AZIMUTH_DEG + (hour - CAPTURE_HOUR) * 15.0;
-  return { el: el, az: az };
+  return { el: el, az: az, raw: raw };
 }
+
+function _smooth(a, b, x) { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); }
 
 function applySunHour(hour) {
   const s = sunForHour(hour);
@@ -4189,7 +4268,16 @@ function applySunHour(hour) {
   // Same sun, different path through the same atmosphere: colour and
   // strength follow the model's own transmittance (low sun warmer, dimmer).
   const Tn = sunTransmittanceJS(d), tl = _lum(Tn);
-  sunLight.intensity = LIGHT.sunI * tl / _lum(LIGHT.Tcap);
+  // Dusk and night: the direct sun fades out at the horizon, the sky (and
+  // the light it casts) through civil twilight to a moonlit floor, and the
+  // window lights come on.
+  const sunUp = _smooth(-1, 5, s.raw);
+  const day = Math.max(0.05, _smooth(-8, 6, s.raw));
+  if (dayU) dayU.value = day;
+  if (nightU) nightU.value = 1 - _smooth(-5, 4, s.raw);
+  if (skyScaleU) skyScaleU.value = LIGHT.skyScale * day;
+  envGroundMat.color.setRGB(...LIGHT.ground.map((v) => v * day / Math.PI));
+  sunLight.intensity = LIGHT.sunI * tl / _lum(LIGHT.Tcap) * sunUp;
   sunLight.color.setRGB(Tn[0] / tl, Tn[1] / tl, Tn[2] / tl);
   if (skyMesh && skyMesh.userData.discU) {
     skyMesh.userData.discU.value.setRGB(Tn[0] / tl, Tn[1] / tl, Tn[2] / tl)
@@ -4204,7 +4292,8 @@ function applySunHour(hour) {
   const hh = Math.floor(hour), mm = Math.round((hour - hh) * 60);
   const azn = ((Math.round(s.az) % 360) + 360) % 360;
   out.textContent = ("0" + hh).slice(-2) + ":" + ("0" + mm).slice(-2)
-    + "   sun " + s.el.toFixed(0) + " deg elevation, " + azn + " deg azimuth"
+    + (s.raw < 0 ? "   sun below the horizon (window lights illustrative)"
+       : "   sun " + s.el.toFixed(0) + " deg elevation, " + azn + " deg azimuth")
     + (Math.abs(hour - CAPTURE_HOUR) < 0.3 ? "   (matches capture)" : "");
 }
 
@@ -4254,7 +4343,7 @@ function finishAreaMeasurement() {
   const areaM2 = polygonAreaM2(toolPoints);
   if (panel) {
     panel.textContent = metric
-      ? `Area: ${areaM2 < 10000 ? areaM2.toFixed(0) + " m²" : (areaM2 / 10000).toFixed(2) + " ha"} `
+      ? `Area: ${areaM2 < 10000 ? areaM2.toFixed(0) + " mÂ²" : (areaM2 / 10000).toFixed(2) + " ha"} `
         + `(${toolPoints.length} points)`
       : `Area: ${areaM2.toFixed(0)} sq. units (relative scale, ${toolPoints.length} points)`;
   }
@@ -4349,7 +4438,7 @@ document.getElementById("btn-flood").addEventListener("click", () => {
     document.getElementById("btn-measure").classList.remove("active");
     document.getElementById("btn-gcp").classList.remove("active");
     document.getElementById("measure-panel").textContent =
-      "Click the terrain where the water comes from — a river, a coast, a "
+      "Click the terrain where the water comes from â€” a river, a coast, a "
       + "breach. Water spreads only to ground connected to that point.";
   }
 });
@@ -4378,7 +4467,7 @@ document.getElementById("vexag").addEventListener("input", (e) => {
   heightBoostFactor = v;
   if (cityRoot) cityRoot.scale.y = v;
   document.getElementById("vexag-readout").textContent =
-    v === 1 ? "1.0× (true scale)" : `${v.toFixed(1)}×`;
+    v === 1 ? "1.0Ã— (true scale)" : `${v.toFixed(1)}Ã—`;
 });
 
 function calibrateFloodRange() {
@@ -4659,7 +4748,7 @@ function updateCompass() {
   if (bearing < 0) bearing += 360;
   const card = CARDINALS[Math.round(bearing / 45) % 8];
   compassEl.textContent = card;
-  compassEl.title = bearing.toFixed(0) + "°";
+  compassEl.title = bearing.toFixed(0) + "Â°";
 }
 
 // --- Scale bar ---
@@ -4776,7 +4865,7 @@ comparePanel.innerHTML =
   '<input id="compare-range" type="range" min="0" max="100" value="50" ' +
   'style="width:400px;margin-top:6px;">' +
   '<div style="display:flex;justify-content:space-between;margin-top:2px;">' +
-  '<span>← Prediction</span><span>Ground truth →</span></div>';
+  '<span>â† Prediction</span><span>Ground truth â†’</span></div>';
 document.body.appendChild(comparePanel);
 
 (async () => {
