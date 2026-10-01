@@ -43,6 +43,11 @@ python scenes.py show jax165                          # restore a saved scene
 
 Then open `http://localhost:8800/viewer/index.html`.
 
+**Run it on a free cloud GPU:** [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/jawaharananth/depthwizard/blob/main/deploy/colab/DepthWizard_GPU.ipynb)
+-- choose a T4 GPU runtime, `Run all`, and open the public link it prints (upload page,
+processing on the GPU, 3D viewer). The 3D view draws on the viewing computer; laptops with
+integrated graphics get a lighter preset automatically (`?q=standard|cinematic|lite`).
+
 **Upload dashboard:** `python server.py` serves a drag-and-drop dashboard at
 `http://127.0.0.1:8000/` (defaults `--host 127.0.0.1 --port 8000`; the
 container uses `--host 0.0.0.0 --port 8080`). It is a stdlib
