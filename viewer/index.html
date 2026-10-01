@@ -1409,6 +1409,30 @@ function shadeBuildingPrisms(mesh, mat) {
 // streaks that are not the building. Texels whose chromaticity reads as
 // vegetation are blended to the building's own measured colour (vertex
 // attribute) -- removing a real occluder, not inventing cladding.
+// Storey rhythm drawn over a wall's own colour: a slab line every floor and a
+// row of punched windows, or -- where the wall reads as glass -- a continuous
+// curtain wall with mullions. Satellite pixels cannot resolve storeys, so this
+// is inferred detail, drawn over measured colour, never instead of it.
+function storeyed(base, rough, glassAmt) {
+  const { positionWorld, fract, smoothstep, mix, vec3, float, max } = TSL;
+  const fy = fract(positionWorld.y.div(3.2));
+  const fx = fract(positionWorld.x.add(positionWorld.z).div(2.6));
+  const slab = smoothstep(0.0, 0.05, fy).mul(smoothstep(1.0, 0.95, fy));     // 0 on the slab line
+  const punched = smoothstep(0.30, 0.34, fy).mul(smoothstep(0.80, 0.76, fy))
+    .mul(smoothstep(0.22, 0.27, fx)).mul(smoothstep(0.78, 0.73, fx));
+  const mullion = smoothstep(0.0, 0.04, fx).mul(smoothstep(1.0, 0.96, fx));  // 0 on a mullion
+  const curtain = mullion.mul(slab);
+  const win = mix(punched, curtain, glassAmt);
+  const glass = mix(vec3(0.13, 0.16, 0.20), base.mul(0.55).add(vec3(0.04, 0.06, 0.08)), float(0.5));
+  const wall = base.mul(mix(float(0.80), float(1.0), slab));
+  return {
+    color: mix(wall, glass, win.mul(mix(float(0.55), float(0.35), glassAmt))),
+    rough: mix(float(rough), float(0.12), win),
+    win,
+    lit: max(wall, vec3(0.0)),
+  };
+}
+
 function facadeMaterial(rough) {
   const opts = { roughness: rough, metalness: 0.0, envMapIntensity: 1.0 };
   if (!TSL || !THREE.MeshStandardNodeMaterial) {
@@ -1416,7 +1440,11 @@ function facadeMaterial(rough) {
   }
   const { texture, uv, attribute, smoothstep, mix, vec3, float } = TSL;
   const m = new THREE.MeshStandardNodeMaterial(opts);
-  const t = texture(rgbTexture, uv());
+  // A 30 m wall is about a dozen image pixels at 0.6 m, so a sharp sample
+  // stretches each pixel into a vertical streak. Sample a few mip levels
+  // softer: the wall keeps its real photographed colour and tone, without
+  // the smear; the storey rhythm below supplies the crisp detail.
+  const t = texture(rgbTexture, uv()).bias(float(3.0));
   const sum = t.r.add(t.g).add(t.b).add(1e-3);
   const veg = smoothstep(0.37, 0.43, t.g.div(sum));
   const P = mix(vec3(t.rgb), attribute("color", "vec3"), veg);
@@ -1424,13 +1452,15 @@ function facadeMaterial(rough) {
   // seen wall is its own source; an unseen wall reusing its building's
   // photographed facade divides out THAT wall's capture lighting, then is
   // relit facing its own way.
-  m.colorNode = delitAlbedo(P, attribute("srcNormal", "vec3"));
+  const base = delitAlbedo(P, attribute("srcNormal", "vec3"));
   const g = glassiness(t).mul(float(1).sub(veg));
-  m.roughnessNode = mix(float(rough), float(0.07), g);
+  const s = storeyed(base, rough, g);
+  m.colorNode = s.color;
+  m.roughnessNode = mix(s.rough, float(0.07), g.mul(0.5));
   // Modest metalness on glazing only: screen-space reflections are masked by
   // metalness, so this is what lets a curtain wall mirror the tower beside
   // it -- tinted by the glass's own real colour, as real tinted glass is.
-  m.metalnessNode = g.mul(0.12);
+  m.metalnessNode = g.mul(0.12).add(s.win.mul(0.06));
   return m;
 }
 
@@ -1451,24 +1481,13 @@ function measuredColourWallMaterial(rough) {
   const lum = dot(a, vec3(0.2126, 0.7152, 0.0722));
   const lifted = min(a.mul(max(lum, float(0.42)).div(max(lum, float(0.02)))), vec3(1.0));
   const wall = mix(lifted, vec3(max(lum, float(0.42))), float(0.35));
-  // Storeys: a 3.0 m floor rhythm with a slab line and a window row per floor,
-  // windows every 2.4 m along the wall -- the usual LOD2 rendering of a wall
-  // with no photographed facade. Drawn faintly; it is inferred, not measured.
-  const { positionWorld, fract, smoothstep, abs } = TSL;
-  const fy = fract(positionWorld.y.div(3.0));
-  const along = positionWorld.x.add(positionWorld.z);
-  const fx = fract(along.div(2.4));
-  const slab = smoothstep(0.0, 0.05, fy).mul(smoothstep(1.0, 0.95, fy));          // 0 on the slab line
-  const winY = smoothstep(0.30, 0.34, fy).mul(smoothstep(0.80, 0.76, fy));
-  const winX = smoothstep(0.22, 0.27, fx).mul(smoothstep(0.78, 0.73, fx));
-  const win = winY.mul(winX);
-  const glass = vec3(0.16, 0.19, 0.22);
-  const shaded = wall.mul(mix(float(0.78), float(1.0), slab));
-  m.colorNode = mix(shaded, glass, win.mul(0.55));
-  m.roughnessNode = mix(float(rough), float(0.25), win);
+  // Storeys and windows (inferred LOD2 detail, see storeyed()).
+  const s = storeyed(wall, rough, float(0.0));
+  m.colorNode = s.color;
+  m.roughnessNode = s.rough;
   // Light bounced off the street and the neighbours: in a dense town a wall
   // facing away from a low sun is still lit warm-grey, not sky-blue-black.
-  m.emissiveNode = shaded.mul(vec3(0.20, 0.18, 0.15)).mul(float(1).sub(win.mul(0.6)));
+  m.emissiveNode = s.lit.mul(vec3(0.20, 0.18, 0.15)).mul(float(1).sub(s.win.mul(0.6)));
   return m;
 }
 
