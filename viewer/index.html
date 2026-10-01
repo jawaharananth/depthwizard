@@ -305,13 +305,35 @@ try {
 // this file needs to know which backend actually ran. Needs an async init()
 // before first render, unlike WebGLRenderer.
 const container = document.getElementById("canvas-container");
+// Integrated / shared-memory graphics (most student and office laptops) cannot
+// carry the cinematic chain and thousands of detailed trees: the browser's GPU
+// process runs out of shared memory and the page hangs. Detect it once and
+// default such machines to the "lite" preset (?q=standard|cinematic overrides).
+const GPU_NAME = (() => {
+  try {
+    const c = document.createElement("canvas"), gl = c.getContext("webgl");
+    if (!gl) return "";
+    const ext = gl.getExtension("WEBGL_debug_renderer_info");
+    const r = String(ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER));
+    const lose = gl.getExtension("WEBGL_lose_context"); if (lose) lose.loseContext();
+    return r;
+  } catch (e) { return ""; }
+})();
+const GPU_INTEGRATED = /intel|uhd|iris|radeon\(tm\) graphics|vega \d|mali|adreno|swiftshader|llvmpipe|basic render/i.test(GPU_NAME)
+  || (navigator.deviceMemory && navigator.deviceMemory <= 8);
+const QUALITY = (() => {
+  const q = new URLSearchParams(location.search).get("q");
+  if (q === "cinematic" || q === "standard" || q === "lite") return q;
+  if (GPU_INTEGRATED) return "lite";
+  try { return localStorage.getItem("dw_quality") || "standard"; } catch (e) { return "standard"; }
+})();
 // ?webgl=1 forces the WebGL2 backend -- for headless software-rendered
 // capture, where WebGPU pipeline compilation can stall for many minutes.
 const renderer = new THREE.WebGPURenderer({
   antialias: true,
   forceWebGL: new URLSearchParams(location.search).get("webgl") === "1",
 });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setPixelRatio(QUALITY === "lite" ? 1 : Math.min(window.devicePixelRatio, 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
 // AgX rather than ACES. ACES pushes bright neutrals toward warm cream and
 // crushes highlight separation -- on a city of pale roofs that turns the whole
@@ -727,7 +749,7 @@ await bakeSkyEnvironment();
 const sunLight = new THREE.DirectionalLight(0xffffff, LIGHT.sunI);
 sunLight.color.setRGB(...LIGHT.sunCol);
 sunLight.castShadow = true;
-sunLight.shadow.mapSize.set(4096, 4096);
+sunLight.shadow.mapSize.set(QUALITY === "lite" ? 2048 : 4096, QUALITY === "lite" ? 2048 : 4096);
 sunLight.shadow.bias = -0.0004;
 sunLight.shadow.normalBias = 0.02;
 sunLight.shadow.radius = 2;
@@ -839,11 +861,7 @@ let rebuildPostChain = () => {};
 // Quality presets. "standard" is sized for a laptop GPU at ~30+ fps;
 // "cinematic" adds full-res AO, screen-space reflections and supersampling for
 // stills and demos on stronger hardware. Neither adds anything to the data.
-const QUALITY = (() => {
-  const q = new URLSearchParams(location.search).get("q");
-  if (q === "cinematic" || q === "standard") return q;
-  try { return localStorage.getItem("dw_quality") || "standard"; } catch (e) { return "standard"; }
-})();
+// (QUALITY is decided at renderer creation, above.)
 // Surfaces that are RELIT (not shown as photographed) write relit=1 into the
 // MRT; ambient occlusion is applied to those only. A photographed pixel
 // already contains the real occlusion of the real place, and darkening it
@@ -856,6 +874,14 @@ async function buildPostChain() {
   // GTAO on relit surfaces only -> [SSR, cinematic] -> TRAA. No bloom, no
   // vignette, no lens effects: this is meant to read as a photograph.
   postChain = [];
+  if (QUALITY === "lite") {
+    // Integrated graphics: render directly (hardware MSAA only). AO and
+    // temporal AA each cost full-screen passes this class of GPU cannot spare.
+    postProcessing = null;
+    postChain.push("none (lite preset)");
+    console.log("post-processing: none (lite preset, " + (GPU_NAME || "unknown GPU") + ")");
+    return;
+  }
   try {
     const tsl = await import("three/tsl");
     const { ao: aoFn } = await import("three/addons/tsl/display/GTAONode.js");
@@ -1796,7 +1822,7 @@ function restoreGridOrder(geo) {
 // An upload's texture sharpened from ITS OWN pixels (colours unchanged) is
 // shown by default and labelled; &tex=orig shows the file exactly as sent.
 const _TEXQ = new URLSearchParams(location.search).get("tex");
-const USE_HIRES_TEX = _TEXQ === "hires" || (_TEXQ !== "orig" &&
+const USE_HIRES_TEX = _TEXQ === "hires" || (_TEXQ !== "orig" && QUALITY !== "lite" &&
   !!(SCENE_META && SCENE_META.texture_display && SCENE_META.texture_display.default));
 Promise.all([
   new Promise((res) => textureLoader.load(
@@ -2003,7 +2029,7 @@ Promise.all([
       // the scene and never able to stop it (&trees=0 turns them off).
       if (new URLSearchParams(location.search).get("trees") !== "0") {
         import("./trees.js")
-          .then((m) => m.addTrees({ root: obj, groundMesh, BASE, TSL, camera }))
+          .then((m) => m.addTrees({ root: obj, groundMesh, BASE, TSL, camera, lite: QUALITY === "lite" }))
           .then((t) => { window.__dwTrees = t; })
           .catch((e) => console.warn("trees skipped:", e));
       }

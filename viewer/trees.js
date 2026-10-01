@@ -171,7 +171,7 @@ function flattenMounds(groundMesh, C) {
   return lowered;
 }
 
-export async function addTrees({ root, groundMesh, BASE, TSL, camera, quality = 1 }) {
+export async function addTrees({ root, groundMesh, BASE, TSL, camera, quality = 1, lite = false }) {
   const _q = new URLSearchParams(location.search);
   const NEAR_CAP = _q.has("treenear") ? Math.max(0, +_q.get("treenear")) : NEAR_MAX;
   const NEAR_SHADOWS = _q.get("treeshadow") !== "0";
@@ -184,6 +184,7 @@ export async function addTrees({ root, groundMesh, BASE, TSL, camera, quality = 
               rot: J.rot || new Array(n).fill(0), yt: J.yt || J.y, R: J.R, G: J.G, B: J.B };
   const datum = (J.frame && J.frame.datum_m) || 0;
   const hills = datum > CONIFER_ABOVE_M;
+  if (lite) return addLightTrees({ root, groundMesh, TSL, camera, C, n, hills });
 
   const { Tree } = await import("./vendor/ez-tree/ez-tree.es.js");
 
@@ -413,4 +414,54 @@ export async function addTrees({ root, groundMesh, BASE, TSL, camera, quality = 
   return { group, get info() { return info; }, setVisible: (on) => { group.visible = on; },
            setTier: (t) => { tier = Math.min(3, Math.max(0, t)); applyTier(); },
            dispose: () => { clearInterval(timer); stopped = true; } };
+}
+
+
+// Lite preset (integrated graphics): light trees only, drawn within 900 m of
+// the camera, no procedural tree generation at start-up and no tree shadows.
+// Same measured crowns: position, height, crown size and colour.
+function addLightTrees({ root, groundMesh, TSL, camera, C, n, hills }) {
+  const FAR_R = 900;
+  const geo = farTreeGeometry(hills);
+  const unitR = 0.52;
+  const MF = new Float32Array(n * 16), COLF = new Float32Array(n * 3);
+  const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), pos = new THREE.Vector3(), scl = new THREE.Vector3();
+  const up = new THREE.Vector3(0, 1, 0);
+  for (let i = 0; i < n; i++) {
+    const hash = ((Math.floor(C.x[i] * 7.31) * 73856093) ^ (Math.floor(C.z[i] * 5.17) * 19349663)) >>> 0;
+    const fy = C.h[i], fxz = Math.min(Math.max(Math.max(C.ra[i], C.r[i]) / unitR, fy * 0.35), fy * 1.4);
+    pos.set(C.x[i], C.y[i] - 0.25, C.z[i]);
+    q.setFromAxisAngle(up, (C.rot[i] || 0) + (hash % 628) / 100);
+    scl.set(fxz, fy, fxz);
+    m4.compose(pos, q, scl).toArray(MF, i * 16);
+    const rgb = [C.R[i], C.G[i], C.B[i]].map((c) => c / 255);
+    const grey = (rgb[0] + rgb[1] + rgb[2]) / 3;
+    for (let k = 0; k < 3; k++) COLF[i * 3 + k] = toLin(Math.min(1, Math.max(0, grey + (rgb[k] - grey) * 1.35))) * 1.2;
+  }
+  const mat = new THREE.MeshStandardNodeMaterial({ vertexColors: true, roughness: 0.9, metalness: 0.0 });
+  const mesh = new THREE.InstancedMesh(geo, mat, n);
+  mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(n * 3), 3);
+  mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  mesh.castShadow = false; mesh.receiveShadow = true; mesh.frustumCulled = false;
+  const group = new THREE.Group(); group.name = "trees"; group.add(mesh); root.add(group);
+  let lowered = 0;
+  try { lowered = groundMesh ? flattenMounds(groundMesh, C) : 0; } catch (e) { console.warn("tree mound flatten skipped:", e); }
+  const cam = new THREE.Vector3();
+  function assign() {
+    if (!camera) return;
+    cam.copy(camera.position); root.worldToLocal(cam);
+    const r2 = FAR_R * FAR_R, A = mesh.instanceMatrix.array, CC = mesh.instanceColor.array;
+    let k = 0;
+    for (let i = 0; i < n; i++) {
+      const dx = C.x[i] - cam.x, dz = C.z[i] - cam.z;
+      if (dx * dx + dz * dz > r2) continue;
+      A.set(MF.subarray(i * 16, i * 16 + 16), k * 16); CC.set(COLF.subarray(i * 3, i * 3 + 3), k * 3); k++;
+    }
+    mesh.count = k; mesh.instanceMatrix.needsUpdate = true; mesh.instanceColor.needsUpdate = true;
+  }
+  assign();
+  const timer = setInterval(assign, 700);
+  const info = { crowns: n, mode: "lite", hills, lowered_vertices: lowered, far_tris_each: Math.round(geo.attributes.position.count / 3), radius_m: FAR_R };
+  console.info("trees:", JSON.stringify(info));
+  return { group, info, setVisible: (on) => { group.visible = on; }, setTier: () => {}, dispose: () => clearInterval(timer) };
 }
