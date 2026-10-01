@@ -412,6 +412,7 @@ const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerH
 camera.position.set(0, 300, 400);
 
 const controls = new OrbitControls(camera, renderer.domElement);
+window.__dwCamera = camera; window.__dwControls = controls;   // automated checks / demo mode
 controls.enableDamping = true;
 controls.dampingFactor = 0.06;
 controls.screenSpacePanning = false;
@@ -1997,6 +1998,15 @@ Promise.all([
       }
       scene.add(obj);
       _dwT.shaded = Math.round(performance.now() - _dwT.t0);
+      // Real-crown 3D trees (viewer/trees.js): measured position, height,
+      // crown size and colour; procedural branches and leaves. Loaded after
+      // the scene and never able to stop it (&trees=0 turns them off).
+      if (new URLSearchParams(location.search).get("trees") !== "0") {
+        import("./trees.js")
+          .then((m) => m.addTrees({ root: obj, groundMesh, BASE, TSL, camera }))
+          .then((t) => { window.__dwTrees = t; })
+          .catch((e) => console.warn("trees skipped:", e));
+      }
 
       const box = new THREE.Box3().setFromObject(obj);
       const center = box.getCenter(new THREE.Vector3());

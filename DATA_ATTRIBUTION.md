@@ -31,8 +31,9 @@ LiDAR-derived) and `*_CLS.h5` (six semantic classes).
 | Weights | Licence | Where used |
 |---|---|---|
 | depth-anything/Depth-Anything-V2-Small-hf | Apache-2.0 | default backbone for fine-tuning (`train_height.py`) |
-| depth-anything/Depth-Anything-V2-Base-hf | CC-BY-NC-4.0 (non-commercial) | base of the current `checkpoints/height_best/`; to be replaced by the Small retrain |
+| depth-anything/Depth-Anything-V2-Base-hf | CC-BY-NC-4.0 (non-commercial) | earlier experiments only; the production checkpoint (`checkpoints/height_best/`, run 03) is the Small (ViT-S, Apache-2.0) fine-tune |
 | Meta/WRI Global Canopy Height Map v1/v2 | CC-BY-4.0 | canopy heights (Periyar, HITEC trees) |
+| EZ-Tree (Daniel Greenheck) | MIT (`viewer/vendor/ez-tree/LICENSE`) | procedural branch and leaf geometry for the 3D trees; tree positions, heights, crown sizes and colours are measured |
 
 ## `scenes/` — pre-built reconstructions
 
