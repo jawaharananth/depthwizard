@@ -246,37 +246,55 @@ def canopy(tif, work):
 
 
 def inherit_heights(polys, tif, parent):
-    """Per footprint, the parent scene's height above ground (75th percentile
-    inside the outline, the roof rather than its edges), sampled on this
-    image's grid. A close-up then shows every building at the same height
-    as the whole-area scene it is cut from. None where the parent has no
-    building there (the model's own estimate is used)."""
-    import glob
-    import cv2
+    """Per footprint, the height of the parent scene's building it belongs to
+    (scenes/<parent>/buildings.geojson: the building containing this
+    outline's centre, else the one it overlaps most, if >= 30 %). A close-up
+    then shows every building at the same height as the whole-area scene it
+    is cut from. None where the parent has no building there (the model's
+    own estimate is used)."""
     import rasterio
-    from rasterio.warp import Resampling, reproject
-    pd = os.path.join(ROOT, "scenes", parent)
-    meta = json.load(open(os.path.join(pd, "scene.json")))
-    hv = meta["hover"]
-    q = np.fromfile(os.path.join(pd, hv["agl"]), dtype="<u2").reshape(hv["height"], hv["width"])
-    agl = np.where(q == 65535, np.nan, q / 100.0).astype(np.float32)
-    with rasterio.open(sorted(glob.glob(os.path.join(pd, "*_DSM.tif")))[0]) as s:
-        ptf = s.transform * s.transform.scale(s.width / hv["width"], s.height / hv["height"])
-        pcrs = s.crs
+    from pyproj import Transformer
+    from shapely.geometry import Point, Polygon, shape
+    from shapely.strtree import STRtree
+    g = json.load(open(os.path.join(ROOT, "scenes", parent, "buildings.geojson")))
+    pcrs = ((g.get("crs") or {}).get("properties") or {}).get("name") or "EPSG:3857"
+    geoms, hts = [], []
+    for f in g["features"]:
+        h = (f.get("properties") or {}).get("height_m")
+        if h is None or not f.get("geometry"):
+            continue
+        try:
+            s = shape(f["geometry"])
+        except Exception:
+            continue
+        if s.is_valid and s.area > 0:
+            geoms.append(s); hts.append(float(h))
+    tree = STRtree(geoms)
     with rasterio.open(tif) as s:
-        dst = np.full((s.height, s.width), np.nan, np.float32)
-        reproject(agl, dst, src_transform=ptf, src_crs=pcrs, dst_transform=s.transform, dst_crs=s.crs,
-                  src_nodata=np.nan, dst_nodata=np.nan, resampling=Resampling.bilinear)
+        tf, crs = s.transform, s.crs
+    to_p = Transformer.from_crs(crs, pcrs, always_xy=True)
     out = []
-    m = np.zeros(dst.shape, np.uint8)
     for p in polys:
-        m[:] = 0
-        cv2.fillPoly(m, [np.array(p, np.int32)], 1)
-        v = dst[(m > 0) & np.isfinite(dst)]
-        h = float(np.percentile(v, 75)) if v.size >= 4 else None
-        out.append(h if h is not None and h >= 2.5 else None)
+        xy = [to_p.transform(*(tf * (float(x), float(y)))) for x, y in p]
+        if len(xy) < 3:
+            out.append(None); continue
+        poly = Polygon(xy).buffer(0)
+        if poly.is_empty:
+            out.append(None); continue
+        c = poly.representative_point()
+        cand = tree.query(poly)
+        best, best_frac = None, 0.0
+        for i in cand:
+            gi = geoms[int(i)]
+            if gi.contains(c):
+                best, best_frac = int(i), 1.0
+                break
+            frac = gi.intersection(poly).area / max(poly.area, 1e-9)
+            if frac > best_frac:
+                best, best_frac = int(i), frac
+        out.append(hts[best] if best is not None and best_frac >= 0.3 and hts[best] >= 2.5 else None)
     n = sum(h is not None for h in out)
-    log(f"heights from scenes/{parent}: {n} of {len(polys)} outlines")
+    log(f"heights from scenes/{parent}/buildings.geojson: {n} of {len(polys)} outlines")
     return out
 
 

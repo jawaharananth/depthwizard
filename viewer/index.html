@@ -2412,14 +2412,14 @@ Promise.all([
         }
         if (SCENE_META.off_nadir_deg != null || SCENE_META.gsd_m != null) {
           const bits = [];
-          if (SCENE_META.off_nadir_deg != null) bits.push(`${SCENE_META.off_nadir_deg}Â° off-nadir`);
+          if (SCENE_META.off_nadir_deg != null) bits.push(`${SCENE_META.off_nadir_deg}° off-nadir`);
           if (SCENE_META.gsd_m != null) bits.push(`${SCENE_META.gsd_m} m/px`);
           lines.push(bits.join(", "));
         }
         if (SCENE_META.sun_elevation_deg != null || SCENE_META.sun_azimuth_deg != null) {
           const bits = [];
-          if (SCENE_META.sun_elevation_deg != null) bits.push(`${Number(SCENE_META.sun_elevation_deg).toFixed(1)}Â° el`);
-          if (SCENE_META.sun_azimuth_deg != null) bits.push(`${Number(SCENE_META.sun_azimuth_deg).toFixed(1)}Â° az`);
+          if (SCENE_META.sun_elevation_deg != null) bits.push(`${Number(SCENE_META.sun_elevation_deg).toFixed(1)}° el`);
+          if (SCENE_META.sun_azimuth_deg != null) bits.push(`${Number(SCENE_META.sun_azimuth_deg).toFixed(1)}° az`);
           lines.push(`sun ${bits.join(" / ")}` +
                      (SCENE_META.sun_note ? ` (${SCENE_META.sun_note})` : ""));
         }
@@ -2594,7 +2594,7 @@ renderer.domElement.addEventListener("pointermove", (e) => {
   }
   if (conf !== null) {
     lines.push(SCENE_META && SCENE_META.uncertainty
-      ? `uncertainty  Â±${(conf * 20).toFixed(1)} m (1 sigma, calibrated)`
+      ? `uncertainty  ±${(conf * 20).toFixed(1)} m (1 sigma, calibrated)`
       : `confidence  ${(conf * 100).toFixed(0)}%`);
   }
   if (err !== null) lines.push(`error       ${err >= 0 ? "+" : ""}${err.toFixed(2)} m`);
@@ -2767,7 +2767,7 @@ let API_SERVED = false;   // set once /api/gallery answers (processing server pr
 
   const home = document.createElement("a");
   home.href = "/";
-  home.textContent = "â† Home";
+  home.textContent = "← Home";
   home.style.cssText = "display:inline-block;font-size:11px;color:#8ab;margin-bottom:6px;text-decoration:none;";
   const ui = document.getElementById("ui");
   ui.insertBefore(home, ui.querySelector("h3"));
@@ -2795,7 +2795,7 @@ let API_SERVED = false;   // set once /api/gallery answers (processing server pr
     const f = file.files[0];
     if (!f) return;
     status.style.color = "#cde";
-    status.textContent = `Validating against ${f.name}â€¦`;
+    status.textContent = `Validating against ${f.name}…`;
     try {
       const r = await fetch(`/api/reference?${API_QS}`, { method: "POST", body: f });
       let d = null;
@@ -2896,7 +2896,7 @@ function makePinSprite(text) {
   ctx.fill();
   ctx.strokeStyle = "#e0a05a"; ctx.lineWidth = 3; ctx.stroke();
   ctx.fillStyle = "#fff"; ctx.font = "bold 20px sans-serif"; ctx.textBaseline = "middle";
-  const label = text.length > 22 ? text.slice(0, 21) + "â€¦" : text;
+  const label = text.length > 22 ? text.slice(0, 21) + "…" : text;
   ctx.fillText(label, 12, 32);
   const tex = new THREE.CanvasTexture(canvas);
   const mat = new THREE.SpriteMaterial({ map: tex, depthTest: false });
@@ -3087,8 +3087,12 @@ renderer.domElement.addEventListener("click", (event) => {
       label += "  -- Tier C: vertical scale assumed, not measured";
     }
   }
-  // Terrain elevation is still useful, but as a clearly separate figure.
-  label += "   |   terrain elevation " + groundY.toFixed(1) + " " + unit;
+  // Terrain elevation is still useful, but as a clearly separate figure --
+  // and only when it is a real elevation: scene y plus the scene's datum.
+  // Without a datum the scene's y is an internal coordinate (Gangtok read
+  // "402 m" for ground at ~1,615 m), so nothing is printed.
+  const elev = absoluteElevation(groundY);
+  if (elev !== null) label += "   |   ground " + elev.toFixed(1) + " m above sea level";
 
   // Attach the evidence trail for the nearest recorded building.
   //
@@ -3447,13 +3451,13 @@ function gcpRender() {
            + `before applying.</div>`;
     }
     if (res.nSuspect) {
-      html += `<div class="gcp-warn">${res.nSuspect} point(s) marked suspect â€” `
+      html += `<div class="gcp-warn">${res.nSuspect} point(s) marked suspect — `
            + `a residual over ${Math.round(GCP_SUSPECT_FRAC * 100)}% is as likely `
            + `a mistyped height as a bad reconstruction.</div>`;
     }
     if (res.powerLaw && res.powerLaw.significant) {
       const pl = res.powerLaw;
-      html += `<div class="gcp-warn">Error here isn't a flat ratio â€” a height^`
+      html += `<div class="gcp-warn">Error here isn't a flat ratio — a height^`
            + `${pl.b.toFixed(2)} curve fits ${Math.round(pl.improvementFrac * 100)}% `
            + `better than one flat scale on these points. The Apply button still uses the flat `
            + `scale (uniform to every vertex); this is a diagnostic, not yet a correction.</div>`;
@@ -3461,8 +3465,8 @@ function gcpRender() {
         html += `<div class="gcp-hint">exponent 90% CI [${pl.bootstrapCI.lo.toFixed(2)}, `
              + `${pl.bootstrapCI.hi.toFixed(2)}] over ${pl.bootstrapCI.n} resamples`
              + (pl.bootstrapCI.lo <= 1.0 && pl.bootstrapCI.hi >= 1.0
-                ? " â€” includes 1.0, so \"it's just a flat ratio\" isn't ruled out yet"
-                : " â€” reliably excludes 1.0 (flat ratio), the curve is real")
+                ? " — includes 1.0, so \"it's just a flat ratio\" isn't ruled out yet"
+                : " — reliably excludes 1.0 (flat ratio), the curve is real")
              + `.</div>`;
       }
       if (pl.loocv) {
@@ -3471,7 +3475,7 @@ function gcpRender() {
              + `(fit-on-same-data MAE above is optimistic; this isn't).</div>`;
       }
       if (pl.illConditioned) {
-        html += `<div class="gcp-warn">Condition number ${pl.conditionNumber.toFixed(0)} â€” `
+        html += `<div class="gcp-warn">Condition number ${pl.conditionNumber.toFixed(0)} — `
              + `these points' heights are too similar/too few to trust the curve shape `
              + `(threshold 30, standard for this kind of regression). Add a point at a `
              + `different height before relying on this.</div>`;
@@ -3508,7 +3512,7 @@ function gcpRender() {
         document.getElementById("measure-panel").textContent =
           `Scene scaled from ${r.points.length} ground control points `
           + `(x${r.factor.toFixed(4)}, residual MAE ${r.mae.toFixed(2)} m).\n`
-          + `Tier A* â€” heights are now metric, on the operator's authority `
+          + `Tier A* — heights are now metric, on the operator's authority `
           + `rather than an instrument's.`;
         gcpRender();
       }
@@ -3736,6 +3740,7 @@ const DAMAGE_STYLE = {
 
 async function loadDamage() {
   if (damageData !== null) return damageData;
+  if (!sceneHas("damage.viewer.json")) { damageData = false; return damageData; }
   try {
     const r = await fetch(`${BASE}/damage.viewer.json`, { cache: "no-store" });
     damageData = r.ok ? await r.json() : false;
@@ -3919,12 +3924,31 @@ function updateTour(dt) {
 const CAPTURE_HOUR = (SCENE_META && typeof SCENE_META.capture_local_solar_hour === "number")
   ? SCENE_META.capture_local_solar_hour : 10.5;
 
+// The modelled surfaces only: ground, buildings, structures, rooftop detail,
+// trees. Never the tools' own markers (a marker sphere at the observer used
+// to "block" every line of sight at 0 m), the sky, the flat context imagery,
+// the display plinth or overlays.
 function analysisTargets() {
+  const skip = new Set(toolMarkers);
+  if (floodMeshObj) skip.add(floodMeshObj);
+  if (typeof skyMesh !== "undefined" && skyMesh) skip.add(skyMesh);
   const t = [];
   scene.traverse(function (o) {
-    if (o.isMesh && o.visible && o !== floodMeshObj) t.push(o);
+    if (!o.isMesh || !o.visible || skip.has(o)) return;
+    if (o.userData && (o.userData.noAnalysis || o.userData.isMarker)) return;
+    if (/^(context|terrain_plinth|sky)/i.test(o.name || "")) return;
+    if (o.material && o.material.isMeshBasicMaterial) return;   // markers, highlights, overlays
+    t.push(o);
   });
   return t;
+}
+
+// Scene y (as rendered, possibly height-boosted) -> metres above sea level,
+// using the datum measured for this scene (scene.json elevation_datum_m).
+function absoluteElevation(y) {
+  const d = SCENE_META && SCENE_META.elevation_datum_m;
+  if (typeof d !== "number" || !(SCENE_META && SCENE_META.height_is_metric !== false)) return null;
+  return y / (cityRoot ? cityRoot.scale.y : 1) + d;
 }
 
 function heightUnit() {
@@ -4091,7 +4115,7 @@ function floodUpdate(rise) {
     floodWet = null;
     if (el) el.textContent = floodSeed
       ? "Water off"
-      : "Water off â€” click the terrain in Flood mode to place the source.";
+      : "Water off — click the terrain in Flood mode to place the source.";
     return;
   }
   if (!floodSeed) {
@@ -4108,7 +4132,7 @@ function floodUpdate(rise) {
   if (res.dry) {
     if (floodMeshObj) { scene.remove(floodMeshObj); floodMeshObj = null; }
     if (el) el.textContent = `Source sits ${(res.seedY - datum).toFixed(1)} above `
-      + `the low point, higher than the ${rise.toFixed(1)} water level â€” `
+      + `the low point, higher than the ${rise.toFixed(1)} water level — `
       + `nothing floods. Lower the source or raise the level.`;
     return;
   }
@@ -4121,15 +4145,15 @@ function floodUpdate(rise) {
   if (!metric) {
     // Tier C: the cell counts are real, the metres are not.
     el.textContent = `${res.cells.toLocaleString()} terrain cells inundated, `
-      + `${nb} buildings affected â€” relative scale, so no area, depth or `
+      + `${nb} buildings affected — relative scale, so no area, depth or `
       + `volume in metres is reported.`;
   } else {
-    let t = `${Math.round(res.areaM2).toLocaleString()} mÂ² inundated Â· `
-      + `${nb} buildings Â· ${Math.round(res.volumeM3).toLocaleString()} mÂ³ Â· `
+    let t = `${Math.round(res.areaM2).toLocaleString()} m² inundated · `
+      + `${nb} buildings · ${Math.round(res.volumeM3).toLocaleString()} m³ · `
       + `mean depth ${res.meanDepth.toFixed(1)} m, max ${res.maxDepth.toFixed(1)} m`;
     if (res.unreachable > 0) {
       t += `\n${res.unreachable.toLocaleString()} cells sit below the water line `
-        + `but are not connected to the source â€” a flat water plane would have `
+        + `but are not connected to the source — a flat water plane would have `
         + `flooded them.`;
     }
     el.textContent = t;
@@ -4248,8 +4272,9 @@ function drawCrossSection(a, b) {
   }
   ctx.fillStyle = "rgba(220,232,242,0.8)";
   ctx.font = "10px ui-monospace, monospace";
-  ctx.fillText(hi.toFixed(0), 4, 20);
-  ctx.fillText(lo.toFixed(0), 4, H - 16);
+  const eh = absoluteElevation(hi), el = absoluteElevation(lo);
+  ctx.fillText((eh !== null ? eh : hi).toFixed(0), 4, 20);
+  ctx.fillText((el !== null ? el : lo).toFixed(0), 4, H - 16);
 
   ctx.beginPath();
   let started = false;
@@ -4266,6 +4291,15 @@ function drawCrossSection(a, b) {
   ctx.fillStyle = "rgba(220,232,242,0.8)";
   ctx.fillText(a.distanceTo(b).toFixed(0) + " " + heightUnit() + " section, relief "
                + span.toFixed(1), 38, H - 4);
+  const sc = cityRoot ? cityRoot.scale.y : 1;
+  const mp = document.getElementById("measure-panel");
+  if (mp) {
+    const e0 = absoluteElevation(lo), e1 = absoluteElevation(hi);
+    mp.textContent = "Cross-section: " + a.distanceTo(b).toFixed(0) + " " + heightUnit()
+      + " long, relief " + (span / sc).toFixed(1) + " " + heightUnit()
+      + (e0 !== null ? " (" + e0.toFixed(0) + " to " + e1.toFixed(0) + " m above sea level)" : "")
+      + ". Profile below.";
+  }
 }
 
 function hideCrossSection() {
@@ -4386,7 +4420,7 @@ function finishAreaMeasurement() {
   const areaM2 = polygonAreaM2(toolPoints);
   if (panel) {
     panel.textContent = metric
-      ? `Area: ${areaM2 < 10000 ? areaM2.toFixed(0) + " mÂ²" : (areaM2 / 10000).toFixed(2) + " ha"} `
+      ? `Area: ${areaM2 < 10000 ? areaM2.toFixed(0) + " m²" : (areaM2 / 10000).toFixed(2) + " ha"} `
         + `(${toolPoints.length} points)`
       : `Area: ${areaM2.toFixed(0)} sq. units (relative scale, ${toolPoints.length} points)`;
   }
@@ -4427,9 +4461,13 @@ function handleToolClick(event) {
   pointer.x = (event.clientX / window.innerWidth) * 2 - 1;
   pointer.y = -(event.clientY / window.innerHeight) * 2 + 1;
   raycaster.setFromCamera(pointer, camera);
-  const hits = raycaster.intersectObjects(scene.children, true)
-    .filter((h) => h.object.isMesh && h.object.visible && h.object !== floodMeshObj);
-  if (hits.length === 0) return;
+  // only the modelled surfaces: a click above the horizon used to land a
+  // point on the sky dome, and a click on a marker stacked points
+  const hits = raycaster.intersectObjects(analysisTargets(), false);
+  if (hits.length === 0) {
+    document.getElementById("measure-panel").textContent = "That click missed the model -- click on the ground or a building.";
+    return;
+  }
 
   const p = hits[0].point.clone();
   toolPoints.push(p);
@@ -4481,7 +4519,7 @@ document.getElementById("btn-flood").addEventListener("click", () => {
     document.getElementById("btn-measure").classList.remove("active");
     document.getElementById("btn-gcp").classList.remove("active");
     document.getElementById("measure-panel").textContent =
-      "Click the terrain where the water comes from â€” a river, a coast, a "
+      "Click the terrain where the water comes from — a river, a coast, a "
       + "breach. Water spreads only to ground connected to that point.";
   }
 });
@@ -4510,7 +4548,7 @@ document.getElementById("vexag").addEventListener("input", (e) => {
   heightBoostFactor = v;
   if (cityRoot) cityRoot.scale.y = v;
   document.getElementById("vexag-readout").textContent =
-    v === 1 ? "1.0Ã— (true scale)" : `${v.toFixed(1)}Ã—`;
+    v === 1 ? "1.0× (true scale)" : `${v.toFixed(1)}×`;
 });
 
 function calibrateFloodRange() {
@@ -4619,6 +4657,11 @@ function reportRows() {
   return rows;
 }
 
+// The place as people know it ("Gangtok, Sikkim, India"), not a file id.
+function reportPlaceName() {
+  return (SCENE_META && (SCENE_META._saved_description || SCENE_META.tile)) || "Scene";
+}
+
 async function exportReport() {
   const btn = document.getElementById("btn-pdf");
   if (btn) btn.textContent = "Rendering...";
@@ -4634,7 +4677,7 @@ async function exportReport() {
   }
 
   const doc = w.document;
-  doc.title = "DepthWizard - " + ((SCENE_META && SCENE_META.tile) || "scene") + " report";
+  doc.title = "DepthWizard - " + reportPlaceName() + " report";
 
   const style = doc.createElement("style");
   style.textContent = [
@@ -4657,7 +4700,7 @@ async function exportReport() {
 
   const sub = doc.createElement("div");
   sub.className = "sub";
-  sub.textContent = ((SCENE_META && SCENE_META.tile) || "Scene") + "  -  generated "
+  sub.textContent = reportPlaceName() + "  -  generated "
     + new Date().toISOString().slice(0, 16).replace("T", " ") + " UTC";
   doc.body.appendChild(sub);
 
@@ -4791,7 +4834,7 @@ function updateCompass() {
   if (bearing < 0) bearing += 360;
   const card = CARDINALS[Math.round(bearing / 45) % 8];
   compassEl.textContent = card;
-  compassEl.title = bearing.toFixed(0) + "Â°";
+  compassEl.title = bearing.toFixed(0) + "°";
 }
 
 // --- Scale bar ---
@@ -4909,7 +4952,7 @@ comparePanel.innerHTML =
   '<input id="compare-range" type="range" min="0" max="100" value="50" ' +
   'style="width:400px;margin-top:6px;">' +
   '<div style="display:flex;justify-content:space-between;margin-top:2px;">' +
-  '<span>â† Prediction</span><span>Ground truth â†’</span></div>';
+  '<span>← Prediction</span><span>Ground truth →</span></div>';
 document.body.appendChild(comparePanel);
 
 (async () => {
@@ -5301,40 +5344,32 @@ function extractComparison(q, keywordRe) {
 }
 
 function parseSceneQuery(text) {
+  // Clause by clause ("over 15m WITH low confidence AND area over 200"), so a
+  // number belongs only to the clause it is written in. The old whole-string
+  // window read "buildings over 15m with low confidence" as confidence >= 15.
   const q = text.toLowerCase();
   const filters = [];
-  // Tracks whether some OTHER clause already claimed a number in the
-  // string -- a phrase match like "low confidence" or "inferred" claims no
-  // digit at all, so a trailing "over 15m" in the same sentence must still
-  // reach the height fallback below. Only a genuine numeric match (confidence
-  // N, area N) should block it, or "buildings over 15m with low confidence"
-  // would silently lose its height clause entirely -- a real bug caught by
-  // testing this against actual phrasings, not a hypothetical one.
-  let numericClaimed = false;
-
-  const conf = extractComparison(q, /confidence/);
-  if (conf) { filters.push({ field: "confidence", ...conf }); numericClaimed = true; }
-  else if (/low confidence|weakly constrained|uncertain/.test(q)) filters.push({ field: "confidence", op: "<=", value: 0.5 });
-  else if (/high confidence|well constrained|\bconfident\b|\breliable\b/.test(q)) filters.push({ field: "confidence", op: ">=", value: 0.7 });
-
-  if (/\bmeasured\b/.test(q)) filters.push({ field: "provenance", op: "==", value: "MEASURED" });
-  else if (/\binferred\b/.test(q)) filters.push({ field: "provenance", op: "==", value: "INFERRED" });
-
-  const area = extractComparison(q, /area|footprint/);
-  if (area) { filters.push({ field: "area_m2", ...area }); numericClaimed = true; }
-
-  const height = extractComparison(q, /height|tall|storey|storeys|floor/);
-  if (height) {
-    filters.push({ field: "height_m", ...height });
-  } else if (!numericClaimed) {
-    // No metric keyword recognised at all -- if there's still a bare
-    // comparator+number, assume height, since "buildings over 15m" (no
-    // explicit word "height") is the single most natural phrasing this
-    // parser needs to get right.
-    const bare = extractComparison(q, /\d/);
-    if (bare) filters.push({ field: "height_m", ...bare });
+  const has = (f) => filters.some((x) => x.field === f);
+  const clauses = q.split(/\band\b|\bwith\b|\bthat\b|\bwhich\b|\bwhere\b|[,;]/).map((s) => s.trim()).filter(Boolean);
+  for (const c of clauses) {
+    const cmp = extractComparison(c, /\d/);
+    if (/confiden|uncertain|constrained|reliable/.test(c)) {
+      if (cmp) {
+        // "confidence above 70%" or "above 0.7"
+        const v = cmp.value > 1 ? cmp.value / 100 : cmp.value;
+        filters.push({ field: "confidence", op: cmp.op, value: v });
+      } else if (/low|weak|uncertain|poor/.test(c)) filters.push({ field: "confidence", op: "<=", value: 0.5 });
+      else filters.push({ field: "confidence", op: ">=", value: 0.7 });
+    } else if (/\barea\b|footprint|m2|m²|sq ?m|square/.test(c)) {
+      if (cmp) filters.push({ field: "area_m2", ...cmp });
+    } else if (cmp) {
+      // storeys/floors -> metres at 3.2 m a storey; otherwise a bare number is a height
+      const v = /storey|floor/.test(c) ? cmp.value * 3.2 : cmp.value;
+      filters.push({ field: "height_m", op: cmp.op, value: Math.round(v * 10) / 10 });
+    }
   }
-
+  if (/\bmeasured\b/.test(q) && !has("provenance")) filters.push({ field: "provenance", op: "==", value: "MEASURED" });
+  else if (/\binferred\b/.test(q) && !has("provenance")) filters.push({ field: "provenance", op: "==", value: "INFERRED" });
   return filters;
 }
 

@@ -452,6 +452,15 @@ def run(scene, tile=1024, halo=128, binary=None, overlay_dir=None):
                          else np.round(col, dec[f]).tolist())
     with open(jp, "w") as fh:
         json.dump(header, fh, separators=(",", ":"))
+    # The viewer's elevation readouts need the same datum (absolute = y + datum).
+    try:
+        sjp = os.path.join(sf.dir, "scene.json")
+        sj = json.load(open(sjp, encoding="utf-8"))
+        sj["elevation_datum_m"] = round(float(datum), 3)
+        sj["elevation_datum_source"] = datum_note
+        json.dump(sj, open(sjp, "w", encoding="utf-8"), indent=2)
+    except Exception as e:
+        log(f"elevation datum not written to scene.json: {e}")
     log(f"wrote {jp}" + (" + tree_crowns.bin" if use_bin else ""), f"{N} crowns",
         f"{os.path.getsize(jp) / 1e6:.1f} MB json")
     print(json.dumps(stats, indent=1))

@@ -197,5 +197,7 @@
     "crs": "EPSG:3857",
     "model": "run03",
     "buildings_drawn": 6781
-  }
+  },
+  "elevation_datum_m": 576.88,
+  "elevation_datum_source": "DSM tag VERTICAL_DATUM: Copernicus/SRTM median offset +576.88 m over 3240135 bare-ground px (datum only)"
 }

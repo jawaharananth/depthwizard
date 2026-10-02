@@ -46,7 +46,7 @@ def benchmark_tiles(truth_dir: str = TRUTH_DIR, n: int = 18) -> List[str]:
     first `n`), so this always matches whatever that script is actually
     scoring, rather than a copy of a list that can drift out of sync with it.
     """
-    import glob, os
+    import glob
     stems = sorted({os.path.basename(p)[:7]
                     for p in glob.glob(os.path.join(truth_dir, "*_DSM.tif"))})
     return stems[:n]

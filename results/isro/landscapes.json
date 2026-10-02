@@ -782,5 +782,45 @@
     }
    }
   }
+ },
+ "shimla/glo30": {
+  "place": "shimla",
+  "landscape": "hilly",
+  "anchor_dem": "glo30",
+  "build_s": 162,
+  "vs": {
+   "glo30": {
+    "dsm": "city_isro_shimla_glo30_DSM.tif",
+    "dem": "glo30",
+    "gsd_m": 0.511,
+    "block_px": 59,
+    "at_30m": {
+     "rmse_m": 1.5047172480572626,
+     "mae_m": 1.1307070018109537,
+     "bias_m": -0.015348872907514736,
+     "nmad_m": 1.2773103705830944,
+     "le90_m": 2.3787704682563344,
+     "r": 0.9999430809709715,
+     "n": 4761
+    },
+    "native": {
+     "rmse_m": 5.373077742957622,
+     "mae_m": 4.286072576825973,
+     "bias_m": -0.002142374127288349,
+     "nmad_m": 5.392161181640625,
+     "le90_m": 8.76513671875,
+     "r": 0.9992622401807123,
+     "n": 16777216
+    }
+   },
+   "srtm": {
+    "dsm": "city_isro_shimla_glo30_DSM.tif",
+    "dem": "srtm",
+    "gsd_m": 0.511,
+    "block_px": 59,
+    "at_30m": null,
+    "native": null
+   }
+  }
  }
 }

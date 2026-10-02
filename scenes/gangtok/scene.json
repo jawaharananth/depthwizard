@@ -209,5 +209,7 @@
     "hover_sigma.u16",
     "hover_ground.f32"
   ],
-  "_saved_mb": 149.0
+  "_saved_mb": 149.0,
+  "elevation_datum_m": 1212.861,
+  "elevation_datum_source": "measured: mode of (ground elevation - terrain.glb y), 61% of ground vertices within 0.3 m"
 }

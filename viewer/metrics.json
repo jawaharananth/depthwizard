@@ -1,0 +1,297 @@
+{
+ "sources": {
+  "heldout": "final_out/tta_eval.json (scripts/compare_ckpt.py)",
+  "interval": "calibration/conformal_quantile.json",
+  "isro": "results/isro/landscapes.json (scripts/isro_landscapes.py), DSM anchored to GLO-30",
+  "robustness": "results/robustness/matrix.json (scripts/robustness_matrix.py)",
+  "resolution": "final_out/resolution_test.json (scripts/resolution_test.py)"
+ },
+ "heldout": {
+  "bldg_rmse": 1.8743746338128624,
+  "bldg_bias": -0.08303875417558387,
+  "n_buildings": 458,
+  "pixel_rmse": 2.8069508919439743,
+  "pixel_mae": 1.556724339337045,
+  "corr": 0.7557095546707309,
+  "bldg_rmse_4view": 1.8370840753645352,
+  "pixel_rmse_4view": 2.7282260950606396,
+  "tiles": 18,
+  "gsd_m": 0.6
+ },
+ "interval": {
+  "half_width_m": 3.0174803493449787,
+  "coverage": 0.9017467248908297,
+  "n": 458
+ },
+ "isro": [
+  {
+   "id": "hitec_2x2",
+   "name": "HITEC City",
+   "landscape": "urban",
+   "matched_rmse": 0.7604029075510188,
+   "matched_bias": 0.000774697693923039,
+   "r": 0.998061492823119,
+   "cross_rmse": 3.0553870076855603,
+   "cross_bias": -0.6035009568850235
+  },
+  {
+   "id": "mumbai_lower_parel",
+   "name": "Lower Parel",
+   "landscape": "urban",
+   "matched_rmse": 0.9159502839520751,
+   "matched_bias": -0.0023607475580118805,
+   "r": 0.9878064195794303,
+   "cross_rmse": 4.84479714309573,
+   "cross_bias": 1.7318880418447833
+  },
+  {
+   "id": "gangtok",
+   "name": "Gangtok",
+   "landscape": "hilly",
+   "matched_rmse": 1.2262581011791487,
+   "matched_bias": -0.023134626624926498,
+   "r": 0.9999747803973847,
+   "cross_rmse": 8.32197049523457,
+   "cross_bias": 4.248324908419474
+  },
+  {
+   "id": "shimla",
+   "name": "Shimla",
+   "landscape": "hilly",
+   "matched_rmse": 1.5047172480572626,
+   "matched_bias": -0.015348872907514736,
+   "r": 0.9999430809709715,
+   "cross_rmse": null,
+   "cross_bias": null
+  },
+  {
+   "id": "kanha",
+   "name": "Kanha National Park",
+   "landscape": "forest",
+   "matched_rmse": 0.729065992326649,
+   "matched_bias": 6.114159426839857e-05,
+   "r": 0.9978390508328296,
+   "cross_rmse": 4.455303497759078,
+   "cross_bias": -2.789689323273891
+  },
+  {
+   "id": "periyar_forest",
+   "name": "Periyar Tiger Reserve",
+   "landscape": "forest",
+   "matched_rmse": 0.6797420506536982,
+   "matched_bias": -0.0026451665224917244,
+   "r": 0.999775296773907,
+   "cross_rmse": 6.196995815569632,
+   "cross_bias": -2.198188737504806
+  },
+  {
+   "id": "jaisalmer_village",
+   "name": "Desert village",
+   "landscape": "sparse",
+   "matched_rmse": 0.13385262140169688,
+   "matched_bias": -9.011252805197322e-05,
+   "r": 0.9996467125704336,
+   "cross_rmse": 1.6615276460032724,
+   "cross_bias": 1.0685511787399329
+  }
+ ],
+ "robustness": {
+  "ok": 13,
+  "n": 13
+ },
+ "resolution": [
+  {
+   "label": "0.25 m native",
+   "bldg_rmse": 1.882014434303917,
+   "rmse": 2.796157260588648
+  },
+  {
+   "label": "0.35 m, upsampled",
+   "bldg_rmse": 1.8795937803727403,
+   "rmse": 2.8006741656301775
+  },
+  {
+   "label": "0.50 m, upsampled",
+   "bldg_rmse": 1.876203778400207,
+   "rmse": 2.801916561270634
+  },
+  {
+   "label": "0.60 m, upsampled",
+   "bldg_rmse": 1.8743746338128624,
+   "rmse": 2.8069508919439743
+  },
+  {
+   "label": "0.60 m, native pixels",
+   "bldg_rmse": 1.987357861931374,
+   "rmse": 2.8432285986783614
+  },
+  {
+   "label": "0.75 m, upsampled",
+   "bldg_rmse": 1.8491641363522253,
+   "rmse": 2.8054257928215605
+  },
+  {
+   "label": "1.00 m, upsampled",
+   "bldg_rmse": 1.874179100976989,
+   "rmse": 2.817779128049856
+  },
+  {
+   "label": "2.5 m, auto-zoom x3",
+   "bldg_rmse": 3.732166422402152,
+   "rmse": 4.628831518807464
+  },
+  {
+   "label": "5 m, auto-zoom x3",
+   "bldg_rmse": 3.7758124619185107,
+   "rmse": 4.83469327278718
+  },
+  {
+   "label": "10 m, auto-zoom x3",
+   "bldg_rmse": 3.7758124619185107,
+   "rmse": 4.83469327278718
+  }
+ ],
+ "tests": 64,
+ "places": [
+  {
+   "id": "hitec_2x2",
+   "open": "hitec_core",
+   "name": "HITEC City",
+   "region": "Hyderabad, India",
+   "landscape": "urban",
+   "thumb": "/scenes/hitec_core/thumb.jpg",
+   "closeup_m": [
+    611,
+    611
+   ],
+   "whole_m": [
+    2333,
+    2333
+   ],
+   "pixel_m": 0.597,
+   "tall_m": 59.4,
+   "crs": "EPSG:3857",
+   "has_closeup": true
+  },
+  {
+   "id": "periyar_forest",
+   "open": "periyar_core",
+   "name": "Periyar Tiger Reserve",
+   "region": "Kerala, India",
+   "landscape": "forested",
+   "thumb": "/scenes/periyar_core/thumb.jpg",
+   "closeup_m": [
+    611,
+    611
+   ],
+   "whole_m": [
+    2412,
+    2412
+   ],
+   "pixel_m": 0.597,
+   "tall_m": 8.2,
+   "crs": "EPSG:3857",
+   "has_closeup": true
+  },
+  {
+   "id": "mumbai_lower_parel",
+   "open": "lower_parel_core",
+   "name": "Lower Parel",
+   "region": "Mumbai, Maharashtra, India",
+   "landscape": "urban",
+   "thumb": "/scenes/lower_parel_core/thumb.jpg",
+   "closeup_m": [
+    611,
+    611
+   ],
+   "whole_m": [
+    2446,
+    2446
+   ],
+   "pixel_m": 0.597,
+   "tall_m": 17.0,
+   "crs": "EPSG:3857",
+   "has_closeup": true
+  },
+  {
+   "id": "gangtok",
+   "open": "gangtok_core",
+   "name": "Gangtok",
+   "region": "Sikkim, India",
+   "landscape": "hilly",
+   "thumb": "/scenes/gangtok_core/thumb.jpg",
+   "closeup_m": [
+    611,
+    611
+   ],
+   "whole_m": [
+    2446,
+    2446
+   ],
+   "pixel_m": 0.597,
+   "tall_m": 25.1,
+   "crs": "EPSG:3857",
+   "has_closeup": true
+  },
+  {
+   "id": "kanha",
+   "open": "kanha_core",
+   "name": "Kanha National Park",
+   "region": "Madhya Pradesh, India",
+   "landscape": "forested",
+   "thumb": "/scenes/kanha_core/thumb.jpg",
+   "closeup_m": [
+    611,
+    611
+   ],
+   "whole_m": [
+    2446,
+    2446
+   ],
+   "pixel_m": 0.597,
+   "tall_m": 8.1,
+   "crs": "EPSG:3857",
+   "has_closeup": true
+  },
+  {
+   "id": "jaisalmer_village",
+   "open": "jaisalmer_core",
+   "name": "Desert village",
+   "region": "Jaisalmer, Rajasthan, India",
+   "landscape": "sparse",
+   "thumb": "/scenes/jaisalmer_core/thumb.jpg",
+   "closeup_m": [
+    611,
+    611
+   ],
+   "whole_m": [
+    2446,
+    2446
+   ],
+   "pixel_m": 0.597,
+   "tall_m": 1.9,
+   "crs": "EPSG:3857",
+   "has_closeup": true
+  },
+  {
+   "id": "shimla",
+   "open": "shimla_core",
+   "name": "Shimla",
+   "region": "Himachal Pradesh, India",
+   "landscape": "hilly",
+   "thumb": "/scenes/shimla_core/thumb.jpg",
+   "closeup_m": [
+    611,
+    611
+   ],
+   "whole_m": [
+    2446,
+    2446
+   ],
+   "pixel_m": 0.597,
+   "tall_m": 19.4,
+   "crs": "EPSG:3857",
+   "has_closeup": true
+  }
+ ]
+}

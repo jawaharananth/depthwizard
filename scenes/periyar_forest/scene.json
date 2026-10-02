@@ -124,5 +124,7 @@
     ],
     "crs": "EPSG:3857",
     "model": "run03"
-  }
+  },
+  "elevation_datum_m": 859.136,
+  "elevation_datum_source": "measured: mode of (ground elevation - terrain.glb y), 91% of ground vertices within 0.3 m"
 }

@@ -47,5 +47,61 @@
     "region": "Himachal Pradesh, India",
     "landscape": "hilly",
     "lidar": false
+  },
+  {
+    "id": "hitec_core",
+    "name": "HITEC City",
+    "region": "Hyderabad, India",
+    "landscape": "urban",
+    "lidar": false,
+    "parent": "hitec_2x2"
+  },
+  {
+    "id": "shimla_core",
+    "name": "Shimla",
+    "region": "Himachal Pradesh, India",
+    "landscape": "hilly",
+    "lidar": false,
+    "parent": "shimla"
+  },
+  {
+    "id": "gangtok_core",
+    "name": "Gangtok",
+    "region": "Sikkim, India",
+    "landscape": "hilly",
+    "lidar": false,
+    "parent": "gangtok"
+  },
+  {
+    "id": "lower_parel_core",
+    "name": "Lower Parel",
+    "region": "Mumbai, Maharashtra, India",
+    "landscape": "urban",
+    "lidar": false,
+    "parent": "mumbai_lower_parel"
+  },
+  {
+    "id": "periyar_core",
+    "name": "Periyar Tiger Reserve",
+    "region": "Kerala, India",
+    "landscape": "forested",
+    "lidar": false,
+    "parent": "periyar_forest"
+  },
+  {
+    "id": "kanha_core",
+    "name": "Kanha National Park",
+    "region": "Madhya Pradesh, India",
+    "landscape": "forested",
+    "lidar": false,
+    "parent": "kanha"
+  },
+  {
+    "id": "jaisalmer_core",
+    "name": "Desert village",
+    "region": "Jaisalmer, Rajasthan, India",
+    "landscape": "sparse",
+    "lidar": false,
+    "parent": "jaisalmer_village"
   }
 ]

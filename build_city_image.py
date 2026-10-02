@@ -1862,7 +1862,7 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
         _records = rres["records"]
         _n_burned = 0
         for _i, _rec in enumerate(_records):
-            if _rec.get("height_provenance") != "measured" or _i >= len(footprints):
+            if not (_rec.get("height_supplied") or _rec.get("height_provenance") == "measured") or _i >= len(footprints):
                 continue
             _crop = _poly_crop_mask(footprints[_i], *dsm.shape[:2])
             if _crop is None or not _crop[1].any():
@@ -1875,8 +1875,8 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
             _n_burned += 1
         if _n_burned:
             ndsm = np.maximum(dsm - ground, 0.0)
-            print(f"      {_n_burned} real measured height(s) burned into the surface "
-                  f"model -- these now drive the actual geometry, not just the report")
+            print(f"      {_n_burned} supplied height(s) ({gt_heights_provenance}) burned into the "
+                  f"surface model -- these now drive the actual geometry, not just the report")
 
         # Real Open Buildings heights for whichever footprints did NOT already
         # get a real measured height above. A GT-polygon source can carry real
@@ -1889,7 +1889,7 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
         # public-dataset estimate.
         _measured_idx = {
             _i for _i, _rec in enumerate(_records)
-            if _rec.get("height_provenance") == "measured"
+            if _rec.get("height_supplied") or _rec.get("height_provenance") == "measured"
         }
         _unmeasured_fp = [fp for _i, fp in enumerate(footprints) if _i not in _measured_idx]
         if _unmeasured_fp:
