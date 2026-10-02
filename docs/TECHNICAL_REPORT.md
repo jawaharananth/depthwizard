@@ -17,13 +17,23 @@ geospatial format and (b) a navigable, measurable 3D model.
 | Either | 3D scene (terrain mesh with the original image draped, building solids, water, trees), per-pixel height uncertainty (`_sigma.tif`), per-building GeoJSON/CSV |
 
 **Accuracy, measured blind** (no scaling or fitting to the reference anywhere), IEEE GRSS
-DFC2019, airborne LiDAR truth, 10 held-out tiles, none dropped:
+DFC2019 airborne LiDAR truth, the 18 held-out tiles (458 LiDAR building instances), images
+degraded to ISRO's 0.6 m, production model (run 03), none dropped
+(`scripts/compare_ckpt.py` -> `final_out/tta_eval.json`):
 
-| | RMSE | MAE | Correlation |
-|---|---|---|---|
-| **DepthWizard** | **2.82 m** | **1.59 m** | pooled 0.787 (median per tile 0.73) |
-| Predicting 0 m everywhere (floor) | 5.14 m | 2.36 m | — |
-| Per building (18 held-out tiles, 461 buildings) | 2.19 m | 1.58 m | bias −1.19 m |
+| | Per pixel RMSE | MAE | Pooled corr | Per building RMSE | bias |
+|---|---|---|---|---|---|
+| **DepthWizard** (one pass, interactive uploads) | **2.81 m** | **1.56 m** | 0.756 | **1.87 m** | −0.08 m |
+| DepthWizard, 4-view average (batch tool) | 2.73 m | 1.54 m | 0.771 | 1.84 m | −0.03 m |
+
+Per-building 90 % interval: ±3.02 m, 90.2 % coverage leave-one-tile-out
+(`scripts/fit_conformal_run03.py`). Earlier figures (2.82 m whole tile on 10 tiles, 2.19 m
+per building) are run 02 through the full pipeline on a different protocol; see
+`docs/EVALUATION_PROTOCOL.md` before comparing any two numbers.
+
+**ISRO's protocol** (absolute DSM vs a public 30 m DEM, `docs/BENCHMARK_ISRO.md`): 0.13–1.26 m
+RMSE against the DEM the DSM is anchored to, 1.6–8.6 m against the other DEM, over 7 places in
+4 landscape types.
 
 ---
 
@@ -91,18 +101,24 @@ depth and suffer a domain gap looking straight down. The model is fine-tuned to 
 |---|---|---|
 | 01 | GAMUS (aerial, 0.33 m): 4,972 train / 859 val tiles, Washington DC, Philadelphia, New York | GAMUS val MAE 1.40 m, corr 0.915 (baseline with optimal affine: 2.65 m, 0.766) |
 | 02 | + DFC2019 Track 3 satellite tile-views from tiles **outside** the benchmark set, several acquisition dates each; initialised from run 01 | best epoch chosen on satellite validation: MAE 2.59 m, corr 0.706 |
+| **03 (production)** | run 02 + sensor-gap augmentation (0.3–1.0 m ground sample, satellite colour); initialised from run 02; best epoch chosen on native and 0.6 m validation | satellite validation MAE 2.56 m; held-out per building 1.87 m (§1) |
+| 06 (not adopted) | DINOv3 ViT-L, satellite-pretrained (SAT-493M), same data | held-out per building 2.42 m, about 600x slower: lost to run 03 |
+| 07 (training) | run 03 + a Cartosat-2S look simulator (pan-sharpening chroma blur, MTF blur, 11-bit stretch, JPEG) and tall-building loss weighting | adopted only if it beats run 03 on the held-out tiles |
 
-Loss: structure-weighted L1 in metres plus gradient matching (sharp roof edges). Training on
-Kaggle T4 GPUs (`training/kaggle_kernel.py`, resumable). Held-out benchmark tiles
+Loss: structure-weighted L1 in metres plus gradient matching (sharp roof edges); run 07 also
+weights each pixel by (1 + height / 15 m) so tall buildings, which monocular models under-call,
+count more. Training on free Kaggle T4 GPUs (`training/`, resumable). Held-out benchmark tiles
 (`dfc2019_height.benchmark_tiles()`) are excluded from training and validation.
 
 **Inference.** 768-px tiles with overlap, each crop's prediction aligned to a whole-image pass
-before blending (no seams). Coarse input is resampled to the model's scale (auto-zoom).
+before blending (no seams). Coarse input is resampled to the model's scale (auto-zoom). The
+batch tool (`tools/batch_dsm.py`) averages four rotated views for the product (§1).
 
-**Per-pixel uncertainty.** Spread of the prediction over four rotated views, mapped to metres
-by `sigma = sqrt((3.0 * spread)^2 + 1.5^2)`, fitted on 14 DFC validation views and checked on
-14 held-out ones: expected calibration error 0.085, 64% of errors within ±1σ (68% expected),
-rank correlation between σ and the actual error +0.72. Written as `_sigma.tif`.
+**Per-pixel uncertainty.** Spread of the prediction over four rotated views plus a term that
+grows with the predicted height (tall structures are under-called), mapped to metres by
+`sigma = sqrt((3.0 * spread)^2 + (0.8 * height)^2)`, fitted on 14 DFC validation views and
+checked on 14 held-out ones (`scripts/fit_sigma.py`): expected calibration error 0.025, rank
+correlation between σ and the actual error +0.76. Written as `_sigma.tif`.
 
 ---
 
@@ -137,15 +153,19 @@ global DEM (no read of the tile's truth), passed through the production pipeline
 only afterwards. The predicted array is hashed before scoring to prove it was not touched.
 Every tile is scored; none is dropped.
 
-### 6.2 Headline (10 held-out tiles)
+### 6.2 Headline
+
+Production model (run 03) on the 18 held-out tiles at 0.6 m: see §1 (per building 1.87 m,
+per pixel 2.81 m; predicting zero everywhere on the same tiles: 3.78 m and 4.83 m).
+
+Earlier, through the full pipeline from orthorectified views (run 02, 10 held-out tiles):
 
 | | RMSE | MAE | Pooled corr |
 |---|---|---|---|
-| DepthWizard | **2.82 m** | **1.59 m** | **0.787** |
+| DepthWizard, run 02 | 2.82 m | 1.59 m | 0.787 |
 | Zero floor | 5.14 m | 2.36 m | — |
 
-Per tile, RMSE 1.55–4.09 m, every tile below its zero floor. Per building (18 held-out tiles,
-461 LiDAR building instances, median heights): RMSE 2.19 m, MAE 1.58 m, bias −1.19 m.
+Per tile, RMSE 1.55–4.09 m, every tile below its zero floor.
 
 ### 6.3 By landscape (blind, whole tile)
 
@@ -158,14 +178,21 @@ Per tile, RMSE 1.55–4.09 m, every tile below its zero floor. Per building (18 
 
 ### 6.4 Robustness to input resolution (raw model, held-out tiles)
 
-| Input GSD | RMSE | MAE | Pooled corr |
-|---|---|---|---|
-| 0.25 m | 2.85 m | 1.59 m | 0.747 |
-| 0.50 m | 2.83 m | 1.58 m | 0.751 |
-| 0.75 m | 2.85 m | 1.60 m | 0.748 |
-| 1.00 m | 2.97 m | 1.69 m | 0.725 |
+18 held-out tiles, run 03, raw model (`docs/BENCHMARK_RESOLUTION.md`):
 
-Accuracy holds for Cartosat-class (0.6–1 m) imagery.
+| Input ground sample | Per pixel RMSE | Pooled corr | Per building RMSE | bias |
+|---|---|---|---|---|
+| 0.25 m | 2.80 m | 0.758 | 1.88 m | −0.08 m |
+| 0.35 m | 2.80 m | 0.757 | 1.88 m | −0.08 m |
+| 0.60 m (upsampled, as the pipeline does) | 2.81 m | 0.756 | 1.87 m | −0.08 m |
+| 1.00 m | 2.82 m | 0.754 | 1.87 m | −0.06 m |
+| 2.5 m | 4.63 m | 0.299 | 3.73 m | −3.07 m |
+| 5 m and 10 m | 4.83 m | — | 3.78 m | −3.17 m (= predicting zero) |
+
+Accuracy holds from 0.35 m to 1 m (ISRO's 0.6 m included). At 2.5 m and coarser buildings are
+a few pixels and heights are under-called; at 5–10 m the model returns close to zero and the
+absolute DSM rests on the DEM. Resampling does not fix this (tested); multi-resolution training
+would. Such products carry a `RESOLUTION_NOTE` tag.
 
 ### 6.5 Projection accuracy
 Roof outlines as the viewer draws them, against the image's edges (HITEC City, 5,822 buildings):
@@ -181,9 +208,16 @@ Three.js r180, WebGPU with automatic WebGL2 fallback.
 - **Rendering:** physically based materials; sky-based lighting with the sun at the image's
   capture time; ambient occlusion applied to indirect light only; temporal anti-aliasing.
 - **Model content:** the original image draped on the terrain; building solids with
-  photographed roofs and walls; OSM flyovers and metro decks with shadow-measured heights;
-  rooftop structures measured from their shadows; water surfaces; canopy.
-- **Navigation:** orbit; on-foot walk (eye 1.7 m, 1.2 m steps, walls block); flight; flythrough.
+  photographed roofs and walls, each building with its own storey and window rhythm (drawn,
+  labelled as inferred); OSM flyovers and metro decks with shadow-measured heights; rooftop
+  structures measured from their shadows; water surfaces; trees placed at measured crowns with
+  measured height, crown size and colour (full 3D trees near the camera, light models far).
+- **Time of day:** the sun walks its real arc from the capture time, 05:00–21:00; after sunset
+  the sky dims and window lights come on (illustrative).
+- **Performance:** integrated graphics are detected and get a lite preset (Intel iGPU, HITEC
+  City: 20–22 fps); tree detail follows the measured frame rate.
+- **Navigation:** orbit; on-foot walk (eye 1.7 m, 1.2 m steps, walls block); flight; flythrough;
+  a captioned demo tour of each place (D key).
 - **Analysis:** height/area measurement, cross-section, line of sight, slope map, height and
   uncertainty views, flood simulation, per-building readout.
 - **Validation:** upload a reference DSM → RMSE / MAE / bias / correlation and an error map.
@@ -196,8 +230,15 @@ Three.js r180, WebGPU with automatic WebGL2 fallback.
 
 | Scene | Content |
 |---|---|
-| **HITEC City, Hyderabad** (2.45 × 2.45 km, urban) | 6,781 buildings; heights from Open Buildings fused with the model and calibrated to 3,693 real building heights; 32 elevated structures (metro, flyovers); 3,033 rooftop structures; absolute DSM 577–699 m |
-| **Periyar Tiger Reserve, Kerala** (2.45 × 2.45 km, forest + lake) | continuous canopy from the Meta/WRI canopy-height map; terrain from GLO-30 with canopy-penetration correction; lake water surface; 855–1,056 m |
+| **HITEC City, Hyderabad** (2.45 × 2.45 km, urban) | 6,781 buildings; heights from Open Buildings fused with the model and calibrated to 3,693 real building heights; 32 elevated structures (metro, flyovers); 3,033 rooftop structures; 6,625 measured tree crowns; absolute DSM 577–699 m |
+| **Lower Parel, Mumbai** (urban, high-rise) | dense towers and mills; 6,020 tree crowns |
+| **Gangtok, Sikkim** (hilly town) | buildings on steep slopes from Overture outlines; 7,346 tree crowns |
+| **Shimla, Himachal Pradesh** (hilly town) | ridge-top town; 8,964 tree crowns |
+| **Periyar Tiger Reserve, Kerala** (2.45 × 2.45 km, forest + lake) | continuous canopy from the Meta/WRI canopy-height map; terrain from GLO-30 with canopy-penetration correction; lake water surface; 12,493 tree crowns; 855–1,056 m |
+| **Kanha, Madhya Pradesh** (forest) | sal forest and meadows; 9,124 tree crowns |
+| **Desert village, Jaisalmer** (sparse) | flat-roofed village in open desert; 1,158 tree crowns |
+
+Every place has a scripted, captioned tour (press D in the viewer).
 
 No public airborne LiDAR exists for these sites, so they demonstrate the product rather than
 serve as accuracy tests.
@@ -207,12 +248,16 @@ serve as accuracy tests.
 ## 9. Limitations
 
 - A single image cannot give metres without a reference: plain PNG/JPG gives relative heights.
-- Tall buildings are still under-called (bias −1.19 m per building; the tall-building tile
-  JAX_068 is the weakest at 4.09 m RMSE).
+- Tall buildings are still under-called by single-image methods, ours included; the
+  uncertainty map grows with predicted height so the viewer flags where to trust less.
 - The accuracy benchmark is one US city (DFC2019 Jacksonville). Training and test tiles are
-  different areas of it, not different cities.
-- Copernicus GLO-30 is a 30 m surface model; it sets the datum, not fine terrain.
-- Detail is bounded by input resolution.
+  different areas of it, not different cities. No public LiDAR exists for the Indian scenes;
+  there the absolute DSM is checked against two public DEMs (`docs/BENCHMARK_ISRO.md`).
+- Copernicus GLO-30 and SRTM are 30 m models on different geoids (EGM2008 / EGM96, up to 4.4 m
+  apart at Gangtok); the DSM's datum follows whichever DEM it is anchored to.
+- Building heights need input finer than about 2 m (§6.4).
+- Windows, storeys, tree shapes and night lights in the viewer are drawn, not measured, and are
+  labelled as such; positions, heights, crown sizes and colours are measured.
 
 ## 10. Data and licences
 
@@ -226,6 +271,9 @@ serve as accuracy tests.
 | Microsoft Global ML Building Footprints | footprints (showcase) | ODbL |
 | OpenStreetMap | flyovers, water | ODbL |
 | Meta/WRI Global Canopy Height | canopy (showcase) | CC BY 4.0 |
+| Overture Maps buildings | footprints in hill towns (showcase) | ODbL |
+| SRTM 30 m | alternative vertical datum | public domain |
+| EZ-Tree (procedural tree models) | 3D tree shapes in the viewer | MIT |
 | Esri World Imagery | showcase imagery | Esri terms |
 
 ## 11. Reproducing
@@ -234,6 +282,8 @@ serve as accuracy tests.
 python scripts/benchmark_blind.py 10        # headline blind accuracy
 python per_building_metric.py 18            # per-building accuracy
 python scripts/resolution_test.py           # resolution robustness
+python scripts/compare_ckpt.py checkpoints/height_best   # a checkpoint on the 18 held-out tiles at 0.6 m
+python tools/batch_dsm.py IN_DIR OUT_DIR    # a folder of images -> checked DSM GeoTIFFs + log
 python scripts/projection_accuracy.py scenes/hitec_2x2 archive/hitec_city_2x2/source/hitec2x2.tif
 python -m pytest tests/test_gcp_dsm.py      # GCP calibration
 python server.py                            # platform at http://127.0.0.1:8000/

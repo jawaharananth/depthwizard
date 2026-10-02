@@ -1295,8 +1295,13 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
         and (max(_gsd_src, _gsd_work) > NATIVE_TRAIN_GSD_M * 1.15
              or max(_pil_src.size) > max(W, H) * 1.2)
         and not os.environ.get("DW_NO_FULLRES"))
+    # Accuracy mode (tools/batch_dsm.py turns it on): the product's height is
+    # the mean over 4 rotated views instead of one pass. Held-out DFC2019 at
+    # 0.6 m (final_out/tta_eval.json): pixel RMSE 2.81 -> 2.73 m, per building
+    # 1.87 -> 1.84 m, at 4x the model time. Off for interactive uploads.
+    _tta_views = int(os.environ.get("DW_PRODUCT_TTA", "1") or 1)
     if _trained_scale_pass:
-        key += "_ts"
+        key += "_ts" + (f"_tta{_tta_views}" if _tta_views > 1 else "")
         _Wf, _Hf = _pil_src.size
         if _gsd_src > NATIVE_TRAIN_GSD_M * 1.15:
             _full_zoom = min(3.0, _gsd_src / NATIVE_TRAIN_GSD_M)
@@ -1311,7 +1316,10 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
             _src_in = (_pil_src if _full_zoom < 1.05 else
                        _pil_src.resize((round(_Wf * _full_zoom), round(_Hf * _full_zoom)),
                                        Image.BICUBIC))
-            _agl_full = np.maximum(_bb.predict_tiled(_src_in, raw_metric=True), 0.0)
+            if _tta_views > 1:
+                _agl_full = np.maximum(_bb.predict_tta(_src_in, raw_metric=True, views=_tta_views)[0], 0.0)
+            else:
+                _agl_full = np.maximum(_bb.predict_tiled(_src_in, raw_metric=True), 0.0)
             del _src_in
             _agl_full = cv2.resize(_agl_full.astype(np.float32), (_Wf, _Hf),
                                    interpolation=cv2.INTER_AREA)
@@ -2740,17 +2748,27 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
             print(f"      DSM product at the source grid: {_shape_p[1]}x{_shape_p[0]} "
                   f"(3D scene uses {W}x{H})")
     _tf_dsm = _full["tf"] if _full else _tf_out
+    _dsm_tags = {"TIER": tier, "HEIGHT_IS_METRIC": str(_metric),
+                 "PRODUCT": "DSM" if _abs_datum else "rDSM",
+                 "VERTICAL_DATUM": (_datum if _abs_datum else
+                                    "local ground = 0 (no absolute datum reached)"
+                                    if _metric else "relative"),
+                 "SOURCE": os.path.basename(image_path),
+                 "PIPELINE": "DepthWizard"}
+    if _input_gsd_m is not None and _input_gsd_m > 2.0:
+        # docs/BENCHMARK_RESOLUTION.md: trained on 0.3-1.0 m; at 2.5 m+ building
+        # heights are under-called and at 5 m+ close to zero.
+        _dsm_tags["RESOLUTION_NOTE"] = (
+            f"input {_input_gsd_m:.1f} m/px is coarser than the 0.3-1.0 m the height model was "
+            "trained on: building heights are under-called; the surface rests mainly on the "
+            "terrain model")
+        print(f"      note: {_input_gsd_m:.1f} m/px input -- building heights under-called "
+              "at this resolution (docs/BENCHMARK_RESOLUTION.md)")
     try:
         _dx.export_dsm_geotiff_affine(
             _dsm_out, stem + _suffix,
             transform=_tf_dsm, crs=src_crs if _georef else None,
-            tags={"TIER": tier, "HEIGHT_IS_METRIC": str(_metric),
-                  "PRODUCT": "DSM" if _abs_datum else "rDSM",
-                  "VERTICAL_DATUM": (_datum if _abs_datum else
-                                     "local ground = 0 (no absolute datum reached)"
-                                     if _metric else "relative"),
-                  "SOURCE": os.path.basename(image_path),
-                  "PIPELINE": "DepthWizard"})
+            tags=_dsm_tags)
         print(f"      {'DSM' if _abs_datum else 'rDSM'} written: "
               f"{os.path.basename(stem)}{_suffix}"
               f"{'' if _abs_datum else '  (no absolute datum)'}"

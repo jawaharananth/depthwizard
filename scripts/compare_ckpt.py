@@ -1,12 +1,12 @@
 """Score a candidate checkpoint on every held-out test that decides promotion.
 
-    python scripts/compare_ckpt.py checkpoints/height_run03 [checkpoints/height_best ...]
+    python scripts/compare_ckpt.py checkpoints/height_run03 [checkpoints/height_best ...] [--swiss]
 
 For each checkpoint directory:
   * DFC2019, the 18 held-out tiles, at ISRO's 0.6 m (area-averaged, upsampled
     back as the pipeline runs it): per-pixel RMSE / MAE / correlation and
     per-building RMSE / bias -- as scripts/resolution_test.py;
-  * swisstopo LiDAR, the four landscapes of scripts/lidar_landscapes.py at
+  * with --swiss only: swisstopo LiDAR, the four landscapes of scripts/lidar_landscapes.py at
     0.6 m: height-above-ground RMSE / bias, and the absolute surface
     (anchoring.py, GLO-30, measured k) against the LiDAR DSM.
 
@@ -112,7 +112,9 @@ def main():
     import torch
     torch.set_num_threads(int(os.environ.get("DW_THREADS", "6")))
     res = {}
-    for ck in sys.argv[1:]:
+    # DFC2019 only by default; the swisstopo landscapes only when asked for.
+    with_swiss = "--swiss" in sys.argv
+    for ck in [a for a in sys.argv[1:] if not a.startswith("--")]:
         ck = os.path.abspath(ck)
         dm.DepthBackbone.METRIC_CKPT = ck
         # the backbone is a flyweight keyed on its constructor args, not on
@@ -122,7 +124,7 @@ def main():
         bb = dm.DepthBackbone(metric=True)
         tag = os.path.basename(ck)
         print(f"== {tag}", flush=True)
-        res[tag] = {"swiss": swiss(bb, tag), "dfc_0.6m": dfc(bb)}
+        res[tag] = {"swiss": swiss(bb, tag) if with_swiss else {}, "dfc_0.6m": dfc(bb)}
         json.dump(res, open(os.path.join(ROOT, "final_out", "compare_ckpt.json"), "w"), indent=2)
     for tag, r in res.items():
         d = r["dfc_0.6m"]

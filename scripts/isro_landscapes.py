@@ -20,7 +20,8 @@ PLACES = {  # id: (source image, landscape)
     "hitec_2x2": ("hitec2x2.tif", "urban"),
     "mumbai_lower_parel": ("work/showcase/mumbai_lower_parel/mumbai_lower_parel.tif", "urban"),
     "gangtok": ("work/showcase/gangtok/gangtok.tif", "hilly"),
-    "darjeeling": ("work/showcase/darjeeling/darjeeling.tif", "hilly"),
+    "shimla": ("work/showcase/shimla/shimla.tif", "hilly"),
+    "darjeeling": ("work/showcase/darjeeling/darjeeling.tif", "hilly"),   # replaced by Shimla in the showcase
     "periyar_forest": ("periyar.tif", "forest"),
     "kanha": ("work/showcase/kanha/kanha.tif", "forest"),
     "jaisalmer_village": ("work/showcase/jaisalmer_village/jaisalmer_village.tif", "sparse"),
