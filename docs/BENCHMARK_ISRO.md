@@ -31,8 +31,8 @@ Pearson correlation over the 30 m cells.
 | mumbai_lower_parel | urban | SRTM | 5.02 | 3.48 | -1.73 | 0.62 | 0.75 | 0.50 | +0.00 | 0.99 |
 | gangtok | hilly | GLO-30 | 1.23 | 0.93 | -0.02 | 1.00 | 8.32 | 6.13 | +4.25 | 1.00 |
 | gangtok | hilly | SRTM | 8.59 | 6.41 | -4.29 | 1.00 | 1.14 | 0.83 | -0.02 | 1.00 |
-| darjeeling | hilly | GLO-30 | 1.26 | 0.95 | -0.03 | 1.00 | 5.52 | 3.96 | +1.35 | 1.00 |
-| darjeeling | hilly | SRTM | 5.78 | 4.26 | -1.40 | 1.00 | 1.19 | 0.87 | -0.02 | 1.00 |
+| shimla | hilly | GLO-30 | 1.50 | 1.13 | -0.02 | 1.00 | 6.77 | 5.09 | -3.22 | 1.00 |
+| shimla | hilly | SRTM | 7.30 | 5.57 | +3.19 | 1.00 | 1.44 | 1.05 | -0.02 | 1.00 |
 | periyar_forest | forest | GLO-30 | 0.68 | 0.49 | -0.00 | 1.00 | 6.20 | 4.25 | -2.20 | 0.99 |
 | periyar_forest | forest | SRTM | 6.49 | 4.63 | +2.19 | 0.98 | 0.58 | 0.42 | -0.00 | 1.00 |
 | kanha | forest | GLO-30 | 0.73 | 0.52 | +0.00 | 1.00 | 4.46 | 3.77 | -2.79 | 0.95 |
@@ -40,7 +40,7 @@ Pearson correlation over the 30 m cells.
 | jaisalmer_village | sparse | GLO-30 | 0.13 | 0.09 | -0.00 | 1.00 | 1.66 | 1.36 | +1.07 | 0.97 |
 | jaisalmer_village | sparse | SRTM | 1.60 | 1.32 | -1.07 | 0.97 | 0.21 | 0.16 | -0.00 | 1.00 |
 
-Matched-DEM RMSE ranges from 0.13 m (Jaisalmer, GLO-30) to 1.23 m (Gangtok,
+Matched-DEM RMSE ranges from 0.13 m (Jaisalmer, GLO-30) to 1.50 m (Shimla,
 GLO-30). Cross-DEM RMSE ranges from 1.60 m (Jaisalmer, SRTM-anchored, vs
 GLO-30) to 8.59 m (Gangtok, SRTM-anchored, vs GLO-30). For every place the
 cross-DEM bias is close to equal and opposite between the two anchors (for
@@ -51,13 +51,15 @@ DEMs themselves rather than something the DSM adds.
 
 SRTM heights are referenced to the EGM96 geoid and Copernicus GLO-30 heights to
 EGM2008. The geoid height difference N(EGM96) - N(EGM2008) at each scene
-centre (PROJ transformation, `results/isro/geoid_diff.json`) is between
--0.82 m and +0.85 m at six of the seven sites, and +4.39 m at Gangtok. For the
-same surface this makes SRTM heights about 4.4 m lower than GLO-30 at Gangtok,
-which accounts for most of the Gangtok cross-DEM bias (+4.25 m / -4.29 m) and a
-large part of its cross-DEM RMSE. At the other sites the datum difference is
-under 1 m, and the rest of the cross-DEM error is the two DEMs' own
-disagreement (acquisition epoch, radar penetration into canopy, void filling).
+centre (PROJ, `scripts/geoid_diff.py` -> `results/isro/geoid_diff.json`) is
+between -0.82 m and +0.16 m at five of the seven sites, +4.39 m at Gangtok and
+-3.77 m at Shimla. For the same surface this makes SRTM heights about 4.4 m lower
+than GLO-30 at Gangtok and about 3.8 m higher at Shimla, which accounts for most
+of the cross-DEM bias at those two hill towns (Gangtok +4.25 m / -4.29 m, Shimla
+-3.22 m / +3.19 m) and a large part of their cross-DEM RMSE. At the other sites
+the datum difference is under 1 m, and the rest of the cross-DEM error is the two
+DEMs' own disagreement (acquisition epoch, radar penetration into canopy, void
+filling).
 
 ## Reproduce
 

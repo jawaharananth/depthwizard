@@ -2151,6 +2151,29 @@ Promise.all([
       }
       scene.add(obj);
       _dwT.shaded = Math.round(performance.now() - _dwT.t0);
+      // Arrival: the place rises from flat to its true heights over ~2 s,
+      // pivoting on its lowest ground (scene y can be absolute elevation).
+      // Skipped for reduced motion, for automated captures, and with &rise=0.
+      if (!matchMedia("(prefers-reduced-motion: reduce)").matches
+          && new URLSearchParams(location.search).get("rise") !== "0" && !navigator.webdriver) {
+        const pivot = new THREE.Box3().setFromObject(obj).min.y;
+        // Time advances at most 50 ms per frame: the first frames after load
+        // are slow (shader compilation), and a wall-clock animation finished
+        // unseen behind them.
+        let tPrev = null, acc = 0;
+        const DUR = 2200;
+        const ease = (u) => 1 - Math.pow(1 - u, 3);
+        const step = (now) => {
+          acc += tPrev === null ? 0 : Math.min(50, now - tPrev);
+          tPrev = now;
+          const u = Math.min(1, acc / DUR), s = 0.02 + 0.98 * ease(u);
+          obj.scale.y = s * heightBoostFactor;
+          obj.position.y = pivot * (1 - s);
+          if (u < 1) requestAnimationFrame(step);
+          else { obj.scale.y = heightBoostFactor; obj.position.y = 0; }
+        };
+        requestAnimationFrame(step);
+      }
       // Real-crown 3D trees (viewer/trees.js): measured position, height,
       // crown size and colour; procedural branches and leaves. Loaded after
       // the scene and never able to stop it (&trees=0 turns them off).

@@ -31,7 +31,7 @@ Per-building 90 % interval: ±3.02 m, 90.2 % coverage leave-one-tile-out
 per building) are run 02 through the full pipeline on a different protocol; see
 `docs/EVALUATION_PROTOCOL.md` before comparing any two numbers.
 
-**ISRO's protocol** (absolute DSM vs a public 30 m DEM, `docs/BENCHMARK_ISRO.md`): 0.13–1.26 m
+**ISRO's protocol** (absolute DSM vs a public 30 m DEM, `docs/BENCHMARK_ISRO.md`): 0.13–1.50 m
 RMSE against the DEM the DSM is anchored to, 1.6–8.6 m against the other DEM, over 7 places in
 4 landscape types.
 

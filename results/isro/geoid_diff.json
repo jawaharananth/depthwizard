@@ -1,11 +1,4 @@
 {
- "darjeeling": {
-  "lon": 88.2628,
-  "lat": 27.042,
-  "N_egm96": -45.07,
-  "N_egm2008": -45.92,
-  "egm96_minus_egm2008_m": 0.85
- },
  "gangtok": {
   "lon": 88.613,
   "lat": 27.3315,
@@ -28,11 +21,11 @@
   "egm96_minus_egm2008_m": 0.16
  },
  "kanha": {
-  "lon": 80.6396,
+  "lon": 80.6407,
   "lat": 22.2802,
   "N_egm96": -59.87,
   "N_egm2008": -59.18,
-  "egm96_minus_egm2008_m": -0.68
+  "egm96_minus_egm2008_m": -0.69
  },
  "mumbai_lower_parel": {
   "lon": 72.8256,
@@ -42,10 +35,17 @@
   "egm96_minus_egm2008_m": -0.82
  },
  "periyar_forest": {
-  "lon": 77.1707,
-  "lat": 9.5561,
-  "N_egm96": -95.44,
+  "lon": 77.1584,
+  "lat": 9.5638,
+  "N_egm96": -95.42,
   "N_egm2008": -94.73,
-  "egm96_minus_egm2008_m": -0.71
+  "egm96_minus_egm2008_m": -0.69
+ },
+ "shimla": {
+  "lon": 77.1721,
+  "lat": 31.1059,
+  "N_egm96": -41.26,
+  "N_egm2008": -37.49,
+  "egm96_minus_egm2008_m": -3.77
  }
 }
