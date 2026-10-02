@@ -159,6 +159,9 @@ export function installDWX(ctx) {
          + `<button class="dwx-btn" id="dwx-lidar" ${hasLidar ? "" : "disabled"} title="${hasLidar
               ? "Split the view: estimate above the line, airborne LiDAR below. Drag the handle." :
               "No airborne LiDAR exists for this place"}">LiDAR</button>`
+         + '<button class="dwx-btn" id="dwx-measured" style="grid-column: span 2" title="Show only what was '
+         + 'measured from the image: hides drawn storeys and windows and the modelled 3D tree shapes">'
+         + "Measured only</button>"
          + "</div>"
          + '<div id="dwx-legend"><div class="bar"></div><div class="ticks dwx-num">'
          + "<span>±0 m</span><span>±2</span><span>±4</span><span>±6</span><span>±8+</span></div></div>";
@@ -465,6 +468,13 @@ export function installDWX(ctx) {
     flyB.addEventListener("click", () => {
       const on = tour.toggle();
       flyB.classList.toggle("on", on);
+    });
+    const measB = document.getElementById("dwx-measured");
+    measB.addEventListener("click", () => {
+      const on = !measB.classList.contains("on");
+      if (window.__dwSetMeasuredOnly) window.__dwSetMeasuredOnly(on);
+      measB.classList.toggle("on", on);
+      if (on) say("Measured only: heights, outlines, roofs and the photo. Drawn windows and tree shapes hidden.", 4200);
     });
     lidB.addEventListener("click", () => {
       const want = !lidB.classList.contains("on");

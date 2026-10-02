@@ -683,6 +683,14 @@ const skyScaleU = TSL ? TSL.uniform(LIGHT.skyScale) : null;
 // moonlit floor after sunset; nightU switches the window lights on at dusk.
 const dayU = TSL ? TSL.uniform(1.0) : null;
 const nightU = TSL ? TSL.uniform(0.0) : null;
+// "Measured only": 0 removes everything drawn rather than measured (storey
+// lines, windows, night lights; 3D tree shapes are hidden separately).
+const inferU = TSL ? TSL.uniform(1.0) : null;
+window.__dwSetMeasuredOnly = (on) => {
+  if (inferU) inferU.value = on ? 0.0 : 1.0;
+  if (window.__dwTrees && window.__dwTrees.setVisible) window.__dwTrees.setVisible(!on);
+  return on;
+};
 // TSL twin of preethamJS: radiance arriving from direction `dir`.
 function preethamNode(dir) {
   const { float, vec3, exp, acos, cos, pow, max, clamp, dot, mix } = TSL;
@@ -1527,8 +1535,10 @@ function storeyed(base, rough, glassAmt, perBuilding = false) {
       .mul(smoothstep(0.03, 0.06, fx2)).mul(smoothstep(0.97, 0.94, fx2));
     win = mix(win, front, gf.mul(shop));
   }
+  if (inferU) win = win.mul(inferU);
   const glass = mix(vec3(0.13, 0.16, 0.20), base.mul(0.55).add(vec3(0.04, 0.06, 0.08)), float(0.5));
-  const wall = base.mul(mix(float(0.80), float(1.0), slab));
+  const slabShade = mix(float(0.80), float(1.0), slab);
+  const wall = base.mul(inferU ? mix(float(1.0), slabShade, inferU) : slabShade);
   // Night: per-window random (floor x bay x building), about half lit.
   const r = fract(sin(floor(h.div(sh)).mul(12.9898).add(floor(along.div(bw)).mul(78.233))
     .add(sd.mul(437.585))).mul(43758.5453));
