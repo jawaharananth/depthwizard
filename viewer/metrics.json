@@ -61,8 +61,8 @@
    "matched_rmse": 1.5047172480572626,
    "matched_bias": -0.015348872907514736,
    "r": 0.9999430809709715,
-   "cross_rmse": null,
-   "cross_bias": null
+   "cross_rmse": 6.765746064232184,
+   "cross_bias": -3.222219295782832
   },
   {
    "id": "kanha",
@@ -161,8 +161,8 @@
    "landscape": "urban",
    "thumb": "/scenes/hitec_core/thumb.jpg",
    "closeup_m": [
-    611,
-    611
+    1223,
+    1223
    ],
    "whole_m": [
     2333,

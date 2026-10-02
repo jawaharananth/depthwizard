@@ -370,8 +370,8 @@ def main():
         # Hills and forest stand on the real terrain: the model's height above
         # ground carries no terrain, so the ground mesh is Copernicus GLO-30.
         kw.update(terrain_from_dem=True, canopy_mask_from_chm=chm is not None, canopy_blur_m=1.2)
-    if a.kind == "hilly":
-        # Hill towns: Microsoft's footprints are thin here. Use the upload
+    if a.kind in ("hilly", "urban"):
+        # Hill towns (and dense cities, where Microsoft misses many buildings): Microsoft's footprints are thin here. Use the upload
         # path's outlines instead -- Overture (OpenStreetMap + Microsoft +
         # Google Open Buildings), shifted onto this image by cross-correlation,
         # weak outlines kept as low relief rather than boxes, tree tops
@@ -389,7 +389,7 @@ def main():
                 cv2.fillPoly(mask, [np.array(p, np.int32)], 1)
             kw.update(gt_building_mask=mask.astype(bool), gt_building_polygons=polys)
         kw.update(sr_texture=hires is None)
-    if a.kind == "hilly" and chm is not None:
+    if a.kind in ("hilly", "urban") and chm is not None:
         # The global canopy map calls a dense hill town's roofs and lanes
         # "trees" (Darjeeling: 8-39 m cones between houses). Keep canopy only
         # where the image itself looks like vegetation, and never on or right

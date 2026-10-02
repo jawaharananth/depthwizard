@@ -2186,7 +2186,8 @@ Promise.all([
       // Real-crown 3D trees (viewer/trees.js): measured position, height,
       // crown size and colour; procedural branches and leaves. Loaded after
       // the scene and never able to stop it (&trees=0 turns them off).
-      if (new URLSearchParams(location.search).get("trees") !== "0") {
+      // Default is the continuous measured canopy surface; &trees=1 adds the 3D tree models.
+      if (new URLSearchParams(location.search).get("trees") === "1") {
         import("./trees.js")
           .then((m) => m.addTrees({ root: obj, groundMesh, BASE, TSL, camera, lite: QUALITY === "lite" }))
           .then((t) => { window.__dwTrees = t; })
