@@ -372,11 +372,17 @@ renderer.setSize(window.innerWidth, window.innerHeight);
 // as authored under neutral light, hue and saturation intact until near
 // white -- the right curve when the colours on screen are the photograph's
 // real colours. AgX (above rationale) remains the fallback.
-renderer.toneMapping = THREE.NeutralToneMapping || THREE.AgXToneMapping || THREE.ACESFilmicToneMapping;
-// Exposure is set for a mid-grey satellite frame. Brighter sources (a sunlit
-// campus at 25 cm/px) clip to white at 1.45 and lose both the ground texture
-// and the canopy, so this sits lower and lets AgX's highlight rolloff work.
-renderer.toneMappingExposure = 1.0;
+{
+  // ?tm=neutral|agx|aces|linear and ?exp= for A/B comparison of the grade.
+  const q = new URLSearchParams(location.search);
+  const TM = { neutral: THREE.NeutralToneMapping, agx: THREE.AgXToneMapping,
+               aces: THREE.ACESFilmicToneMapping, linear: THREE.LinearToneMapping };
+  renderer.toneMapping = TM[q.get("tm")] ?? (THREE.NeutralToneMapping || THREE.AgXToneMapping || THREE.ACESFilmicToneMapping);
+  // Exposure is set for a mid-grey satellite frame. Brighter sources (a sunlit
+  // campus at 25 cm/px) clip to white at 1.45 and lose both the ground texture
+  // and the canopy, so this sits lower and lets the highlight rolloff work.
+  renderer.toneMappingExposure = +(q.get("exp") || 0.92);
+}
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;  // soft penumbra, not hard-edged stencils
@@ -607,7 +613,7 @@ const TSL = await import("three/tsl").catch(() => null);
 // ---------------------------------------------------------------------------
 const ATMO = {
   turbidity: 3.0, rayleigh: 1.6, mieCoefficient: 0.006, mieG: 0.8,
-  visibilityM: +(new URLSearchParams(location.search).get("vis") || 23000),
+  visibilityM: +(new URLSearchParams(location.search).get("vis") || 50000),   // a clear day
   rayleighH: 8000, aerosolH: 1200,
   diffuseFrac: 0.22,     // sky share of horizontal irradiance, clear day
 };
@@ -923,17 +929,93 @@ let rebuildPostChain = () => {};
 THREE.Material.prototype.dwRelit = 0;
 function markRelit(mesh) { if (mesh.material) mesh.material.dwRelit = 1; }
 
+// --- Display grade -------------------------------------------------------------
+// Satellite mosaics are hazy: low contrast, low saturation, a cool cast. A
+// final pass in display space -- after tone mapping -- sets levels from the
+// photo's own darkest and brightest 1 %, balances its white partially (grey
+// world, half strength), and lifts saturation a little. Display only: every
+// height, uncertainty and measurement reads the original pixels. Parameters
+// come from this place's own photograph; ?grade=0 shows the raw render, and
+// ?sat= ?con= ?warm= override for comparison.
+const GRADE = (() => {
+  const q = new URLSearchParams(location.search);
+  return {
+    on: q.get("grade") !== "0",
+    wb: TSL ? TSL.uniform(new THREE.Vector3(1, 1, 1)) : null,
+    black: TSL ? TSL.uniform(0.0) : null,
+    white: TSL ? TSL.uniform(1.0) : null,
+    con: TSL ? TSL.uniform(+(q.get("con") || 1.08)) : null,
+    sat: TSL ? TSL.uniform(+(q.get("sat") || 1.3)) : null,
+    warm: +(q.get("warm") || 0.05),
+  };
+})();
+// Levels and white balance from the scene's thumbnail (the same photograph).
+(async () => {
+  if (!GRADE.on || !GRADE.wb || !_scene) return;
+  try {
+    const img = new Image(); img.crossOrigin = "anonymous";
+    img.src = `${BASE}/thumb.jpg`;
+    await img.decode();
+    const c = document.createElement("canvas"); c.width = 128; c.height = 128;
+    const g = c.getContext("2d", { willReadFrequently: true });
+    g.drawImage(img, 0, 0, 128, 128);
+    const d = g.getImageData(0, 0, 128, 128).data;
+    const lum = [], sum = [0, 0, 0];
+    for (let i = 0; i < d.length; i += 4) {
+      lum.push(0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2]);
+      sum[0] += d[i]; sum[1] += d[i + 1]; sum[2] += d[i + 2];
+    }
+    lum.sort((a, b) => a - b);
+    const p01 = lum[Math.floor(lum.length * 0.01)] / 255, p99 = lum[Math.floor(lum.length * 0.99)] / 255;
+    const m = (sum[0] + sum[1] + sum[2]) / 3;
+    // half-strength grey world, plus a slight warm bias against the cool sky light
+    const gain = sum.map((s) => 1 + 0.5 * (m / Math.max(s, 1) - 1));
+    GRADE.wb.value.set(gain[0] * (1 + GRADE.warm), gain[1], gain[2] * (1 - GRADE.warm));
+    GRADE.black.value = Math.min(0.12, p01 * 0.6);
+    GRADE.white.value = Math.max(0.82, 1 - (1 - p99) * 0.6);
+  } catch (e) { /* keep neutral defaults */ }
+})();
+function gradeOutput(tsl, node, depth = null) {
+  const { vec3, vec4, dot, mix, clamp, float } = tsl;
+  const out = tsl.renderOutput(node);              // tone mapping + sRGB, as the canvas would
+  let c = out.rgb.mul(GRADE.wb);
+  c = c.sub(GRADE.black).div(GRADE.white.sub(GRADE.black).max(float(0.2)));
+  c = c.sub(0.5).mul(GRADE.con).add(0.5);
+  const l = dot(c, vec3(0.2126, 0.7152, 0.0722));
+  c = mix(vec3(l), c, GRADE.sat);
+  // soft shoulder above 0.8: pale roofs and the sky keep their detail
+  // instead of clipping to flat white
+  const hi = c.sub(0.8).max(0.0);
+  c = c.sub(hi).add(hi.div(hi.mul(3.5).add(1.0)));
+  // the sky keeps its own colour: the warm balance and levels are for the
+  // photographed ground, and turned a blue sky grey
+  if (depth) c = mix(c, out.rgb, tsl.step(float(0.99995), depth.r));
+  return vec4(clamp(c, 0.0, 1.0), out.a);
+}
+
 async function buildPostChain() {
   // Physical order: scene (MRT: colour, normal, velocity, relit mask) ->
-  // GTAO on relit surfaces only -> [SSR, cinematic] -> TRAA. No bloom, no
-  // vignette, no lens effects: this is meant to read as a photograph.
+  // GTAO on relit surfaces only -> [SSR, cinematic] -> TRAA -> display grade.
+  // No bloom, no vignette, no lens effects: this is meant to read as a photograph.
   postChain = [];
   if (QUALITY === "lite") {
-    // Integrated graphics: render directly (hardware MSAA only). AO and
-    // temporal AA each cost full-screen passes this class of GPU cannot spare.
+    // Integrated graphics: AO and temporal AA each cost full-screen passes
+    // this class of GPU cannot spare; the scene renders with hardware MSAA
+    // and only the one cheap display-grade pass follows.
     postProcessing = null;
-    postChain.push("none (lite preset)");
-    console.log("post-processing: none (lite preset, " + (GPU_NAME || "unknown GPU") + ")");
+    if (GRADE.on) {
+      try {
+        const tsl = await import("three/tsl");
+        if (!tsl.pass || !tsl.renderOutput || !THREE.PostProcessing) throw new Error("no TSL pass");
+        const sp = tsl.pass(scene, camera, { samples: 4 });
+        const pp = new THREE.PostProcessing(renderer);
+        pp.outputColorTransform = false;
+        pp.outputNode = gradeOutput(tsl, sp, sp.getTextureNode ? sp.getTextureNode("depth") : null);
+        postProcessing = pp;
+        postChain.push("display grade (lite)");
+      } catch (e) { console.warn("display grade unavailable:", e); postChain.push("none (lite preset)"); }
+    } else postChain.push("none (lite preset)");
+    console.log("post-processing:", postChain.join(" -> "), "(" + (GPU_NAME || "unknown GPU") + ")");
     return;
   }
   try {
@@ -1019,7 +1101,11 @@ async function buildPostChain() {
     }
 
     const pp = new THREE.PostProcessing(renderer);
-    pp.outputNode = outNode;
+    if (GRADE.on && tsl.renderOutput) {
+      pp.outputColorTransform = false;
+      pp.outputNode = gradeOutput(tsl, outNode, depthNode);
+      postChain.push("display grade");
+    } else pp.outputNode = outNode;
     postProcessing = pp;
     console.log("post-processing:", postChain.join(" -> "));
   } catch (err) {
