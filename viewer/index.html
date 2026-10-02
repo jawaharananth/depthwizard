@@ -381,7 +381,7 @@ renderer.setSize(window.innerWidth, window.innerHeight);
   // Exposure is set for a mid-grey satellite frame. Brighter sources (a sunlit
   // campus at 25 cm/px) clip to white at 1.45 and lose both the ground texture
   // and the canopy, so this sits lower and lets the highlight rolloff work.
-  renderer.toneMappingExposure = +(q.get("exp") || 0.92);
+  renderer.toneMappingExposure = +(q.get("exp") || 1.0);
 }
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.shadowMap.enabled = true;
@@ -613,7 +613,7 @@ const TSL = await import("three/tsl").catch(() => null);
 // ---------------------------------------------------------------------------
 const ATMO = {
   turbidity: 3.0, rayleigh: 1.6, mieCoefficient: 0.006, mieG: 0.8,
-  visibilityM: +(new URLSearchParams(location.search).get("vis") || 50000),   // a clear day
+  visibilityM: +(new URLSearchParams(location.search).get("vis") || 23000),
   rayleighH: 8000, aerosolH: 1200,
   diffuseFrac: 0.22,     // sky share of horizontal irradiance, clear day
 };
@@ -940,7 +940,8 @@ function markRelit(mesh) { if (mesh.material) mesh.material.dwRelit = 1; }
 const GRADE = (() => {
   const q = new URLSearchParams(location.search);
   return {
-    on: q.get("grade") !== "0",
+    on: q.get("grade") !== "0",          // the final pass (FXAA in lite) is always built
+    enhance: q.get("grade") === "1",      // the colour grade itself is opt-in: original colours by default
     wb: TSL ? TSL.uniform(new THREE.Vector3(1, 1, 1)) : null,
     black: TSL ? TSL.uniform(0.0) : null,
     white: TSL ? TSL.uniform(1.0) : null,
@@ -951,7 +952,7 @@ const GRADE = (() => {
 })();
 // Levels and white balance from the scene's thumbnail (the same photograph).
 (async () => {
-  if (!GRADE.on || !GRADE.wb || !_scene) return;
+  if (!GRADE.enhance || !GRADE.wb || !_scene) return;
   try {
     const img = new Image(); img.crossOrigin = "anonymous";
     img.src = `${BASE}/thumb.jpg`;
@@ -978,6 +979,7 @@ const GRADE = (() => {
 function gradeOutput(tsl, node, depth = null) {
   const { vec3, vec4, dot, mix, clamp, float } = tsl;
   const out = tsl.renderOutput(node);              // tone mapping + sRGB, as the canvas would
+  if (!GRADE.enhance) return out;                  // original colours
   let c = out.rgb.mul(GRADE.wb);
   c = c.sub(GRADE.black).div(GRADE.white.sub(GRADE.black).max(float(0.2)));
   c = c.sub(0.5).mul(GRADE.con).add(0.5);
