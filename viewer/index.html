@@ -1940,8 +1940,15 @@ function restoreGridOrder(geo) {
 // An upload's texture sharpened from ITS OWN pixels (colours unchanged) is
 // shown by default and labelled; &tex=orig shows the file exactly as sent.
 const _TEXQ = new URLSearchParams(location.search).get("tex");
-const USE_HIRES_TEX = _TEXQ === "hires" || (_TEXQ !== "orig" && QUALITY !== "lite" &&
-  !!(SCENE_META && SCENE_META.texture_display && SCENE_META.texture_display.default));
+// The sharper display photo whenever the scene has one (real zoom-19 imagery
+// or the file's own pixels sharpened x2): on integrated graphics only up to
+// 4096 px (64 MB); an 8192 px display stays for discrete GPUs.
+const _DISP_PX = (() => {
+  const m = SCENE_META && SCENE_META.texture_display && String(SCENE_META.texture_display.method || "").match(/(\d{3,5})x(\d{3,5})/);
+  return m ? Math.max(+m[1], +m[2]) : null;
+})();
+const USE_HIRES_TEX = _TEXQ === "hires" || (_TEXQ !== "orig" && !!(SCENE_META && SCENE_META.texture_file
+  && SCENE_META.texture_display) && (QUALITY !== "lite" || (_DISP_PX !== null && _DISP_PX <= 4096)));
 Promise.all([
   new Promise((res) => textureLoader.load(
     SCENE_META && SCENE_META.texture_file && USE_HIRES_TEX
@@ -5602,6 +5609,7 @@ for (const ev of ["pointerdown", "pointermove", "wheel", "keydown", "touchstart"
 }
 const _DYN = new URLSearchParams(location.search).get("dyn") !== "0";
 const _BASE_PR = renderer.getPixelRatio();
+const _STILL_PR = Math.max(_BASE_PR, Math.min(window.devicePixelRatio || 1, 2));
 let _dynScale = 1, _dynAcc = 0, _dynN = 0;
 function _dynResolution(dt) {
   if (!_DYN) return;
@@ -5618,7 +5626,13 @@ function _dynResolution(dt) {
 function animate() {
   // Real elapsed time, not a fixed per-frame step: the tour must take the same
   // 60 seconds whether the renderer is managing 120 fps or 20.
-  const busy = tourActive || walkModeActive || (performance.now() - _lastWake < 1500);
+  // Temporal anti-aliasing (standard / cinematic) needs every frame, so the
+  // idle frame-skip is for the lite preset only.
+  const busy = QUALITY !== "lite" || tourActive || walkModeActive || (performance.now() - _lastWake < 1500);
+  // Still: full sharpness (device pixel ratio, up to 2) -- cheap at ~4 redraws
+  // a second. Moving: the adaptive scale keeps it smooth.
+  const _wantPR = busy ? _BASE_PR * _dynScale : _STILL_PR;
+  if (Math.abs(renderer.getPixelRatio() - _wantPR) > 0.01) renderer.setPixelRatio(_wantPR);
   window.__dwIdle = !busy;
   if (!busy) {
     _idleSkip = (_idleSkip + 1) % 15;
