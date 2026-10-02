@@ -182,6 +182,13 @@ export async function addTrees({ root, groundMesh, BASE, TSL, camera, quality = 
   if (!n || !Array.isArray(J.x)) return null;
   const C = { n, x: J.x, z: J.z, y: J.y, h: J.h, r: J.r, ra: J.ra || J.r, rb: J.rb || J.r,
               rot: J.rot || new Array(n).fill(0), yt: J.yt || J.y, R: J.R, G: J.G, B: J.B };
+  // The crown mean includes the crown's own shadow, and the 3D lighting shades
+  // the model again, so trees came out darker than in the photograph. Lean on
+  // the sunlit quartile (also measured): the leaves the sun lit at capture.
+  if (Array.isArray(J.Rl) && J.Rl.length === n) {
+    const mix = (a, b) => a.map((v, i) => 0.4 * v + 0.6 * b[i]);
+    C.R = mix(J.R, J.Rl); C.G = mix(J.G, J.Gl); C.B = mix(J.B, J.Bl);
+  }
   const datum = (J.frame && J.frame.datum_m) || 0;
   const hills = datum > CONIFER_ABOVE_M;
   if (lite) return addLightTrees({ root, groundMesh, TSL, camera, C, n, hills });

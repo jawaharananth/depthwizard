@@ -27,7 +27,7 @@ import cv2
 import numpy as np
 import rasterio
 
-MIN_H = 25.0
+MIN_H = float(os.environ.get("DW_LEAN_MIN_H", "25"))
 SEARCH_PX = 32
 MAX_TOWERS = 300
 MAX_RESIDUAL_M = 5.0     # HITEC City fits at 3.5 m; hill towns came out at 10 m

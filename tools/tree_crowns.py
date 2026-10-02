@@ -53,8 +53,10 @@ SCENES = {
                        "v1_blur_native": 1.0},
 }
 # Showcase places built by build_showcase.py keep the canopy map they used.
-for _id in ("gangtok", "shimla", "mumbai_lower_parel", "kanha", "jaisalmer_village"):
-    SCENES[_id] = {"chm_v1": f"work/showcase/{_id}/chm.npy", "cache": f"cache/chmv2_{_id}_native.npy"}
+_sc = os.path.join(ROOT, "work", "showcase")
+for _id in (sorted(os.listdir(_sc)) if os.path.isdir(_sc) else []):
+    if os.path.exists(os.path.join(_sc, _id, "chm.npy")) and _id not in SCENES:
+        SCENES[_id] = {"chm_v1": f"work/showcase/{_id}/chm.npy", "cache": f"cache/chmv2_{_id}_native.npy"}
 FIELDS = [
     ("x", "crown centroid, world x (m, east)"),
     ("z", "crown centroid, world z (m, north; = -row*gsd)"),

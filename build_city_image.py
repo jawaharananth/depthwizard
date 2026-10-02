@@ -892,6 +892,7 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
           use_metric: bool = True, gt_building_mask: np.ndarray = None,
           gt_building_polygons: list = None,
           gt_building_heights: list = None,
+          gt_heights_provenance: str = "measured",
           skip_canopy: bool = False,
           canopy_height_map: np.ndarray = None,
           vlm_judge: bool = False,
@@ -1829,13 +1830,14 @@ def build(image_path: str, name: str, gsd_m: float = None, tracker=None,
         _scaled_polys = [np.asarray(p, np.float32) * [_sx, _sy]
                          for p in gt_building_polygons]
         rres = region_footprints.extract_from_polygons(
-            _scaled_polys, ndsm, gsd, known_heights=gt_building_heights)
+            _scaled_polys, ndsm, gsd, known_heights=gt_building_heights,
+            known_provenance=gt_heights_provenance)
         footprints = rres["polygons"]
         print(f"      footprints from GROUND TRUTH polygons: {rres['report']['retained']} "
               f"of {rres['report']['regions_examined']} individually-labelled buildings")
         if gt_building_heights is not None:
-            print(f"      of those, {rres['report']['measured_heights']} carry a REAL "
-                  f"measured height (e.g. municipal floor-count record), not an estimate")
+            print(f"      of those, {rres['report']['measured_heights']} carry a supplied height "
+                  f"({gt_heights_provenance}) rather than this pass's estimate")
         _rej = "  ".join(f"{k} {v}" for k, v in rres["report"]["rejected"].items() if v)
         if _rej:
             print(f"      rejected: {_rej}")

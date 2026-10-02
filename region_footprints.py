@@ -474,8 +474,12 @@ def orthogonalize(poly: np.ndarray, angle_tol_deg: float = 22.0,
 
 def extract_from_polygons(polygons: list, ndsm: np.ndarray, gsd_m: float,
                           min_area_m2: float = 1.5, min_height_m: float = 1.0,
-                          known_heights: list = None) -> dict:
+                          known_heights: list = None, known_provenance: str = "measured") -> dict:
     """
+    known_provenance labels the supplied heights in each record (e.g.
+    "from the whole-area scene" for a close-up that inherits its parent's
+    calibrated heights -- those are not measurements and must not say so).
+
     Building footprints from individually-labelled ground-truth polygons, not
     a merged raster mask.
 
@@ -558,7 +562,7 @@ def extract_from_polygons(polygons: list, ndsm: np.ndarray, gsd_m: float,
         if known is not None:
             height = max(float(known), min_height_m)
             n_measured += 1
-            provenance = "measured"
+            provenance = known_provenance
         else:
             height = model_estimate
             provenance = "inferred"

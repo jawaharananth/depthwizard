@@ -245,6 +245,41 @@ def canopy(tif, work):
     return a
 
 
+def inherit_heights(polys, tif, parent):
+    """Per footprint, the parent scene's height above ground (75th percentile
+    inside the outline, the roof rather than its edges), sampled on this
+    image's grid. A close-up then shows every building at the same height
+    as the whole-area scene it is cut from. None where the parent has no
+    building there (the model's own estimate is used)."""
+    import glob
+    import cv2
+    import rasterio
+    from rasterio.warp import Resampling, reproject
+    pd = os.path.join(ROOT, "scenes", parent)
+    meta = json.load(open(os.path.join(pd, "scene.json")))
+    hv = meta["hover"]
+    q = np.fromfile(os.path.join(pd, hv["agl"]), dtype="<u2").reshape(hv["height"], hv["width"])
+    agl = np.where(q == 65535, np.nan, q / 100.0).astype(np.float32)
+    with rasterio.open(sorted(glob.glob(os.path.join(pd, "*_DSM.tif")))[0]) as s:
+        ptf = s.transform * s.transform.scale(s.width / hv["width"], s.height / hv["height"])
+        pcrs = s.crs
+    with rasterio.open(tif) as s:
+        dst = np.full((s.height, s.width), np.nan, np.float32)
+        reproject(agl, dst, src_transform=ptf, src_crs=pcrs, dst_transform=s.transform, dst_crs=s.crs,
+                  src_nodata=np.nan, dst_nodata=np.nan, resampling=Resampling.bilinear)
+    out = []
+    m = np.zeros(dst.shape, np.uint8)
+    for p in polys:
+        m[:] = 0
+        cv2.fillPoly(m, [np.array(p, np.int32)], 1)
+        v = dst[(m > 0) & np.isfinite(dst)]
+        h = float(np.percentile(v, 75)) if v.size >= 4 else None
+        out.append(h if h is not None and h >= 2.5 else None)
+    n = sum(h is not None for h in out)
+    log(f"heights from scenes/{parent}: {n} of {len(polys)} outlines")
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("id")
@@ -253,6 +288,12 @@ def main():
     ap.add_argument("--kind", choices=["urban", "hilly", "forested", "sparse"], required=True)
     ap.add_argument("--name", required=True)
     ap.add_argument("--region", required=True)
+    ap.add_argument("--tiles", type=int, default=16,
+                    help="zoom-18 tiles per side: 16 = 2.45 km (default); 4 = ~610 m, a close-up crop "
+                         "where the same 3D budget gives four times the detail per metre")
+    ap.add_argument("--heights-from", metavar="SCENE",
+                    help="take each building's height from this (whole-area) scene, so a close-up "
+                         "agrees with the place it is cut from")
     ap.add_argument("--fetch-only", action="store_true",
                     help="download and cache everything, build nothing (safe to run beside a build)")
     a = ap.parse_args()
@@ -264,7 +305,8 @@ def main():
     ctx, far = os.path.join(work, f"{a.id}_context"), os.path.join(work, f"{a.id}_far")
     if not os.path.exists(tif):
         x, y = tile_xy(a.lat, a.lon, 18)
-        run([PY, "tools/fetch_scene.py", tif, "--zoom", 18, "--x0", x - 8, "--y0", y - 8, "--n", 16])
+        h = a.tiles // 2
+        run([PY, "tools/fetch_scene.py", tif, "--zoom", 18, "--x0", x - h, "--y0", y - h, "--n", a.tiles])
     if not os.path.exists(z19):
         run([PY, "tools/fetch_z19_display.py", tif, z19])
     if not os.path.exists(ctx + ".png"):
@@ -281,12 +323,14 @@ def main():
         log(f"{a.id}: zoom-19 imagery is placeholder tiles ({z19_coverage(z19):.0%} real) -- using zoom 18")
 
     import cv2
-    polys = [] if a.kind == "forested" else merge_footprints(ms_footprints(tif, work), osm_footprints(tif, work))
+    S = 256 * a.tiles                    # source pixels per side
+    polys = [] if a.kind == "forested" else merge_footprints(ms_footprints(tif, work), osm_footprints(tif, work),
+                                                              size=S)
     chm = canopy(tif, work)
     if a.fetch_only:
         log(f"fetched {a.id}: {len(polys)} footprints, canopy {'yes' if chm is not None else 'no'}")
         return
-    mask = np.zeros((4096, 4096), np.uint8)
+    mask = np.zeros((S, S), np.uint8)
     for p in polys:
         cv2.fillPoly(mask, [np.array(p, np.int32)], 1)
 
@@ -296,7 +340,7 @@ def main():
     kw = dict(max_px=4096, use_dem=True, auto_zoom=False,
               gt_building_mask=mask.astype(bool), gt_building_polygons=polys,
               canopy_height_map=chm, continuous_vegetation=chm is not None,
-              ground_grid=1400, pbr_maps=True, crown_radius_ratio=0.18,
+              ground_grid=min(1400, S), pbr_maps=True, crown_radius_ratio=0.18,
               display_texture_path=hires, depth_image_path=hires,
               context_image=ctx, context_far_image=far,
               osm_structures=a.kind in ("urban", "hilly"))
@@ -322,7 +366,7 @@ def main():
         if len(ov) > len(polys):
             log(f"{a.id}: {len(ov)} Overture outlines replace {len(polys)} Microsoft/OSM ones")
             polys = [p for p in ov if len(p) >= 4]
-            mask = np.zeros((4096, 4096), np.uint8)
+            mask = np.zeros((S, S), np.uint8)
             for p in polys:
                 cv2.fillPoly(mask, [np.array(p, np.int32)], 1)
             kw.update(gt_building_mask=mask.astype(bool), gt_building_polygons=polys)
@@ -345,6 +389,9 @@ def main():
         chm = np.where(keep, chm, 0.0).astype(np.float32)
         log(f"{a.id}: canopy kept on vegetation only: {before:.1%} -> {float((chm > 2).mean()):.1%} of pixels")
         kw.update(canopy_height_map=chm)
+    if a.heights_from and polys:
+        kw.update(gt_building_heights=inherit_heights(polys, tif, a.heights_from),
+                  gt_heights_provenance=f"from the whole-area scene ({a.heights_from})")
     log(f"building {a.id} ({a.kind}) with {len(polys)} footprints, canopy {'yes' if chm is not None else 'no'}")
     bci.build(tif, a.id, **kw)
 

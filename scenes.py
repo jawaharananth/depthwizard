@@ -35,6 +35,8 @@ ASSETS = [
     "terrain_texture_display.jpg", "terrain_confidence.png", "terrain_confidence_raw.png",
     "terrain_slope.png", "roof_details.glb", "roof_details.json", "structures.glb",
     "hover_agl.u16", "hover_sigma.u16", "hover_ground.f32", "lidar_agl.u16",
+    # the real surroundings, flat (scene.json "context" / "context_far")
+    "terrain_context.jpg", "terrain_context_far.jpg", "context_city.glb",
 ]
 
 

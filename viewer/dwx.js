@@ -133,23 +133,46 @@ export function installDWX(ctx) {
       catch (_) { return false; }
     }));
     places = places.filter((_, i) => avail[i]);
+    // A close-up (places.json "parent") is the same place cropped to ~600 m,
+    // where the same 3D budget gives four times the detail per metre. It is
+    // not listed on its own: its place opens on it, with a switch back to
+    // the whole area.
+    closeOf = {}; parentOf = {};
+    places.forEach((p) => { if (p.parent) { closeOf[p.parent] = p.id; parentOf[p.id] = p.parent; } });
+  }
+  let closeOf = {}, parentOf = {};
+  function go(id) {
+    const q = new URLSearchParams(location.search);
+    q.set("scene", id);
+    location.search = q.toString();
   }
 
   function renderDock(meta) {
     const hasLidar = !!(meta && meta.hover && meta.hover.lidar);
     const hasSigma = !!(meta && meta.hover && meta.hover.sigma);
     const groups = {};
-    places.forEach((p) => (groups[p.landscape] = groups[p.landscape] || []).push(p));
+    places.filter((p) => !p.parent).forEach((p) => (groups[p.landscape] = groups[p.landscape] || []).push(p));
     let html = "<h4>Places</h4>";
     if (!places.length) html += '<div class="dwx-foot">This copy holds one place.</div>';
+    const here = parentOf[currentId] || currentId;          // the place the current scene belongs to
     for (const land of ["urban", "hilly", "forested", "sparse"]) {
       if (!groups[land]) continue;
       html += `<div class="dwx-land">${land}</div>`;
       for (const p of groups[land]) {
-        html += `<label class="dwx-radio"><input type="radio" name="dwx-place" value="${esc(p.id)}"`
-             + `${p.id === currentId ? " checked" : ""}> <span>${esc(p.name)}</span>`
+        html += `<label class="dwx-radio"><input type="radio" name="dwx-place" value="${esc(closeOf[p.id] || p.id)}"`
+             + `${p.id === here ? " checked" : ""}> <span>${esc(p.name)}</span>`
              + `${p.lidar ? '<span class="lid">LiDAR</span>' : ""}</label>`;
       }
+    }
+    const pair = parentOf[currentId] ? [currentId, parentOf[currentId]]
+               : closeOf[currentId] ? [closeOf[currentId], currentId] : null;
+    if (pair) {
+      const isClose = currentId === pair[0];
+      html += '<div class="dwx-actions" style="margin-top:10px">'
+           + `<button class="dwx-btn${isClose ? " on" : ""}" id="dwx-close" title="About 600 m around the densest part, `
+           + `at full detail">Close-up</button>`
+           + `<button class="dwx-btn${isClose ? "" : " on"}" id="dwx-whole" title="The whole image, about 2.4 km">`
+           + "Whole area</button></div>";
     }
     html += '<div class="dwx-actions">'
          + '<button class="dwx-btn on" id="dwx-rgb" title="The original image on the 3D model">RGB</button>'
@@ -166,11 +189,11 @@ export function installDWX(ctx) {
          + '<div id="dwx-legend"><div class="bar"></div><div class="ticks dwx-num">'
          + "<span>±0 m</span><span>±2</span><span>±4</span><span>±6</span><span>±8+</span></div></div>";
     dock.innerHTML = html;
-    dock.querySelectorAll('input[name="dwx-place"]').forEach((r) => r.addEventListener("change", () => {
-      const q = new URLSearchParams(location.search);
-      q.set("scene", r.value);
-      location.search = q.toString();
-    }));
+    dock.querySelectorAll('input[name="dwx-place"]').forEach((r) => r.addEventListener("change", () => go(r.value)));
+    if (pair) {
+      document.getElementById("dwx-close").addEventListener("click", () => { if (currentId !== pair[0]) go(pair[0]); });
+      document.getElementById("dwx-whole").addEventListener("click", () => { if (currentId !== pair[1]) go(pair[1]); });
+    }
   }
 
   function renderSheet(meta) {
