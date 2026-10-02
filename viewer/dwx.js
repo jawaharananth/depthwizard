@@ -306,8 +306,10 @@ export function installDWX(ctx) {
     if (!e || !ground || !R || !uvOf) return;
     ndc.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
     ray.setFromCamera(ndc, camera);
-    const targets = [];
-    scene.traverse((o) => { if (o.isMesh && o.visible && o !== lidarMesh && !o.userData.dwxSkip) targets.push(o); });
+    // the viewer's light pick set (a coarse ground copy + buildings); the full
+    // scene is millions of triangles and made every mouse move a stall
+    const targets = window.__dwPickTargets ? window.__dwPickTargets().slice() : [];
+    if (!window.__dwPickTargets) scene.traverse((o) => { if (o.isMesh && o.visible && o !== lidarMesh && !o.userData.dwxSkip) targets.push(o); });
     if (lidarMesh && lidarOn) targets.push(lidarMesh);
     const hits = ray.intersectObjects(targets, false);
     if (!hits.length) { reticle.style.display = tag.style.display = "none"; return; }
@@ -341,8 +343,8 @@ export function installDWX(ctx) {
     if (!ground || !R || !uvOf) return null;
     ndc.set((x / innerWidth) * 2 - 1, -(y / innerHeight) * 2 + 1);
     ray.setFromCamera(ndc, camera);
-    const targets = [];
-    scene.traverse((o) => { if (o.isMesh && o.visible && o !== lidarMesh && !o.userData.dwxSkip) targets.push(o); });
+    const targets = window.__dwPickTargets ? window.__dwPickTargets() : [];
+    if (!window.__dwPickTargets) scene.traverse((o) => { if (o.isMesh && o.visible && o !== lidarMesh && !o.userData.dwxSkip) targets.push(o); });
     const hits = ray.intersectObjects(targets, false);
     if (!hits.length) return null;
     const local = ground.worldToLocal(hits[0].point.clone());
@@ -510,7 +512,14 @@ export function installDWX(ctx) {
   // --------------------------------------------------------------- frame
   let fpsAcc = 0, fpsN = 0, lastT = performance.now();
   window.__dwxFrame = () => {
-    const t = performance.now(); fpsAcc += (t - lastT) / 1000; fpsN++; lastT = t;
+    const t = performance.now();
+    if (window.__dwIdle) {           // render on demand: still scene, GPU resting
+      const f = document.getElementById("dwx-fps");
+      if (f) f.textContent = "idle";
+      fpsAcc = 0; fpsN = 0; lastT = t;
+      return;
+    }
+    fpsAcc += (t - lastT) / 1000; fpsN++; lastT = t;
     if (fpsAcc >= 1) {
       const f = document.getElementById("dwx-fps");
       const v = Math.round(fpsN / fpsAcc);
