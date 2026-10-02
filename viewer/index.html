@@ -256,6 +256,15 @@ try {
     if (typeof SCENE_META.sun_azimuth_deg === "number") SUN_AZIMUTH_DEG = SCENE_META.sun_azimuth_deg;
   }
 } catch (e) { /* no metadata: keep the defaults above */ }
+// Map-coordinate origin of the scene (world x = X - origin_x, z = Y - origin_y,
+// in CRS units / crs_units_per_m). Showcase scenes carry only their affine,
+// so the origin comes from it -- without this every map-placed overlay
+// (flood building count, search highlights, fly-to) landed far off the tile.
+if (SCENE_META && SCENE_META.origin_x == null && Array.isArray(SCENE_META.affine_transform)
+    && SCENE_META.affine_transform.length >= 6) {
+  SCENE_META.origin_x = SCENE_META.affine_transform[2];
+  SCENE_META.origin_y = SCENE_META.affine_transform[5];
+}
 
 // Which files this place has (server.py answers files.json with the folder's
 // live listing). Optional layers not in it are never requested, so a place
@@ -4079,9 +4088,12 @@ function floodBuildMesh(levelY) {
   geo.setAttribute("position", new THREE.Float32BufferAttribute(verts, 3));
   geo.setIndex(idx);
   geo.computeVertexNormals();
+  // DoubleSide: the triangle winding follows the ground grid's row order,
+  // which runs north-to-south in some scenes -- single-sided, the water was
+  // culled from above and the flood was computed but never seen.
   floodMeshObj = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({
     color: 0x1c5f86, transparent: true, opacity: 0.62,
-    roughness: 0.06, metalness: 0.25, depthWrite: false,
+    roughness: 0.06, metalness: 0.25, depthWrite: false, side: THREE.DoubleSide,
   }));
   floodMeshObj.renderOrder = 2;
   floodMeshObj.name = "floodwater";
@@ -4119,9 +4131,12 @@ function floodUpdate(rise) {
     return;
   }
   if (!floodSeed) {
-    if (el) el.textContent = "Place a water source first: click Flood, then "
-      + "click the terrain where the water comes from.";
-    return;
+    // No source placed yet: water rises from the lowest ground in the scene
+    // (where it would pool first), and the readout says so. Placing a source
+    // replaces this.
+    let k = 0;
+    for (let i = 1; i < g.y.length; i++) if (g.y[i] < g.y[k]) k = i;
+    floodSeed = { r: Math.floor(k / g.w), c: k % g.w, auto: true };
   }
 
   const datum = withTrueScale(() => new THREE.Box3().setFromObject(groundMesh)).min.y;
@@ -4156,6 +4171,7 @@ function floodUpdate(rise) {
         + `but are not connected to the source — a flat water plane would have `
         + `flooded them.`;
     }
+    if (floodSeed && floodSeed.auto) t += "\nSource: the lowest ground in view -- use Place water source to choose one.";
     el.textContent = t;
   }
 }
@@ -5568,6 +5584,13 @@ installDWX({
   setTextureMode,
   tour: { toggle: () => { btnTour.click(); return tourActive; } },
 });
+// Tool dock (viewer/toolbar.js): the analysis tools, bottom centre, keys 1-0.
+import("./toolbar.js").then((m) => { window.__dwToolbar = m.installToolbar(); })
+  .catch((e) => console.warn("tool dock skipped:", e));
+// Photo minimap + photo / height / uncertainty inspector (viewer/minimap.js, key M).
+import("./minimap.js").then(async (m) => {
+  window.__dwMinimap = await m.installMinimap({ BASE, meta: SCENE_META, getGround: () => groundMesh });
+}).catch((e) => console.warn("minimap skipped:", e));
 renderer.setAnimationLoop(animate); // WebGPURenderer's own loop driver, handles both backends correctly
 
 window.addEventListener("resize", () => {
