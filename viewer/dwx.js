@@ -328,8 +328,7 @@ export function installDWX(ctx) {
       const h = val(R.agl, i), s = val(R.sigma, i);
       if (h === null) { reticle.style.display = tag.style.display = "none"; return; }
       html = `<span class="h">${h.toFixed(1)} m</span>`
-           + (s !== null ? `<span class="u" style="color:${sigmaColour(s)}">± ${s.toFixed(1)} m</span>` : "")
-           + '<span class="k">height above ground · ± 1σ (68 %)</span>';
+           + '<span class="k">height above ground</span>';
     }
     tag.innerHTML = html;
     reticle.style.left = e.clientX + "px"; reticle.style.top = e.clientY + "px";

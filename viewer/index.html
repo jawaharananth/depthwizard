@@ -2264,8 +2264,9 @@ Promise.all([
       // Arrival: the place rises from flat to its true heights over ~2 s,
       // pivoting on its lowest ground (scene y can be absolute elevation).
       // Skipped for reduced motion, for automated captures, and with &rise=0.
+      // Off by default (the place appears at its true heights); opt in with &rise=1.
       if (!matchMedia("(prefers-reduced-motion: reduce)").matches
-          && new URLSearchParams(location.search).get("rise") !== "0" && !navigator.webdriver) {
+          && new URLSearchParams(location.search).get("rise") === "1" && !navigator.webdriver) {
         const pivot = new THREE.Box3().setFromObject(obj).min.y;
         // Time advances at most 50 ms per frame: the first frames after load
         // are slow (shader compilation), and a wall-clock animation finished
