@@ -4303,6 +4303,77 @@ function floodBuildingsAffected() {
   return n;
 }
 
+// --- Roof refuge: the flood carried through the height uncertainty -----------
+//
+// For every building whose doorstep is under water, how likely is its roof to
+// stay above the water? That is the vertical-evacuation question a control room
+// asks, and it is the one our uncertainty can answer honestly: the per-building
+// 90 % interval (interval_half_width_m) is measured on held-out LiDAR (90.4 %
+// coverage). The ground under the door comes from the free DEMs, whose error we
+// do not model here, so the doorstep test stays a yes/no on the drawn terrain.
+//
+// The interval is read as a normal band: sigma = half-width / 1.645.
+let refugeGroup = null;
+
+function normCdf(z) {                     // Abramowitz-Stegun 7.1.26, |err| < 1.5e-7
+  const t = 1 / (1 + 0.3275911 * Math.abs(z) / Math.SQRT2);
+  const y = 1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t
+    + 0.254829592) * t * Math.exp(-z * z / 2);
+  return z >= 0 ? 0.5 * (1 + y) : 0.5 * (1 - y);
+}
+
+function refugeClear() {
+  if (!refugeGroup) return;
+  scene.remove(refugeGroup);
+  refugeGroup.traverse(o => { if (o.geometry) o.geometry.dispose(); if (o.material) o.material.dispose(); });
+  refugeGroup = null;
+}
+
+function floodRefuge(levelY, datum) {
+  refugeClear();
+  const g = floodBuildGrid();
+  if (!g || !floodWet || !BUILDING_RECORDS || !SCENE_META || !SCENE_META.height_is_metric) return null;
+  const ox = SCENE_META.origin_x || 0, oy = SCENE_META.origin_y || 0;
+  const sy = 1;            // grid, level and roofs are all in true-scale units, as the bands are
+  const out = { wet: 0, safe: 0, unsure: 0, under: 0, sigmaKnown: 0, worst: null };
+  refugeGroup = new THREE.Group();
+  refugeGroup.name = "roof-refuge";
+  for (const rec of BUILDING_RECORDS) {
+    const q = rec.props || {};
+    const x = (rec.cx - ox) / crsK(), z = (rec.cy - oy) / crsK();
+    const c = Math.round((x - g.x0) / (g.dx || 1)), r = Math.round((z - g.z0) / (g.dz || 1));
+    if (r < 0 || r >= g.h || c < 0 || c >= g.w || !floodWet[r * g.w + c]) continue;
+    out.wet++;
+    const h = q.height_m, hw = q.interval_half_width_m;
+    if (typeof h !== "number" || typeof hw !== "number" || !(hw > 0)) continue;
+    out.sigmaKnown++;
+    const gy = g.y[r * g.w + c];
+    const roofY = gy + h * sy;
+    const sigma = (hw / 1.645) * sy;
+    const p = normCdf((roofY - levelY) / sigma);          // P(roof above the water)
+    let col;
+    if (p >= 0.9) { out.safe++; col = 0x2e7d4f; }
+    else if (p <= 0.1) { out.under++; col = 0xb3261e; }
+    else { out.unsure++; col = 0xd9822b; }
+    if (!out.worst || Math.abs(p - 0.5) < Math.abs(out.worst.p - 0.5)) {
+      out.worst = { p, h, hw, depth: (levelY - gy) / sy, id: q.id || q.building_id || rec.id };
+    }
+    if (!rec.ring || rec.ring.length < 3) continue;
+    const pts = rec.ring.map(pt => new THREE.Vector2((pt[0] - ox) / crsK(), -(pt[1] - oy) / crsK()));
+    let shape; try { shape = new THREE.Shape(pts); } catch (e) { continue; }
+    const geo = new THREE.ExtrudeGeometry(shape, { depth: 0.6 * sy, bevelEnabled: false });
+    geo.rotateX(-Math.PI / 2);
+    const m = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
+      color: col, transparent: true, opacity: 0.85, depthWrite: false, side: THREE.DoubleSide }));
+    m.position.y = Math.max(roofY, levelY) + 0.05 * sy;
+    m.renderOrder = 4;
+    m.userData.noAnalysis = true;
+    refugeGroup.add(m);
+  }
+  scene.add(refugeGroup);
+  return out;
+}
+
 function floodUpdate(rise) {
   const el = document.getElementById("flood-readout");
   if (!groundMesh) return;
@@ -4312,6 +4383,7 @@ function floodUpdate(rise) {
   if (rise <= 0.01) {
     if (floodMeshObj) { scene.remove(floodMeshObj); floodMeshObj = null; }
     floodWet = null;
+    refugeClear();
     if (el) el.textContent = floodSeed
       ? "Water off"
       : "Water off — click the terrain in Flood mode to place the source.";
@@ -4333,6 +4405,7 @@ function floodUpdate(rise) {
 
   if (res.dry) {
     if (floodMeshObj) { scene.remove(floodMeshObj); floodMeshObj = null; }
+    refugeClear();
     if (el) el.textContent = `Source sits ${(res.seedY - datum).toFixed(1)} above `
       + `the low point, higher than the ${rise.toFixed(1)} water level — `
       + `nothing floods. Lower the source or raise the level.`;
@@ -4359,9 +4432,29 @@ function floodUpdate(rise) {
         + `flooded them.`;
     }
     if (floodSeed && floodSeed.auto) t += "\nSource: the lowest ground in view -- use Place water source to choose one.";
+    let rf = null;
+    try { rf = floodRefuge(levelY, datum); } catch (e) { refugeClear(); rf = null; }   // never break the flood readout
+    if (rf && rf.sigmaKnown) {
+      t += `\nRoof refuge, from each building's measured ± (90 % band): `
+        + `${rf.safe} roofs stay dry (≥ 90 % sure) · ${rf.unsure} uncertain · `
+        + `${rf.under} under water (≥ 90 % sure).`;
+      if (rf.worst && rf.unsure) {
+        t += `\nClosest call: a ${rf.worst.h.toFixed(1)} ± ${rf.worst.hw.toFixed(1)} m building in `
+          + `${rf.worst.depth.toFixed(1)} m of water, roof ${Math.round(100 * rf.worst.p)} % likely above it.`;
+      }
+      t += "\nGreen caps: safe roofs · amber: send a check · red: evacuate horizontally.";
+    }
     el.textContent = t;
   }
 }
+
+// for automated checks: raise the water and read what the flood and roof refuge report
+window.__dwFlood = (rise) => {
+  if (!groundMesh || !BUILDING_RECORDS) return null;
+  floodUpdate(rise);
+  const el = document.getElementById("flood-readout");
+  return { text: el ? el.textContent : null, caps: refugeGroup ? refugeGroup.children.length : 0 };
+};
 
 function setFloodSeedFromPoint(p) {
   const cell = floodWorldToCell(p);

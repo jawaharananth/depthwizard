@@ -353,6 +353,7 @@
 <footer class="site"><div class="wrap"><span>DepthWizard &middot; Team Vantage Point</span><span>Problem statement SIH26175 &middot; ISRO Space Applications Centre</span><span id="calib"></span></div></footer>
 
 <script>
+fetch("health").then((r) => r.json()).then((d) => { window.DW_MAX_UPLOAD_MB = d.max_upload_mb; }).catch(() => {});
 const STAGE_LABELS = [
   ["load", "Reading the image"],
   ["height_field", "Estimating height"],
@@ -492,6 +493,13 @@ function start(file) {
   t0 = Date.now(); tEnd = null; fromCache = false; finished = false;
   $("log").innerHTML = ""; $("logwrap").className = "";
   appendLog("upload started: " + file.name + " (" + (file.size / 1e6).toFixed(1) + " MB)", "hd");
+  if (window.DW_MAX_UPLOAD_MB && file.size > window.DW_MAX_UPLOAD_MB * 1024 * 1024) {
+    fail("This file is " + (file.size / 1e6).toFixed(0) + " MB; the public demo accepts up to "
+         + window.DW_MAX_UPLOAD_MB + " MB. Crop it to the area you need (about 1-2 km across is ideal) "
+         + "or save it as a compressed GeoTIFF, then try again.");
+    return;
+  }
+  appendLog("On the free public server a 1 km scene takes about 6-10 minutes; progress appears below as each stage finishes.", "hd");
   stopped = false;
   failedStage = null;
   lastStage = null;

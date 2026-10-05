@@ -2,6 +2,8 @@
 
 Single satellite image → navigable 3D city model.
 
+**[Open live demo](https://huggingface.co/spaces/Jawaharananth/depthwizard)** — seven Indian places in 3D, in the browser.
+
 Built for SIH26175 (ISRO): reconstruct elevation and a 3D terrain model from a
 single-view satellite or aerial image, with a visualisation layer.
 

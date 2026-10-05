@@ -637,7 +637,8 @@ class Handler(BaseHTTPRequestHandler):
             # because a long build made it "look" unresponsive is exactly the
             # kind of glitch that must never happen mid-demo. /ready is the
             # separate, stricter check for that.
-            self._json(200, {"status": "alive", "shutting_down": _shutting_down})
+            self._json(200, {"status": "alive", "shutting_down": _shutting_down,
+                              "max_upload_mb": round(MAX_UPLOAD_BYTES / 1024 / 1024)})
             return
 
         if route == "/ready":
@@ -836,8 +837,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if length > MAX_UPLOAD_BYTES:
             self._json(413, {"error":
-                             f"file is {length/1e6:.0f} MB; the limit is "
-                             f"{MAX_UPLOAD_BYTES/1e6:.0f} MB"})
+                             f"This file is {length/1e6:.0f} MB; the public demo accepts up to "
+                             f"{MAX_UPLOAD_BYTES/1e6:.0f} MB. Crop it to the area you need (about "
+                             f"1-2 km across is ideal) or save it as a compressed GeoTIFF, then try again."})
             return
 
         job_id = uuid.uuid4().hex[:12]
@@ -1127,7 +1129,8 @@ class Handler(BaseHTTPRequestHandler):
 
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
-        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Cache-Control", "no-cache, no-transform")
+        self.send_header("X-Accel-Buffering", "no")    # reverse proxies (HF, Cloudflare) must not buffer
         self.send_header("Connection", "keep-alive")
         self.end_headers()
 
