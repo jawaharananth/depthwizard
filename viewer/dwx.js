@@ -329,7 +329,7 @@ export function installDWX(ctx) {
       if (h === null) { reticle.style.display = tag.style.display = "none"; return; }
       html = `<span class="h">${h.toFixed(1)} m</span>`
            + (s !== null ? `<span class="u" style="color:${sigmaColour(s)}">± ${s.toFixed(1)} m</span>` : "")
-           + '<span class="k">height above ground · uncertainty</span>';
+           + '<span class="k">height above ground · ± 1σ (68 %)</span>';
     }
     tag.innerHTML = html;
     reticle.style.left = e.clientX + "px"; reticle.style.top = e.clientY + "px";

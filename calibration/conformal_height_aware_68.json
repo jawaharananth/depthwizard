@@ -1,0 +1,11 @@
+{
+ "method": "half-width = q * (1 + k * pred), 68 % level (1 sigma), building median height",
+ "k": 0.14,
+ "q": 0.9695,
+ "level": 0.68,
+ "loto_coverage": 0.679,
+ "n": 458,
+ "claim_max_height_m": 8,
+ "data": "final_out/run03_building_errors.json",
+ "fitted_by": "scripts/fit_band68.py"
+}

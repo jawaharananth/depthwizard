@@ -161,12 +161,20 @@ def burn_buildings(out_dir: str, geojson_path: str, affine6, image_wh) -> int:
     W, H = image_wh
     tf = Affine(*affine6[:6]) * Affine.scale(W / w, H / h)
     g = json.load(open(geojson_path))
+    # Building uncertainty: the measured height-aware 68 % (1 sigma) band when it is fitted
+    # (calibration/conformal_height_aware_68.json, 67.9 % held-out coverage), claimed only up to its
+    # validated height; above that the readout shows no ± rather than an unvalidated one (-1 marks it).
+    b68_p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "calibration", "conformal_height_aware_68.json")
+    b68 = json.load(open(b68_p)) if os.path.exists(b68_p) else None
     hs, ss = [], []
     for f in g.get("features", []):
         p = f.get("properties", {})
         if isinstance(p.get("height_m"), (int, float)) and f.get("geometry"):
-            hs.append((f["geometry"], float(p["height_m"])))
-            if isinstance(p.get("interval_half_width_m"), (int, float)):
+            hm = float(p["height_m"])
+            hs.append((f["geometry"], hm))
+            if b68 is not None and p.get("height_is_metric", True):
+                ss.append((f["geometry"], b68["q"] * (1 + b68["k"] * hm) if hm <= b68["claim_max_height_m"] else -1.0))
+            elif isinstance(p.get("interval_half_width_m"), (int, float)):
                 ss.append((f["geometry"], float(p["interval_half_width_m"]) / 1.645))
     if not hs:
         return 0
@@ -180,6 +188,7 @@ def burn_buildings(out_dir: str, geojson_path: str, affine6, image_wh) -> int:
         bs = rasterio.features.rasterize(ss, out_shape=(h, w), transform=tf, fill=np.nan, dtype="float32")
         sg = _decode(os.path.join(out_dir, hv["sigma"]), h, w)
         sg = np.where(np.isfinite(bs) & np.isfinite(sg), bs, sg)
+        sg = np.where(bs < 0, np.nan, sg)                 # above the validated height: no ± shown
         with open(os.path.join(out_dir, hv["sigma"]), "wb") as f:
             f.write(_encode(sg))
     else:
