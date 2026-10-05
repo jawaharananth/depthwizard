@@ -205,23 +205,25 @@
     .top nav a { display: none; } .brand small { display: none; }
     .shot figcaption .chip:not(.sf) { display: none; }
   }
+
+  /* restructure: single column, upload full width, steps in a row */
+  header.top .wrap { height: 54px; }
+  .team { font: 600 15px var(--sans); color: var(--ink); letter-spacing: .01em; }
+  .hero { grid-template-columns: 1fr; gap: 0; padding: 46px 0 18px; border-bottom: 1px solid var(--line); }
+  .hero h1 { max-width: 16em; }
+  .lede { max-width: 46em; }
+  .two { grid-template-columns: 1fr; gap: 18px; }
+  .how ol { display: grid; grid-template-columns: repeat(5, 1fr); gap: 16px; }
+  .how li { padding: 36px 0 0 0; }
+  .how li::before { top: 0; left: 0; }
+  .how li::after { display: none; }
+  @media (max-width: 980px) { .how ol { grid-template-columns: 1fr 1fr; } }
+  @media (max-width: 560px) { .how ol { grid-template-columns: 1fr; } }
 </style>
 </head>
 <body>
 <header class="top">
-  <div class="wrap">
-    <a class="brand" href="/" aria-label="DepthWizard home">
-      <svg width="30" height="30" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="5" fill="#1f3d2f"/><path d="M5 25h22l-7-13-4.5 7-3-4z" fill="#b5562f"/><path d="M5 25h22" stroke="#fff" stroke-width="1.6" stroke-linecap="round"/></svg>
-      <span><b>DepthWizard</b><small>Team Vantage Point</small></span>
-    </a>
-    <nav>
-      <a href="#try">Try it</a>
-      <a href="#places">Places</a>
-      <a class="hide-s" href="#accuracy">Accuracy</a>
-      <a class="hide-s" href="/viewer/method.html" target="_blank">Method</a>
-      <span class="pill">SIH26175 &middot; ISRO SAC</span>
-    </nav>
-  </div>
+  <div class="wrap"><span class="team">Team Vantage Point</span></div>
 </header>
 
 <main class="wrap">
@@ -238,10 +240,7 @@
         <div><dt>Terrain</dt><dd>SRTM or Copernicus GLO-30</dd></div>
       </dl>
     </div>
-    <figure class="shot">
-      <img src="/viewer/img/hero_hitec.jpg" alt="3D model of HITEC City, Hyderabad, built from one satellite image">
-      <figcaption><span class="chip sf">Our prototype</span><span class="chip">HITEC City, Hyderabad &middot; 610 m close-up from one image</span></figcaption>
-    </figure>
+    
   </section>
 
   <section class="block" id="try">
