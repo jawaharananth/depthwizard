@@ -44,6 +44,9 @@ SEG_M = 120.0
 STEP_M = 2.0
 
 
+SOLID_UNDER = True   # fill under elevated decks to the ground instead of piers
+
+
 def fetch_bridges(lon0, lat0, lon1, lat1, cache_path=None):
     if cache_path:
         try:
@@ -269,7 +272,8 @@ def build_structures(ways, lonlat_to_px, dsm, ground, gsd, image_np,
         g = np.array([ground[int(np.clip(p[1], 0, H - 1)), int(np.clip(p[0], 0, W - 1))]
                       for p in pts])
         top = g + h
-        bot = top - spec["deck_m"]
+        # solid under the deck down to the ground (reads as one built mass, no gaps or thin walls)
+        bot = (g - 0.5) if SOLID_UNDER else (top - spec["deck_m"])
         cols = [image_np[int(np.clip(p[1], 0, H - 1)), int(np.clip(p[0], 0, W - 1))] for p in pts]
         col = np.power(np.median(np.array(cols, np.float32), 0) / 255.0, 2.2)
 
@@ -314,7 +318,7 @@ def build_structures(ways, lonlat_to_px, dsm, ground, gsd, image_np,
         length_m = it["dist_px"][-1] * gsd if len(it["dist_px"]) else 0.0
         span = spec["span_m"]
         s = span / 2
-        while s < length_m - 6.0:
+        while not SOLID_UNDER and s < length_m - 6.0:
             i = int(np.clip(round(s / STEP_M), 0, n - 1))
             box(pts[i][0], pts[i][1], spec["pier_m"] / 2 / gsd, g[i] - 0.5, bot[i], col * 0.85)
             rep["piers"] += 1
