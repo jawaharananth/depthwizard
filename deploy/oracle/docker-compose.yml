@@ -1,0 +1,43 @@
+# DepthWizard on one Oracle Cloud VM: the app (built from ../../Dockerfile) behind
+# Caddy, which obtains and renews the HTTPS certificate on its own.
+#
+#   DW_DOMAIN=yourdomain.tech docker compose up -d --build
+#
+# Only Caddy is published (80/443); the app listens on the internal network.
+services:
+  app:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      PORT: "8080"
+      # A shared public server: smaller uploads, a longer budget for CPU builds.
+      DW_MAX_UPLOAD_MB: "95"
+      DW_MAX_JOB_SECONDS: "2700"
+      DW_MAX_PX: "4096"
+    volumes:
+      - uploads:/app/uploads
+      - cache:/app/cache
+    expose:
+      - "8080"
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on: [app]
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DW_DOMAIN: ${DW_DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  uploads:
+  cache:
+  caddy_data:
+  caddy_config:

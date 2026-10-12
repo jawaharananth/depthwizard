@@ -1,0 +1,20 @@
+{$DW_DOMAIN} {
+	encode zstd gzip
+	# uploads up to the app's own 95 MB limit (a little headroom for the request)
+	request_body {
+		max_size 100MB
+	}
+	reverse_proxy app:8080 {
+		# progress streams (server-sent events) must not be buffered
+		flush_interval -1
+		transport http {
+			read_timeout 1h
+			write_timeout 1h
+		}
+	}
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+	}
+}
